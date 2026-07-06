@@ -119,7 +119,7 @@ flowchart TB
             OH --> OF[Connect to Upstream]
         end
         subgraph Admin["Admin (port 4192)"]
-            AD[HTTP Server] --> AH[/healthz /readyz /reload]
+            AD[HTTP Server] --> AH["/healthz /readyz /reload"]
         end
     end
     Client[Application<br/>Container] --> L
