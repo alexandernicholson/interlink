@@ -55,11 +55,13 @@ INTERLINK_CA_KEY=/etc/interlink/ca.key \
 cargo run --bin interlinkd
 ```
 
-See [Configuration](#configuration) for the full set of options.
+See [Configuration](#configuration) and the full [Quickstart Guide](docs/examples/quickstart.md) for the full set of options.
 
 <hr />
 
 ## Configuration
+
+For a step-by-step walkthrough, see the [Quickstart Guide](docs/examples/quickstart.md).
 
 `interlinkd` loads configuration from two sources, in order of increasing precedence:
 
@@ -100,6 +102,8 @@ Runtime reload of policy and certificate settings is available via `POST /reload
 <hr />
 
 ## Architecture
+
+For deployment topologies and detailed connection flows, see the [Architecture Overview](docs/architecture/overview.md) and [Key Management](docs/architecture/key-management.md) docs.
 
 ```mermaid
 flowchart TB
@@ -163,6 +167,8 @@ sequenceDiagram
 <hr />
 
 ## RFC References
+
+Detailed RFC compliance notes live in [`docs/rfcs/`](docs/rfcs/).
 
 | RFC | Title | Usage |
 |-----|-------|-------|
@@ -249,6 +255,8 @@ bash scripts/demo.sh          # End-to-end mTLS demo
 <hr />
 
 ## Benchmarks (Apple M3 Pro)
+
+See [`docs/benchmarks/results.md`](docs/benchmarks/results.md) for the full benchmark methodology.
 
 ```
 protocol_detection/http1.1   time:   [12.3 ns  12.5 ns  12.7 ns]
