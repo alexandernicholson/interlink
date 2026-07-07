@@ -7,16 +7,26 @@ Profiles: 60s each
 
 ## proxy-interlink-q320-c160
 
-p50_ms=1.605 p90_ms=3.206 p99_ms=4.848 avg_ms=1.783 actual_qps=320.0 errors=0
-avg_cpu_percent=0.98 peak_cpu_percent=2.20 avg_memory_rss_kb=20976.9 peak_memory_rss_kb=22768.0
+p50_ms=1.630 p90_ms=3.081 p99_ms=4.283 avg_ms=1.758 actual_qps=320.0 errors=0
+avg_cpu_percent=1.00 peak_cpu_percent=1.90 avg_memory_rss_kb=19546.7 peak_memory_rss_kb=21060.0
 
 ## proxy-interlink-q3200-c1600
 
-p50_ms=7.429 p90_ms=11.967 p99_ms=18.990 avg_ms=7.697 actual_qps=3199.4 errors=0
-avg_cpu_percent=2.25 peak_cpu_percent=3.10 avg_memory_rss_kb=62206.8 peak_memory_rss_kb=78184.0
+p50_ms=7.275 p90_ms=12.863 p99_ms=23.664 avg_ms=7.941 actual_qps=3198.4 errors=0
+avg_cpu_percent=1.99 peak_cpu_percent=2.60 avg_memory_rss_kb=56162.7 peak_memory_rss_kb=64204.0
 
 ## proxy-interlink-q12800-c6400
 
-p50_ms=22.523 p90_ms=34.681 p99_ms=71.292 avg_ms=23.647 actual_qps=12787.5 errors=0
-avg_cpu_percent=5.30 peak_cpu_percent=6.70 avg_memory_rss_kb=212340.7 peak_memory_rss_kb=243368.0
+p50_ms=23.648 p90_ms=35.148 p99_ms=62.672 avg_ms=24.459 actual_qps=12779.0 errors=0
+avg_cpu_percent=6.21 peak_cpu_percent=7.90 avg_memory_rss_kb=175703.7 peak_memory_rss_kb=217900.0
+
+## proxy-interlink-churn-q100-c1
+
+p50_ms=0.923 p90_ms=1.679 p99_ms=1.972 avg_ms=0.958 actual_qps=100.0 errors=0
+avg_cpu_percent=8.65 peak_cpu_percent=8.90 avg_memory_rss_kb=101267.2 peak_memory_rss_kb=182584.0
+
+## proxy-interlink-churn-q500-c5
+
+p50_ms=1.377 p90_ms=1.883 p99_ms=1.997 avg_ms=1.185 actual_qps=500.0 errors=0
+avg_cpu_percent=8.67 peak_cpu_percent=9.50 avg_memory_rss_kb=66860.8 peak_memory_rss_kb=87524.0
 
