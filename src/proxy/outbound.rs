@@ -97,7 +97,10 @@ impl OutboundProxy {
     /// Resolve a hostname upstream to an IP:port via DNS.
     ///
     /// If the upstream is already a socket address, it is returned unchanged.
-    async fn resolve_upstream(&self, upstream: &str) -> Result<std::net::SocketAddr, InterlinkError> {
+    async fn resolve_upstream(
+        &self,
+        upstream: &str,
+    ) -> Result<std::net::SocketAddr, InterlinkError> {
         if let Ok(sa) = upstream.parse::<std::net::SocketAddr>() {
             return Ok(sa);
         }
