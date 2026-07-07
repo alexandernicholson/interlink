@@ -35,6 +35,7 @@ pub struct OutboundProxy {
     discovery: Option<Arc<ServiceDiscovery>>,
     shutdown: Option<watch::Receiver<bool>>,
     active_connections: Arc<AtomicUsize>,
+    local_id: SpiffeId,
 }
 
 impl OutboundProxy {
@@ -65,6 +66,11 @@ impl OutboundProxy {
         discovery: Option<Arc<ServiceDiscovery>>,
     ) -> Self {
         let max_conn = config.max_connections.unwrap_or(1024);
+        let local_id = config
+            .identity
+            .as_ref()
+            .and_then(|s| SpiffeId::from_uri(s).ok())
+            .unwrap_or_else(|| SpiffeId::new(&config.trust_domain, "default", "proxy"));
         Self {
             config,
             connection_semaphore: Arc::new(Semaphore::new(max_conn)),
@@ -74,6 +80,7 @@ impl OutboundProxy {
             discovery,
             shutdown: None,
             active_connections: Arc::new(AtomicUsize::new(0)),
+            local_id,
         }
     }
 
@@ -188,11 +195,11 @@ impl OutboundProxy {
         let permit = self.connection_semaphore.clone().acquire_owned().await;
         match permit {
             Ok(p) => {
-                self.active_connections.fetch_add(1, Ordering::SeqCst);
+                self.active_connections.fetch_add(1, Ordering::Release);
                 let this = self.clone();
                 tokio::spawn(async move {
                     this.handle_connection(stream, upstream, peer_addr).await;
-                    this.active_connections.fetch_sub(1, Ordering::SeqCst);
+                    this.active_connections.fetch_sub(1, Ordering::Release);
                     drop(p);
                 });
             }
@@ -210,15 +217,14 @@ impl OutboundProxy {
         let deadline = Instant::now() + grace;
 
         loop {
-            let active = self.active_connections.load(Ordering::SeqCst);
-            if active == 0 {
+            if self.active_connections.load(Ordering::Acquire) == 0 {
                 info!("outbound proxy shutdown complete");
                 return;
             }
             if Instant::now() >= deadline {
                 warn!(
                     "outbound proxy shutdown grace period expired with {} active connections",
-                    active
+                    self.active_connections.load(Ordering::Relaxed)
                 );
                 return;
             }
@@ -269,19 +275,15 @@ impl OutboundProxy {
         );
 
         // Step 2: Policy evaluation (default-deny).
-        let local_id = self
-            .config
-            .identity
-            .as_ref()
-            .and_then(|s| SpiffeId::from_uri(s).ok())
-            .unwrap_or_else(|| SpiffeId::new(&self.config.trust_domain, "default", "proxy"));
-
-        let decision = self.policy.evaluate(&local_id, upstream_id);
+        let decision = self.policy.evaluate(&self.local_id, upstream_id);
         metrics::record_policy(&decision);
         match decision {
             Decision::Allow => {}
             Decision::Deny(reason) => {
-                warn!("policy denied {} → {}: {}", local_id, upstream_id, reason);
+                warn!(
+                    "policy denied {} → {}: {}",
+                    self.local_id, upstream_id, reason
+                );
                 metrics::record_connection(0, 0);
                 return;
             }
@@ -291,7 +293,7 @@ impl OutboundProxy {
         let el = start.elapsed();
         info!(
             "outbound connection: {} → {} handshake={:?}",
-            local_id, upstream, el
+            self.local_id, upstream, el
         );
 
         let copy_result =
@@ -301,13 +303,13 @@ impl OutboundProxy {
             Err(e) => {
                 warn!(
                     "bidirectional copy error for {} → {}: {}",
-                    local_id, upstream, e
+                    self.local_id, upstream, e
                 );
                 (0, 0)
             }
         };
 
         metrics::record_connection(bytes_up, bytes_down);
-        debug!("done outbound {} → {}", local_id, upstream);
+        debug!("done outbound {} → {}", self.local_id, upstream);
     }
 }

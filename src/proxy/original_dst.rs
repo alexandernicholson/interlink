@@ -37,8 +37,7 @@ pub fn get_original_dst(stream: &TcpStream) -> Option<String> {
     }
 
     let port = u16::from_be(sockaddr.sin_port);
-    let ip_bytes = sockaddr.sin_addr.s_addr.to_be_bytes();
-    let ip = std::net::Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
+    let ip = std::net::Ipv4Addr::from(u32::from_be(sockaddr.sin_addr.s_addr));
 
     Some(format!("{}:{}", ip, port))
 }

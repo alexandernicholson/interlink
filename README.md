@@ -278,9 +278,9 @@ A reproducible benchmark harness lives in [`bench/`](bench/). All three meshes w
 
 | Mesh | Profile | Actual RPS | p50 ms | p90 ms | p99 ms | Proxy CPU (avg) | Proxy memory (avg) |
 |------|---------|-----------|--------|--------|--------|-----------------|-------------------|
-| **interlink** | light 320 | 318.9 | 201.6 | 202.7 | 202.9 | 0.7 %\* | 11.6 MB |
-| **interlink** | medium 3,200 | 3,188.9 | 204.7 | 208.4 | 209.2 | 1.6 %\* | 42.2 MB |
-| **interlink** | heavy 12,800 | 12,749.0 | 212.8 | 222.8 | 225.1 | 5.0 %\* | 149.8 MB |
+| **interlink** | light 320 | 318.9 | 202.2 | 203.9 | 204.3 | 1.3 %\* | 13.9 MB |
+| **interlink** | medium 3,200 | 3,188.7 | 209.9 | 217.8 | 219.6 | 2.4 %\* | 62.2 MB |
+| **interlink** | heavy 12,800 | 12,748.1 | 225.1 | 245.0 | 249.5 | 7.0 %\* | 210.0 MB |
 | **Linkerd** | light 320 | 319.8 | 207.2 | 212.4 | 213.5 | 38.3 m | 35.5 MB |
 | **Linkerd** | medium 3,200 | 3,196.7 | 259.4 | 291.9 | 299.2 | 352.0 m | 237.2 MB |
 | **Linkerd** | heavy 12,800 | 11,868.6 | 550.7 | 652.0 | 695.5 | 1,373.5 m | 887.5 MB |
@@ -294,13 +294,13 @@ Proxy overhead (latency above the 200 ms base):
 
 | Mesh | Light overhead | Medium overhead | Heavy overhead |
 |------|---------------|----------------|----------------|
-| interlink | +2.9 ms | +9.2 ms | +25.1 ms |
+| interlink | +4.3 ms | +19.6 ms | +49.5 ms |
 | Linkerd | +13.5 ms | +99.2 ms | +495.5 ms |
 | Istio ambient | +9.1 ms | +49.7 ms | +147.2 ms |
 
 Full details in [`bench/results/comparison.md`](bench/results/comparison.md).
 
-**Key takeaways:** interlink adds the least latency overhead and consumes the fewest resources. Istio ambient (ztunnel) is roughly 3× more efficient than Linkerd across CPU, memory, and latency. Linkerd struggles at high connection counts (12,800 RPS / 6,400 conns), losing 7 % throughput and adding 495 ms p99 latency.
+**Key takeaways:** interlink adds the least latency overhead (4–50 ms above base) and consumes modest resources (~1–7 % CPU, 14–210 MB). Istio ambient (ztunnel) is roughly 3× more efficient than Linkerd across CPU, memory, and latency. Linkerd struggles at high connection counts (12,800 RPS / 6,400 conns), losing 7 % throughput and adding 495 ms p99 latency.
 
 <hr />
 

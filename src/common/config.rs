@@ -19,6 +19,8 @@ pub struct Config {
     pub cert_path: Option<String>,
     /// Path to the leaf private key (PKCS#8) for this proxy.
     pub key_path: Option<String>,
+    /// Default upstream address for when SO_ORIGINAL_DST is unavailable.
+    pub default_upstream: Option<String>,
 }
 
 impl Default for Config {
@@ -34,6 +36,7 @@ impl Default for Config {
             ca_bundle_path: None,
             cert_path: None,
             key_path: None,
+            default_upstream: None,
         }
     }
 }
@@ -90,6 +93,9 @@ impl Config {
         if file_cfg.key_path.is_some() {
             self.key_path = file_cfg.key_path;
         }
+        if file_cfg.default_upstream.is_some() {
+            self.default_upstream = file_cfg.default_upstream;
+        }
 
         Ok(self)
     }
@@ -128,6 +134,9 @@ impl Config {
         if let Ok(v) = std::env::var("INTERLINK_KEY_PATH") {
             self.key_path = Some(v);
         }
+        if let Ok(v) = std::env::var("INTERLINK_DEFAULT_UPSTREAM") {
+            self.default_upstream = Some(v);
+        }
         Ok(self)
     }
 
@@ -136,7 +145,7 @@ impl Config {
         crate::proxy::config::ProxyConfig {
             trust_domain: self.trust_domain.clone(),
             identity: self.identity.clone(),
-            default_upstream: None,
+            default_upstream: self.default_upstream.clone(),
             max_connections: Some(self.max_connections),
         }
     }

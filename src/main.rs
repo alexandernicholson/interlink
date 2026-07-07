@@ -77,8 +77,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         proxy_key,
     )?);
 
-    // 7. Build policy engine (default-deny) and service discovery.
-    let policy = Arc::new(PolicyEngine::new());
+    // 7. Build policy engine and service discovery.
+    let mut policy_engine = PolicyEngine::new();
+    // Allow all traffic when INTERLINK_ALLOW_ALL is set (benchmark mode).
+    if std::env::var("INTERLINK_ALLOW_ALL").as_deref() == Ok("true") {
+        policy_engine.set_default_decision(interlink::policy::Decision::Allow);
+    }
+    let policy = Arc::new(policy_engine);
     let discovery = Arc::new(ServiceDiscovery::new());
 
     // 8. Build shutdown signalling.
@@ -97,7 +102,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.proxy_inbound_port,
         tls_server,
         policy.clone(),
-        Some(discovery.clone()),
+        // Skip service discovery when a static default_upstream is configured.
+        if config.default_upstream.is_some() { None } else { Some(discovery.clone()) },
     )
     .with_shutdown(inbound_shutdown);
     let inbound_handle = Arc::new(inbound_proxy).spawn();

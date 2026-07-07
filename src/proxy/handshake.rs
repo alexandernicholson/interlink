@@ -6,18 +6,18 @@ use rustls::{ClientConfig, ServerConfig};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
+use x509_parser::asn1_rs::Oid;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 
 use crate::common::constants::timeouts;
-
 use crate::common::error::InterlinkError;
+use crate::common::identity::{IdentityProvider, SpiffeId};
+use crate::proxy::configure_socket;
 
 /// Supported ALPN protocols for negotiated HTTP/1.1 and HTTP/2 forwarding.
 fn alpn_protocols() -> Vec<Vec<u8>> {
     vec![b"h2".to_vec(), b"http/1.1".to_vec()]
 }
-use crate::common::identity::{IdentityProvider, SpiffeId};
-use crate::proxy::configure_socket;
 
 /// TLS 1.3 handshake trait (RFC 8446 §2, Figure 1).
 ///
@@ -98,8 +98,8 @@ impl TlsHandshake for TlsClient {
             tracing::warn!("failed to configure outbound TLS socket {}: {}", addr, e);
         }
 
-        let host = addr.split(':').next().unwrap_or(addr).to_string();
-        let server_name = ServerName::try_from(host.clone()).map_err(|_| {
+        let host = addr.split(':').next().unwrap_or(addr);
+        let server_name = ServerName::try_from(host.to_string()).map_err(|_| {
             InterlinkError::Tls(rustls::Error::General("invalid server name".to_string()))
         })?;
 
@@ -228,9 +228,11 @@ fn extract_identity_from_tls_stream(
         .map_err(|e| InterlinkError::Identity(format!("cert parse: {}", e)))?
         .1;
 
-    // Find SAN extension and extract SPIFFE URI
+    // Find SAN extension (OID 2.5.29.17) and extract SPIFFE URI
+    // Arc values: 2.5.29.17
+    let san_oid = Oid::from(&[2u64, 5, 29, 17]).unwrap();
     for ext in leaf.extensions().iter() {
-        if format!("{}", ext.oid) == "2.5.29.17" {
+        if ext.oid == san_oid {
             let parsed = ext.parsed_extension();
             if let ParsedExtension::SubjectAlternativeName(san) = parsed {
                 for gn in san.general_names.iter() {
