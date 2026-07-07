@@ -180,13 +180,15 @@ impl OutboundProxy {
         }
 
         // Recover original destination from iptables REDIRECT/DNAT.
-        let upstream = get_original_dst(&stream).unwrap_or_else(|| {
-            warn!(
-                "no upstream for outbound connection from {}, dropping",
-                peer_addr
-            );
-            String::new()
-        });
+        let upstream = get_original_dst(&stream)
+            .map(|sa| sa.to_string())
+            .unwrap_or_else(|| {
+                warn!(
+                    "no upstream for outbound connection from {}, dropping",
+                    peer_addr
+                );
+                String::new()
+            });
 
         if upstream.is_empty() {
             let _ = stream.into_std().map(|s| {

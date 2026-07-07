@@ -166,10 +166,12 @@ impl TcpProxy {
 
         let upstream = match &self.config.default_upstream {
             Some(dst) => dst.clone(),
-            None => get_original_dst(&stream).unwrap_or_else(|| {
-                warn!("no upstream for connection from {}, dropping", peer_addr);
-                String::new()
-            }),
+            None => get_original_dst(&stream)
+                .map(|sa| sa.to_string())
+                .unwrap_or_else(|| {
+                    warn!("no upstream for connection from {}, dropping", peer_addr);
+                    String::new()
+                }),
         };
 
         if upstream.is_empty() {
