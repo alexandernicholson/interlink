@@ -116,13 +116,11 @@ impl SpiffeId {
         namespace: impl Into<String>,
         service_account: impl Into<String>,
     ) -> Self {
-        let id = Self {
+        Self {
             trust_domain: trust_domain.into(),
             namespace: namespace.into(),
             service_account: service_account.into(),
-        };
-        id.validate_segments().expect("invalid SPIFFE ID segments");
-        id
+        }
     }
 
     fn validate_segments(&self) -> Result<(), InterlinkError> {

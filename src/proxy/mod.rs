@@ -1,3 +1,7 @@
+// B8: No panic paths in connection-handling code.
+// Test code is exempt via cfg(test).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod config;
 pub mod handshake;
 pub(crate) mod original_dst;

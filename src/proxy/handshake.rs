@@ -1,12 +1,14 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::{ClientConfig, ServerConfig};
+use std::sync::LazyLock;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
-use x509_parser::asn1_rs::Oid;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 
 use crate::common::constants::timeouts;
@@ -207,17 +209,22 @@ impl TlsHandshake for TlsServer {
 
 // ─── SPIFFE Identity Extraction (with LRU cache) ──────────────────
 
+/// The OID for the Subject Alternative Name extension (2.5.29.17).
+/// Constructed once at startup — never in the per-connection hot path (C4).
+#[cfg_attr(not(test), allow(clippy::unwrap_used))]
+static SAN_OID: LazyLock<x509_parser::asn1_rs::Oid<'static>> =
+    LazyLock::new(|| x509_parser::asn1_rs::Oid::from(&[2u64, 5, 29, 17]).unwrap());
+
 /// Concurrent LRU cache keyed by leaf-cert DER bytes.
 /// Capacity: 1024 entries. Peak mesh deployments commonly have 50–500 peers,
 /// so this avoids re-parsing X.509 certs on repeated connections from the
 /// same identity.
-static IDENTITY_CACHE: std::sync::LazyLock<moka::sync::Cache<Vec<u8>, SpiffeId>> =
-    std::sync::LazyLock::new(|| {
-        moka::sync::Cache::builder()
-            .max_capacity(1024)
-            .name("identity-cache")
-            .build()
-    });
+static IDENTITY_CACHE: LazyLock<moka::sync::Cache<Vec<u8>, SpiffeId>> = LazyLock::new(|| {
+    moka::sync::Cache::builder()
+        .max_capacity(1024)
+        .name("identity-cache")
+        .build()
+});
 
 /// Extract the SPIFFE identity from a peer's X.509 certificate SAN.
 ///
@@ -246,10 +253,9 @@ pub(crate) fn extract_identity_from_tls_stream(
         .map_err(|e| InterlinkError::Identity(format!("cert parse: {}", e)))?
         .1;
 
-    let san_oid = Oid::from(&[2u64, 5, 29, 17]).unwrap();
     let mut identity: Option<SpiffeId> = None;
     for ext in leaf.extensions().iter() {
-        if ext.oid == san_oid {
+        if ext.oid == *SAN_OID {
             let parsed = ext.parsed_extension();
             if let ParsedExtension::SubjectAlternativeName(san) = parsed {
                 for gn in san.general_names.iter() {

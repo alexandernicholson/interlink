@@ -2,8 +2,9 @@
 
 Binding rules for changes to this repo, especially the proxy hot path. Each rule exists
 because we shipped the mistake it forbids (2026-07-08 performance work, commits
-`583f3f5..08c2223`; see `docs/performance-plan.md` "Review findings"). Cite the rule
-number in review when you see a violation.
+`583f3f5..8fbe693`; see `docs/performance-plan.md` "Review findings", three rounds).
+Cite the rule number in review when you see a violation. Rules are append-only —
+numbers are stable so citations stay valid.
 
 ## A. Verification — nothing ships on plausibility
 
@@ -36,6 +37,26 @@ Commit messages and plan checkmarks must describe what actually happened, at the
 level. "SocketAddr end-to-end" was claimed when only the producer was converted and both
 callers immediately `.to_string()`'d the result back. Half-done is a fine state — call it
 half-done and list the remaining half.
+
+**A6. A test must be able to fail. Prove it once before committing.**
+`assert!(r.is_ok() || r.as_ref().unwrap().is_err())` is a tautology — it passed while the
+code under test panicked the process in a different branch. For every new test, break the
+code once (revert the fix, flip a condition) and watch the test go red; if you can't make
+it fail, it tests nothing. Assertions must state the property, not a disjunction that's
+always true.
+
+**A7. The test must assert what its name promises.**
+`test_concurrent_resolve_dedup` counted zero lookups — "dedup" was never checked. If the
+property is "N concurrent callers → exactly 1 upstream lookup", the test counts lookups
+and asserts `== 1`. A test whose body is weaker than its name is worse than no test:
+it makes reviewers believe the property is covered.
+
+**A8. Test the success path, especially under concurrency.**
+The DNS waiter test only resolved a non-existent name, so the *normal* outcome — waiter
+finds a populated cache — was never executed, and that exact path panicked in
+production-shaped use. Error-path tests are necessary but not sufficient: for any
+coordination code, at minimum one test drives N concurrent callers through the
+*successful* flow (a barrier + a resolvable input caught the panic in seconds).
 
 ## B. Rust rules
 
@@ -79,6 +100,54 @@ train everyone to ignore the warning that matters. `cargo build` and `cargo clip
 be warning-clean on every merge; if code must stay for an imminent redesign, gate it
 behind a feature flag so it still compiles in CI but doesn't warn.
 
+**B7. `unreachable!()` requires a local proof; a match arm that evaluates to a value is
+reachable.**
+The DNS rewrite ended `let _permit = match … };` with `unreachable!()` on the assumption
+that "both branches return above" — but the waiter arm ended in an expression (`…?`
+yielding the endpoints), not a `return`, so the normal success path fell straight into
+the panic. Before writing `unreachable!()`, write the one-line proof as a comment naming
+why *each* arm diverges (`return` / `?`-on-guaranteed-Err / `continue` / `!` call), and
+prefer restructuring so the compiler enforces it: return the value from every arm, or let
+the match be the function's tail expression. If any arm's last line is an expression that
+produces a value, that arm reaches the code after the match — full stop.
+
+**B8. No panic paths in connection-handling code — this proxy builds with
+`panic = "abort"`.**
+A panic anywhere in a spawned task doesn't kill one connection; it aborts the entire
+proxy and every connection it carries. In `src/proxy/`, `src/discovery/`, and anything
+else reachable from `handle_connection`: no `unwrap()`, `expect()`, `unreachable!()`,
+`todo!()`, or indexing that can panic on runtime data. Return `Err` and let the
+connection fail alone. Enforce mechanically:
+`#![deny(clippy::unwrap_used, clippy::expect_used)]` on those modules (test code is
+exempt via `#[cfg(test)]`).
+
+**B9. Don't launder control flow through a binding.**
+`let _permit = match …` where one arm returns, one arm was *supposed* to return, and the
+binding sometimes holds a permit and sometimes holds DNS endpoints is how B7's bug became
+invisible. A binding's name is a claim about its contents in every branch. If the arms of
+a match do different jobs, don't force them to produce one value — use early returns:
+handle the leader case and `return`, handle the waiter case and `return`, and let there
+be no code after the match.
+
+**B10. A cache needs a written lifecycle: every state must have an exit.**
+The serve-stale rewrite returns expired entries unconditionally and nothing ever
+refreshes them — after the first resolution, endpoints are frozen until restart, so
+upstream redeploys and failovers become invisible. Before merging any cache, write the
+state table in a comment: for each state (empty / fresh / expired / refresh-in-flight),
+what does a reader get, and what transitions the entry back to fresh? "Expired → serve
+stale" is only valid if something *also* schedules the refresh; an expired state with no
+exit is a bug by inspection. Add a test that expires an entry (injected clock or tiny
+TTL) and asserts a subsequent read observes updated data.
+
+**B11. Hot-path external dependencies go behind a trait.**
+`ServiceDiscovery` holds a concrete `TokioResolver`, so the single-flight property
+("N callers → 1 lookup") is untestable without real DNS — which is exactly why its test
+was vacuous (A7) and why two consecutive rewrites shipped broken. Anything that does I/O
+on behalf of the hot path (resolver, time source if it affects logic, upstream dialer)
+is injected as a trait object or generic, with the production impl as the default
+constructor. The unit tests then use a counting/failing/delaying fake to pin the
+coordination properties.
+
 ## C. Hot-path and observability standards
 
 **C1. A metric name is a contract.**
@@ -113,6 +182,13 @@ Reusing `timeouts::DNS_RESOLVE` (a timeout) as a cache TTL hid a 6× error. If t
 you need doesn't exist, add a named constant where it belongs; never borrow a number
 because it's conveniently in scope.
 
+**C6. Benchmark outputs record the parameters of the run that produced them.**
+`proxy-summary.md` says "200 ms delay" above zero-delay results because the generator's
+header is hardcoded prose. Every results file must be stamped from the *actual* run
+parameters (`PROFILE_DELAY`, QPS, connections, duration, payload, keepalive, git SHA) by
+the harness itself, never typed by hand. A number whose conditions are mislabeled is
+worse than no number — it will be compared against the wrong baseline.
+
 ## D. Process
 
 **D1. One logical change per commit/PR**, with the profile or test evidence in the
@@ -124,8 +200,21 @@ truth for what's proven vs. claimed.
 
 **D3. Pre-merge checklist** (all must hold):
 - [ ] `cargo test` passes; new paths have tests (A1), concurrency has concurrency tests (A2)
-- [ ] `cargo build` + `cargo clippy` warning-clean (B6)
-- [ ] Perf-motivated change has attached numbers (A4)
+- [ ] Each new test was made to fail once, asserts its named property, and covers the
+      success path (A6, A7, A8)
+- [ ] `cargo build` + `cargo clippy` warning-clean (B6); no panic paths in
+      connection-handling code (B8)
+- [ ] Every `unreachable!()` has a divergence proof per arm — or was restructured away (B7)
+- [ ] Caches/coordination: state lifecycle written down, every state has an exit (B3, B10)
+- [ ] Perf-motivated change has attached numbers from an honestly-labeled run (A4, C6)
 - [ ] Sibling proxy file checked for the same pattern (C3)
 - [ ] Metrics: right counter, all paths, no sentinel histogram values (C1, C2)
 - [ ] Commit message states exactly what is and isn't done (A5)
+
+**D4. A fix to a reviewed defect gets re-reviewed against the *original* failure mode.**
+The single-flight bug was "fixed" twice; each fix satisfied the letter of the cited rule
+(B1: permit held) while shipping a new defect in the same function (reachable
+`unreachable!()`, frozen cache). When fixing a review finding, restate the original
+property in the PR ("N concurrent resolves → 1 lookup, waiters get the result, no
+panic, entries refresh after TTL") and show the test output that demonstrates each
+clause — not just the clause the reviewer named.

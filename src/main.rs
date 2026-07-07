@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         policy_engine.set_default_decision(interlink::policy::Decision::Allow);
     }
     let policy = Arc::new(policy_engine);
-    let discovery = Arc::new(ServiceDiscovery::new());
+    let discovery = Arc::new(ServiceDiscovery::new()?);
 
     // 8. Build shutdown signalling.
     let (shutdown_tx, inbound_shutdown) = tokio::sync::watch::channel(false);
