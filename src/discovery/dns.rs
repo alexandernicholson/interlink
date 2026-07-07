@@ -89,49 +89,43 @@ impl ServiceDiscovery {
 
         // Leader election: Semaphore(1). The leader holds the permit across
         // the DNS lookup; waiters block on acquire().
-        let sem = self
+        let sem: Arc<tokio::sync::Semaphore> = self
             .in_flight
             .entry(name.to_string())
             .or_insert_with(|| Arc::new(Semaphore::new(1)))
             .value()
             .clone();
 
-        // B1: bind the permit to a named variable — never drop mid-expression.
-        let _permit = match sem.try_acquire() {
-            Ok(_p) => {
-                // We are the leader. The permit is held for the scope of
-                // resolve_inner — dropped when _permit goes out of scope.
-                let result = self.resolve_inner(name).await;
-                let endpoints = match &result {
-                    Ok(ep) => Some(ep.clone()),
-                    Err(_) => None,
-                };
-                self.cache.insert(
-                    name.to_string(),
-                    CacheEntry {
-                        endpoints,
-                        expires_at: Instant::now() + self.ttl,
-                    },
-                );
-                self.in_flight.remove(name);
-                return result;
-            }
-            Err(_) => {
-                // Waiter: wait for leader to finish.
-                let _waiter_permit = sem.acquire().await.map_err(|_| {
-                    InterlinkError::DnsResolution("semaphore closed during resolve".into())
-                })?;
-                // _waiter_permit is dropped immediately (returned to semaphore)
-                // so the next waiter can proceed. Then read from cache.
-                self.cache
-                    .get(name)
-                    .and_then(|e| e.endpoints.clone())
-                    .ok_or_else(|| InterlinkError::DnsResolution("lookup failed".into()))?
-            }
-        };
+        // B9: early returns instead of laundering control flow through a binding.
+        if let Ok(_permit) = sem.try_acquire() {
+            // We are the leader. _permit is held for the scope of resolve_inner
+            // and dropped when it goes out of scope (returns to semaphore).
+            let result = self.resolve_inner(name).await;
+            let endpoints = match &result {
+                Ok(ep) => Some(ep.clone()),
+                Err(_) => None,
+            };
+            self.cache.insert(
+                name.to_string(),
+                CacheEntry {
+                    endpoints,
+                    expires_at: Instant::now() + self.ttl,
+                },
+            );
+            self.in_flight.remove(name);
+            return result;
+        }
 
-        // Unreachable — both branches return above.
-        unreachable!()
+        // Waiter: wait for leader to finish.
+        let _waiter_permit = sem.acquire().await.map_err(|_| {
+            InterlinkError::DnsResolution("semaphore closed during resolve".into())
+        })?;
+        // _waiter_permit is dropped immediately (returned to semaphore)
+        // so the next waiter can proceed. Then read from cache.
+        self.cache
+            .get(name)
+            .and_then(|e| e.endpoints.clone())
+            .ok_or_else(|| InterlinkError::DnsResolution("lookup failed".into()))
     }
 
     async fn resolve_inner(&self, name: &str) -> Result<ResolvedEndpoints, InterlinkError> {
