@@ -144,9 +144,10 @@ aggregate_metrics() {
 run_profile() {
     local qps="$1"
     local conns="$2"
-    local label="proxy-interlink-q${qps}-c${conns}"
+    local extra_flags="${3:-}"
+    local label="${4:-proxy-interlink-q${qps}-c${conns}}"
     local duration="${BENCH_DURATION:-${QUICK_DURATION:-300}}"
-    log "running profile ${label} (${duration}s)"
+    log "running profile ${label} (${duration}s) flags=${extra_flags}"
 
     local metrics_out="${RESULTS}/metrics-${label}.csv"
     sample_interlink_metrics "${metrics_out}" "${duration}" &
@@ -157,6 +158,7 @@ run_profile() {
         -v "${CERT_DIR}:/certs:ro" \
         "${FORTIO_IMAGE}" load \
             -qps "${qps}" -c "${conns}" -t 30s -payload-size 1024 \
+            ${extra_flags} \
             -cacert /certs/ca.pem -cert /certs/client.pem -key /certs/client-key.pem \
             -json /tmp/fortio-warmup.json \
             "https://localhost:${INBOUND_PORT}/echo" >/dev/null 2>&1 || true
@@ -167,6 +169,7 @@ run_profile() {
         "${FORTIO_IMAGE}" load \
             -timeout 120s \
             -qps "${qps}" -c "${conns}" -t "${duration}s" -payload-size 1024 \
+            ${extra_flags} \
             -cacert /certs/ca.pem -cert /certs/client.pem -key /certs/client-key.pem \
             -json /dev/stdout \
             -labels "${label}" \
@@ -208,5 +211,22 @@ for qps in 320 3200 12800; do
     esac
     run_profile "${qps}" "${conns}"
 done
+
+# Connection-churn profile: no keepalive → new TCP connection per request.
+# This stresses handshake throughput (TLS 1.3 resumption, identity extraction).
+if [[ "${CHURN:-0}" == "1" ]]; then
+    log "connection-churn profile"
+    # Light churn: moderate QPS with per-request connections.
+    run_profile 100 1 "-keepalive=false" "proxy-interlink-churn-q100-c1"
+    # Heavy churn: high QPS with fresh connections.
+    run_profile 500 5 "-keepalive=false" "proxy-interlink-churn-q500-c5"
+fi
+
+# Bulk-throughput profile: large payloads to expose copy-buffer costs.
+if [[ "${BULK:-0}" == "1" ]]; then
+    log "bulk-throughput profile"
+    run_profile 100 2 "-payload-size 65536" "proxy-interlink-bulk-64kb"
+    run_profile 50 2 "-payload-size 262144" "proxy-interlink-bulk-256kb"
+fi
 
 log "proxy benchmark complete. Results in ${RESULTS}/proxy-summary.md"

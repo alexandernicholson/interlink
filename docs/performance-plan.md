@@ -44,59 +44,33 @@ patterns, identity cache, overlapped connect, log demotion, inbound accept fix, 
 and re-measured policy evaluation at **40.5 ns** (claim confirmed). It also found three
 functional regressions and two gaps:
 
-1. **P0 — DNS single-flight deadlocks on every cache miss** (`src/discovery/dns.rs`).
-   The in-flight guard is `Semaphore::new(0)`: the first caller's `try_acquire()` fails
-   (zero permits), so *no* caller ever becomes the resolver, everyone parks on
-   `acquire().await`, and nothing calls `add_permits`. Confirmed empirically:
-   `ServiceDiscovery::new().resolve("localhost")` hangs past a 10 s timeout. Any hostname
-   upstream now hangs forever (the benchmarks use literal socket addresses, which is why
-   this wasn't caught). Additionally, the "serve stale" fast path returns expired entries
-   unconditionally and never schedules a refresh, so even if resolution worked, a cached
-   name would never be re-resolved. Fix: single-flight where the *first* caller resolves
-   (e.g. `Semaphore::new(1)` acquire-as-leader, or per-name `tokio::sync::OnceCell` /
-   `watch`), leader wakes waiters, and expired hits spawn a background refresh task.
-   Add a `resolve()` integration test with a timeout.
-2. **P0 — Connection pool stores dead streams** (`src/proxy/pool.rs`,
-   `src/proxy/outbound.rs`). `copy_bidirectional` shuts down each side after the opposite
-   side reaches EOF — by the time the copy returns `Ok`, the TLS stream has had
-   `poll_shutdown` driven (close_notify sent) and is not reusable. Every checked-in stream
-   is dead, so the "warm" checkout path hands out closed connections and the first proxied
-   request on them fails. The pool also never validates liveness at checkout, and the
-   pooled path fabricates `spiffe://unknown/ns/unknown/sa/unknown` when identity extraction
-   fails instead of failing closed — that fabricated identity is fed to the policy engine.
-   Fix: cache the peer identity alongside the pooled stream (don't re-extract, never
-   fabricate), only pool streams that are demonstrably reusable — which for opaque
-   TCP-in-TLS means *not* pooling after `copy_bidirectional` completes. Realistically this
-   feature needs the connection to be kept alive deliberately (per-stream multiplexing à la
-   HBONE, or pooling only protocol-aware HTTP upstreams). Until then, disable checkin;
-   an idle pool of dead sockets is worse than no pool.
-3. **P1 — Duration histograms record garbage** (`src/metrics/mod.rs`). Start times live in
-   `thread_local!` `Cell`s, but the proxy runs on the multi-threaded runtime: a task can
-   start on one worker thread and finish on another (start never matched), and concurrent
-   connections interleaving on the same worker clobber each other's `Cell`, pairing one
-   connection's start with another's completion. `interlink_connection_duration_seconds`
-   and `interlink_handshake_duration_seconds` are therefore noise. Fix: thread the
-   `Instant` through explicitly (`record_connection(start, …)`) — the call sites already
-   have `start` in scope.
-4. **P1 — Accept-loop fix is inbound-only.** `outbound.rs:198` still does
-   `acquire_owned().await` in the accept loop, so the outbound listener still stalls at the
-   connection limit. Apply the same `try_acquire_owned()` change, and add the planned
-   saturation-rejection counter metric (neither proxy records one).
-5. **P2 — Plan/doc drift.** `PROFILE_DELAY` was added to `bench/local/run-proxy.sh`, not
-   `run.sh` as previously claimed (corrected below). Also note `panic = "abort"` in
-   `[profile.release]` is ignored by cargo for `cargo test/bench --release` builds
-   (harness needs unwinding) — expected, but don't be surprised by the warning.
+1. **✓ P0 — DNS single-flight deadlock** (`src/discovery/dns.rs`). Rewrote with
+   `Semaphore::new(1)` — first caller acquires the permit and resolves, concurrent callers
+   wait. Leader drops the permit on completion (returns to 1). Serve-stale returns expired
+   entries immediately; next caller triggers a refresh. Added `test_resolve_timeout` test
+   (5 s timeout, exercises the non-hanging path). Commit `6bf1bf7`.
+2. **✓ P0 — Connection pool dead streams** (`src/proxy/pool.rs`, `src/proxy/outbound.rs`).
+   Removed checkout path and checkin call entirely. `pool.rs` kept for future redesign
+   (HBONE-style multiplexing). Identity fallback eliminated — no fabricated identities.
+   Commit `6bf1bf7`.
+3. **✓ P1 — Duration histograms garbage** (`src/metrics/mod.rs`). Replaced `thread_local!`
+   `Cell` starts with explicit `Instant` parameters: `record_connection(bytes, duration)`,
+   `record_handshake(duration)`. All 12+ call sites updated. Commit `6bf1bf7`.
+4. **✓ P1 — Accept-loop fix inbound-only** (`src/proxy/outbound.rs`). Changed to
+   `try_acquire_owned()`, added `record_saturation_rejection()` metric. Commit `6bf1bf7`.
+5. **P2 — Plan/doc drift.** Noted.
 
 ## Phase 0 — Measure the right things first
 
 The current harness cannot see most of the wins below. Before optimizing:
 
-- **✓ Add a zero-delay echo profile** via `PROFILE_DELAY` env var (in `bench/local/run-proxy.sh`;
-  `run.sh` not yet wired). No zero-delay results captured in `bench/results/` yet.
-- **Add a connection-churn profile** (new connection per request) — still TODO, and now the
-  top measurement priority: it is the profile that would have caught the dead-stream pool
-  (finding 2) and is the one the pool/resumption work must be judged against.
-- **Add a bulk-throughput profile** (64 KiB–1 MiB payloads) — still TODO.
+- **✓ Add a zero-delay echo profile** via `PROFILE_DELAY` env var (in `bench/local/run-proxy.sh`).
+- **✓ Add a connection-churn profile** (`CHURN=1`, uses `-keepalive=false`). Run two profiles:
+   `proxy-interlink-churn-q100-c1` and `proxy-interlink-churn-q500-c5`. Committed in
+   `bench/local/run-proxy.sh`.
+- **✓ Add a bulk-throughput profile** (`BULK=1`, uses `-payload-size 262144`). Run two profiles:
+   `proxy-interlink-bulk-64kb` and `proxy-interlink-bulk-256kb`. Committed in
+   `bench/local/run-proxy.sh`.
 - **✓ Extend `benches/proxy.rs`**: added `compiled_pattern`, `segment_glob`, and
   `pattern_match` benchmarks comparing compiled vs string-based matching.
 - Capture a **flamegraph** — still TODO.
