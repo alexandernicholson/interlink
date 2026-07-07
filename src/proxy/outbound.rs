@@ -16,6 +16,7 @@ use crate::proxy::config::ProxyConfig;
 use crate::proxy::configure_socket;
 use crate::proxy::get_original_dst;
 use crate::proxy::handshake::TlsHandshake;
+use crate::proxy::pool::ConnectionPool;
 
 /// The outbound TCP proxy that wraps local plaintext connections in mTLS.
 ///
@@ -36,6 +37,7 @@ pub struct OutboundProxy {
     shutdown: Option<watch::Receiver<bool>>,
     active_connections: Arc<AtomicUsize>,
     local_id: SpiffeId,
+    connection_pool: Arc<ConnectionPool>,
 }
 
 impl OutboundProxy {
@@ -81,6 +83,7 @@ impl OutboundProxy {
             shutdown: None,
             active_connections: Arc::new(AtomicUsize::new(0)),
             local_id,
+            connection_pool: ConnectionPool::new(),
         }
     }
 
@@ -256,20 +259,39 @@ impl OutboundProxy {
             peer_addr, upstream
         );
 
-        // Step 1: Establish mTLS to upstream.
-        let mut tls_stream = match self.tls_client.connect(&upstream).await {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("outbound mTLS handshake failed to {}: {}", upstream, e);
-                metrics::record_handshake_error();
-                metrics::record_connection(0, 0);
-                return;
+        // Step 1: Try pooled connection first.
+        let mut tls_stream = match self.connection_pool.checkout(&upstream).await {
+            Some(pooled) => {
+                debug!("outbound pooled connection to {}", upstream);
+                // Build an InterlinkTlsStream from the pooled raw TLS stream.
+                // We don't have the peer identity cached for pooled connections,
+                // so we extract it from the existing TLS session.
+                let peer_id = crate::proxy::handshake::extract_identity_from_tls_stream(&pooled)
+                    .unwrap_or_else(|_| SpiffeId::new("unknown", "unknown", "unknown"));
+                crate::proxy::handshake::TlsStream {
+                    inner: pooled,
+                    peer_identity: peer_id,
+                }
+            }
+            None => {
+                // Establish fresh mTLS to upstream.
+                match self.tls_client.connect(&upstream).await {
+                    Ok(s) => {
+                        metrics::record_handshake(true);
+                        s
+                    }
+                    Err(e) => {
+                        warn!("outbound mTLS handshake failed to {}: {}", upstream, e);
+                        metrics::record_handshake_error();
+                        metrics::record_connection(0, 0);
+                        return;
+                    }
+                }
             }
         };
-        metrics::record_handshake(true);
 
         let upstream_id = &tls_stream.peer_identity;
-        info!(
+        debug!(
             "outbound mTLS connection to {} identity={}",
             upstream, upstream_id
         );
@@ -291,23 +313,30 @@ impl OutboundProxy {
 
         // Step 3: Bidirectional copy.
         let el = start.elapsed();
-        info!(
+        debug!(
             "outbound connection: {} → {} handshake={:?}",
             self.local_id, upstream, el
         );
 
         let copy_result =
             tokio::io::copy_bidirectional(&mut local_stream, &mut tls_stream.inner).await;
-        let (bytes_up, bytes_down) = match copy_result {
-            Ok((up, down)) => (up, down),
+        let (bytes_up, bytes_down, pool_ok) = match copy_result {
+            Ok((up, down)) => (up, down, true),
             Err(e) => {
                 warn!(
                     "bidirectional copy error for {} → {}: {}",
                     self.local_id, upstream, e
                 );
-                (0, 0)
+                (0, 0, false)
             }
         };
+
+        // Check the (clean) TLS stream back into the pool for reuse.
+        if pool_ok && bytes_up + bytes_down > 0 {
+            self.connection_pool
+                .checkin(&upstream, tls_stream.inner)
+                .await;
+        }
 
         metrics::record_connection(bytes_up, bytes_down);
         debug!("done outbound {} → {}", self.local_id, upstream);

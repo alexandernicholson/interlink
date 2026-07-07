@@ -223,7 +223,7 @@ static IDENTITY_CACHE: std::sync::LazyLock<moka::sync::Cache<Vec<u8>, SpiffeId>>
 ///
 /// Results are cached by the leaf certificate DER bytes so that repeat
 /// connections from the same peer skip the X.509 parse entirely.
-fn extract_identity_from_tls_stream(
+pub(crate) fn extract_identity_from_tls_stream(
     stream: &tokio_rustls::TlsStream<TcpStream>,
 ) -> Result<SpiffeId, InterlinkError> {
     let (_io, state) = stream.get_ref();
