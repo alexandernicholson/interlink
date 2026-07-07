@@ -195,7 +195,7 @@ impl OutboundProxy {
             return;
         }
 
-        let permit = self.connection_semaphore.clone().acquire_owned().await;
+        let permit = self.connection_semaphore.clone().try_acquire_owned();
         match permit {
             Ok(p) => {
                 self.active_connections.fetch_add(1, Ordering::Release);
@@ -208,6 +208,7 @@ impl OutboundProxy {
             }
             Err(_) => {
                 warn!("outbound connection limit reached, rejecting {}", peer_addr);
+                metrics::record_saturation_rejection();
                 let _ = stream.into_std().map(|s| {
                     let _ = s.shutdown(std::net::Shutdown::Both);
                 });
@@ -244,12 +245,11 @@ impl OutboundProxy {
         let start = Instant::now();
         metrics::record_connection_start();
 
-        // Resolve hostname upstreams via DNS when discovery is configured.
         let upstream = match self.resolve_upstream(&upstream).await {
             Ok(addr) => addr,
             Err(e) => {
                 warn!("failed to resolve outbound upstream {}: {}", upstream, e);
-                metrics::record_connection(0, 0);
+                metrics::record_connection(0, 0, std::time::Duration::ZERO);
                 return;
             }
         };
@@ -259,34 +259,17 @@ impl OutboundProxy {
             peer_addr, upstream
         );
 
-        // Step 1: Try pooled connection first.
-        let mut tls_stream = match self.connection_pool.checkout(&upstream).await {
-            Some(pooled) => {
-                debug!("outbound pooled connection to {}", upstream);
-                // Build an InterlinkTlsStream from the pooled raw TLS stream.
-                // We don't have the peer identity cached for pooled connections,
-                // so we extract it from the existing TLS session.
-                let peer_id = crate::proxy::handshake::extract_identity_from_tls_stream(&pooled)
-                    .unwrap_or_else(|_| SpiffeId::new("unknown", "unknown", "unknown"));
-                crate::proxy::handshake::TlsStream {
-                    inner: pooled,
-                    peer_identity: peer_id,
-                }
+        let handshake_start = Instant::now();
+        let mut tls_stream = match self.tls_client.connect(&upstream).await {
+            Ok(s) => {
+                metrics::record_handshake(handshake_start.elapsed());
+                s
             }
-            None => {
-                // Establish fresh mTLS to upstream.
-                match self.tls_client.connect(&upstream).await {
-                    Ok(s) => {
-                        metrics::record_handshake(true);
-                        s
-                    }
-                    Err(e) => {
-                        warn!("outbound mTLS handshake failed to {}: {}", upstream, e);
-                        metrics::record_handshake_error();
-                        metrics::record_connection(0, 0);
-                        return;
-                    }
-                }
+            Err(e) => {
+                warn!("outbound mTLS handshake failed to {}: {}", upstream, e);
+                metrics::record_handshake_error();
+                metrics::record_connection(0, 0, std::time::Duration::ZERO);
+                return;
             }
         };
 
@@ -296,7 +279,6 @@ impl OutboundProxy {
             upstream, upstream_id
         );
 
-        // Step 2: Policy evaluation (default-deny).
         let decision = self.policy.evaluate(&self.local_id, upstream_id);
         metrics::record_policy(&decision);
         match decision {
@@ -306,12 +288,11 @@ impl OutboundProxy {
                     "policy denied {} → {}: {}",
                     self.local_id, upstream_id, reason
                 );
-                metrics::record_connection(0, 0);
+                metrics::record_connection(0, 0, std::time::Duration::ZERO);
                 return;
             }
         }
 
-        // Step 3: Bidirectional copy.
         let el = start.elapsed();
         debug!(
             "outbound connection: {} → {} handshake={:?}",
@@ -320,25 +301,18 @@ impl OutboundProxy {
 
         let copy_result =
             tokio::io::copy_bidirectional(&mut local_stream, &mut tls_stream.inner).await;
-        let (bytes_up, bytes_down, pool_ok) = match copy_result {
-            Ok((up, down)) => (up, down, true),
+        let (bytes_up, bytes_down) = match copy_result {
+            Ok((up, down)) => (up, down),
             Err(e) => {
                 warn!(
                     "bidirectional copy error for {} → {}: {}",
                     self.local_id, upstream, e
                 );
-                (0, 0, false)
+                (0, 0)
             }
         };
 
-        // Check the (clean) TLS stream back into the pool for reuse.
-        if pool_ok && bytes_up + bytes_down > 0 {
-            self.connection_pool
-                .checkin(&upstream, tls_stream.inner)
-                .await;
-        }
-
-        metrics::record_connection(bytes_up, bytes_down);
+        metrics::record_connection(bytes_up, bytes_down, start.elapsed());
         debug!("done outbound {} → {}", self.local_id, upstream);
     }
 }

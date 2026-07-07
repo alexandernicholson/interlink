@@ -234,16 +234,15 @@ impl TcpProxy {
             Ok(addr) => addr,
             Err(e) => {
                 warn!("failed to resolve upstream {}: {}", upstream, e);
-                metrics::record_connection(0, 0);
+                metrics::record_connection(0, 0, std::time::Duration::ZERO);
                 return;
             }
         };
 
         debug!("handling connection from {} → {}", peer_addr, upstream);
 
-        // Overlap the upstream TCP connect with the mTLS handshake — both
-        // are independent and either may be the bottleneck.
-        metrics::record_handshake_start();
+        // Overlap the upstream TCP connect with the mTLS handshake.
+        let handshake_start = Instant::now();
         let (tls_result, upstream_result) = tokio::join!(
             self.tls_server.accept(stream),
             TcpStream::connect(&upstream),
@@ -254,21 +253,20 @@ impl TcpProxy {
             Err(e) => {
                 warn!("mTLS handshake failed from {}: {}", peer_addr, e);
                 metrics::record_handshake_error();
-                // Drop the upstream connection if it succeeded.
                 if let Ok(up) = upstream_result {
                     let _ = up.into_std().map(|s| s.shutdown(std::net::Shutdown::Both));
                 }
-                metrics::record_connection(0, 0);
+                metrics::record_connection(0, 0, std::time::Duration::ZERO);
                 return;
             }
         };
-        metrics::record_handshake(true);
+        metrics::record_handshake(handshake_start.elapsed());
 
         let mut upstream_stream = match upstream_result {
             Ok(s) => s,
             Err(e) => {
                 warn!("upstream connect failed to {}: {}", upstream, e);
-                metrics::record_connection(0, 0);
+                metrics::record_connection(0, 0, std::time::Duration::ZERO);
                 return;
             }
         };
@@ -288,7 +286,7 @@ impl TcpProxy {
                 let _ = upstream_stream
                     .into_std()
                     .map(|s| s.shutdown(std::net::Shutdown::Both));
-                metrics::record_connection(0, 0);
+                metrics::record_connection(0, 0, std::time::Duration::ZERO);
                 return;
             }
         }
@@ -298,13 +296,13 @@ impl TcpProxy {
         let detect_len = match tls_reader.read(&mut detect_buf).await {
             Ok(0) => {
                 debug!("client {} closed before sending data", peer_id);
-                metrics::record_connection(0, 0);
+                metrics::record_connection(0, 0, std::time::Duration::ZERO);
                 return;
             }
             Ok(n) => n,
             Err(e) => {
                 warn!("protocol detection read failed for {}: {}", peer_id, e);
-                metrics::record_connection(0, 0);
+                metrics::record_connection(0, 0, std::time::Duration::ZERO);
                 return;
             }
         };
@@ -325,7 +323,7 @@ impl TcpProxy {
                 "failed to write detected bytes to upstream {}: {}",
                 upstream, e
             );
-            metrics::record_connection(0, 0);
+            metrics::record_connection(0, 0, std::time::Duration::ZERO);
             return;
         }
 
@@ -342,7 +340,7 @@ impl TcpProxy {
             }
         };
 
-        metrics::record_connection(bytes_up, bytes_down);
+        metrics::record_connection(bytes_up, bytes_down, start.elapsed());
         debug!("done {} → {}", peer_id, upstream);
     }
 }

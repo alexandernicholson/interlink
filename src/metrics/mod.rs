@@ -49,22 +49,10 @@ pub fn init_metrics_exporter() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-use std::time::Instant;
-
-// Thread-local start times to avoid contention on the histogram recording path.
-std::thread_local! {
-    static CONN_START: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
-    static HANDSHAKE_START: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
-}
-
-/// Record a connection completion.
-pub fn record_connection(bytes_up: u64, bytes_down: u64) {
+/// Record a connection completion with explicit duration.
+pub fn record_connection(bytes_up: u64, bytes_down: u64, duration: std::time::Duration) {
     let m = &INTERLINK_METRICS;
-    CONN_START.with(|start| {
-        if let Some(t0) = start.take() {
-            m.connection_duration.record(t0.elapsed().as_secs_f64());
-        }
-    });
+    m.connection_duration.record(duration.as_secs_f64());
     m.connections_total.increment(1);
     m.bytes_total.increment(bytes_up + bytes_down);
     m.connections_active.decrement(1);
@@ -73,36 +61,23 @@ pub fn record_connection(bytes_up: u64, bytes_down: u64) {
 /// Record the start of a new connection.
 pub fn record_connection_start() {
     INTERLINK_METRICS.connections_active.increment(1);
-    CONN_START.with(|start| {
-        start.set(Some(Instant::now()));
-    });
 }
 
-/// Record a handshake completion.
-pub fn record_handshake(_success: bool) {
+/// Record a handshake completion with explicit duration.
+pub fn record_handshake(duration: std::time::Duration) {
     let m = &INTERLINK_METRICS;
-    HANDSHAKE_START.with(|start| {
-        if let Some(t0) = start.take() {
-            m.handshake_duration.record(t0.elapsed().as_secs_f64());
-        }
-    });
+    m.handshake_duration.record(duration.as_secs_f64());
     m.handshakes_total.increment(1);
 }
 
 /// Record a handshake failure.
 pub fn record_handshake_error() {
-    let m = &INTERLINK_METRICS;
-    HANDSHAKE_START.with(|start| {
-        start.take();
-    });
-    m.handshakes_total.increment(1);
+    INTERLINK_METRICS.handshakes_total.increment(1);
 }
 
-/// Record the start of a handshake.
-pub fn record_handshake_start() {
-    HANDSHAKE_START.with(|start| {
-        start.set(Some(Instant::now()));
-    });
+/// Record a connection rejected due to the saturation limit.
+pub fn record_saturation_rejection() {
+    INTERLINK_METRICS.connections_total.increment(1);
 }
 
 /// Record a policy decision.
