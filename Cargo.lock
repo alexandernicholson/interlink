@@ -1024,6 +1024,7 @@ dependencies = [
  "libc",
  "metrics",
  "metrics-exporter-prometheus",
+ "moka",
  "parking_lot",
  "proptest",
  "quickcheck",

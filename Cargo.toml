@@ -41,6 +41,7 @@ base64 = "0.22"
 futures-util = "0.3"
 tower = { version = "0.5", features = ["util"] }
 async-trait = "0.1"
+moka = { version = "0.12", features = ["sync"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio"] }

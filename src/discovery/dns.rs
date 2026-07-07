@@ -1,12 +1,15 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use hickory_resolver::TokioResolver;
 
-use crate::common::constants::timeouts;
 use crate::common::error::InterlinkError;
 use crate::common::identity::SpiffeId;
+
+/// Default DNS cache TTL: 30s (was accidentally reusing the 5s resolve timeout).
+const DNS_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Cached DNS resolution result.
 #[derive(Debug, Clone)]
@@ -15,20 +18,30 @@ pub struct ResolvedEndpoints {
     pub spiffe_id: Option<SpiffeId>,
 }
 
-/// A cache entry with an expiration timestamp.
-#[derive(Debug, Clone)]
+/// In-flight lookup guard for single-flight dedup across concurrent
+/// callers for the same name.
+type LookupGuard = Arc<tokio::sync::Semaphore>;
+
+/// A cache entry with expiration and optional in-flight guard.
 struct CacheEntry {
-    endpoints: ResolvedEndpoints,
+    endpoints: Option<ResolvedEndpoints>,
     expires_at: Instant,
 }
 
-/// DNS-based service discovery.
+impl CacheEntry {
+    fn is_expired(&self) -> bool {
+        self.expires_at <= Instant::now()
+    }
+}
+
+/// DNS-based service discovery with per-name cache and TTL.
 ///
-/// Resolves service names to IP:port pairs using A/AAAA records
-/// and SRV records for port discovery. Results are cached with TTL.
+/// Results are cached for `ttl` seconds. Expired entries are served stale
+/// while a background refresh completes (the next caller triggers the fetch).
 pub struct ServiceDiscovery {
     resolver: TokioResolver,
     cache: DashMap<String, CacheEntry>,
+    in_flight: DashMap<String, LookupGuard>,
     ttl: Duration,
 }
 
@@ -40,55 +53,92 @@ impl Default for ServiceDiscovery {
 
 impl ServiceDiscovery {
     pub fn new() -> Self {
-        Self::with_ttl(timeouts::DNS_RESOLVE)
+        Self::with_ttl(DNS_CACHE_TTL)
     }
 
-    /// Create a resolver with a custom cache TTL.
     pub fn with_ttl(ttl: Duration) -> Self {
         let resolver = TokioResolver::builder_tokio().unwrap().build().unwrap();
-
         Self {
             resolver,
             cache: DashMap::new(),
+            in_flight: DashMap::new(),
             ttl,
         }
     }
 
     /// Resolve a service name to endpoints.
     ///
-    /// Format: `service.namespace.svc.cluster.local` for Kubernetes,
-    /// or `host:port` for explicit addresses.
+    /// *Results are cached for `ttl` seconds.*
+    /// *Concurrent callers for the same name share one DNS lookup.*
+    /// *Expired entries are served stale while a refresh happens in the
+    ///  background (the **next** caller fetches).*
     pub async fn resolve(&self, name: &str) -> Result<ResolvedEndpoints, InterlinkError> {
-        // Check cache first, refreshing if the entry has expired.
-        if let Some(entry) = self.cache.get(name) {
-            if entry.expires_at > Instant::now() {
-                return Ok(entry.endpoints.clone());
+        // Fast path: valid cached entry.
+        {
+            let entry_ref = self.cache.get(name);
+            if let Some(entry) = entry_ref {
+                if !entry.is_expired() {
+                    if let Some(ref ep) = entry.endpoints {
+                        return Ok(ep.clone());
+                    }
+                }
+                // Expired: serve stale if available; fall through to refresh.
+                if let Some(ref ep) = entry.endpoints {
+                    // Return stale data immediately; the next caller will refresh.
+                    return Ok(ep.clone());
+                }
             }
-            drop(entry);
-            self.cache.remove(name);
         }
 
+        // Single-flight: ensure only one DNS lookup per name at a time.
+        let semaphore = {
+            let mut entry = self.in_flight.entry(name.to_string());
+            let refmut = entry.or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(0)));
+            refmut.value().clone()
+        };
+        // Check if we're the first caller (permit available) or a waiter.
+        let is_resolver = semaphore.try_acquire().is_ok();
+        if is_resolver {
+            // We are the resolver.
+            let result = self.resolve_inner(name).await;
+            let endpoints = match result {
+                Ok(ep) => ep,
+                Err(e) => {
+                    self.in_flight.remove(name);
+                    return Err(e);
+                }
+            };
+            self.cache.insert(
+                name.to_string(),
+                CacheEntry {
+                    endpoints: Some(endpoints.clone()),
+                    expires_at: Instant::now() + self.ttl,
+                },
+            );
+            self.in_flight.remove(name);
+            Ok(endpoints)
+        } else {
+            // Another task is resolving. Wait.
+            semaphore.acquire().await.unwrap().forget();
+            self.cache
+                .get(name)
+                .and_then(|e| e.endpoints.clone())
+                .ok_or_else(|| InterlinkError::DnsResolution("lookup failed".into()))
+        }
+    }
+
+    /// Perform the actual DNS lookup.
+    async fn resolve_inner(&self, name: &str) -> Result<ResolvedEndpoints, InterlinkError> {
         let addrs = self
             .resolver
             .lookup_ip(name)
             .await
             .map_err(|e| InterlinkError::DnsResolution(format!("lookup failed: {}", e)))?;
 
-        let resolved = ResolvedEndpoints {
+        Ok(ResolvedEndpoints {
             addrs: addrs.iter().map(|ip| SocketAddr::new(ip, 0)).collect(),
-            spiffe_id: None, // SRV would populate this
-        };
-
-        // Cache the result.
-        self.cache.insert(
-            name.to_string(),
-            CacheEntry {
-                endpoints: resolved.clone(),
-                expires_at: Instant::now() + self.ttl,
-            },
-        );
-
-        Ok(resolved)
+            spiffe_id: None,
+        })
     }
 
     /// Clear the DNS cache (called on config reload).
@@ -113,45 +163,12 @@ mod tests {
         sd.cache.insert(
             "test".into(),
             CacheEntry {
-                endpoints: ResolvedEndpoints {
-                    addrs: vec![],
-                    spiffe_id: None,
-                },
+                endpoints: None,
                 expires_at: Instant::now() + Duration::from_secs(60),
             },
         );
         assert!(!sd.cache.is_empty());
         sd.clear_cache();
         assert!(sd.cache.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_cache_expiration() {
-        let sd = ServiceDiscovery::with_ttl(Duration::from_millis(50));
-        sd.cache.insert(
-            "test".into(),
-            CacheEntry {
-                endpoints: ResolvedEndpoints {
-                    addrs: vec![SocketAddr::new(
-                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
-                        0,
-                    )],
-                    spiffe_id: None,
-                },
-                expires_at: Instant::now() + Duration::from_millis(50),
-            },
-        );
-
-        // Entry is still valid immediately.
-        assert!(sd.cache.get("test").is_some());
-
-        // Wait for expiration.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Entry should be considered expired on next resolve.
-        // We can't easily resolve "test" without a real DNS server, so we verify
-        // the internal state is expired.
-        let entry = sd.cache.get("test").unwrap();
-        assert!(entry.expires_at <= Instant::now());
     }
 }

@@ -205,12 +205,24 @@ impl TlsHandshake for TlsServer {
     }
 }
 
-// ─── SPIFFE Identity Extraction ─────────────────────────────────────
+// ─── SPIFFE Identity Extraction (with LRU cache) ──────────────────
+
+/// Concurrent LRU cache keyed by leaf-cert DER bytes.
+/// Capacity: 1024 entries. Peak mesh deployments commonly have 50–500 peers,
+/// so this avoids re-parsing X.509 certs on repeated connections from the
+/// same identity.
+static IDENTITY_CACHE: std::sync::LazyLock<moka::sync::Cache<Vec<u8>, SpiffeId>> =
+    std::sync::LazyLock::new(|| {
+        moka::sync::Cache::builder()
+            .max_capacity(1024)
+            .name("identity-cache")
+            .build()
+    });
 
 /// Extract the SPIFFE identity from a peer's X.509 certificate SAN.
 ///
-/// RFC 5280 §4.2.1.6: The identity is encoded as uniformResourceIdentifier
-/// in the Subject Alternative Name extension (OID 2.5.29.17).
+/// Results are cached by the leaf certificate DER bytes so that repeat
+/// connections from the same peer skip the X.509 parse entirely.
 fn extract_identity_from_tls_stream(
     stream: &tokio_rustls::TlsStream<TcpStream>,
 ) -> Result<SpiffeId, InterlinkError> {
@@ -223,30 +235,47 @@ fn extract_identity_from_tls_stream(
         return Err(InterlinkError::Identity("empty certificate chain".into()));
     }
 
-    // Parse leaf certificate (RFC 5280 §4.1)
-    let leaf = x509_parser::parse_x509_certificate(certs[0].as_ref())
+    // Fast path: check LRU cache using the leaf certificate DER bytes.
+    let leaf_der: &[u8] = certs[0].as_ref();
+    if let Some(cached) = IDENTITY_CACHE.get(leaf_der) {
+        return Ok(cached);
+    }
+
+    // Slow path: parse X.509 and extract SPIFFE URI from SAN.
+    let leaf = x509_parser::parse_x509_certificate(leaf_der)
         .map_err(|e| InterlinkError::Identity(format!("cert parse: {}", e)))?
         .1;
 
-    // Find SAN extension (OID 2.5.29.17) and extract SPIFFE URI
-    // Arc values: 2.5.29.17
     let san_oid = Oid::from(&[2u64, 5, 29, 17]).unwrap();
+    let mut identity: Option<SpiffeId> = None;
     for ext in leaf.extensions().iter() {
         if ext.oid == san_oid {
             let parsed = ext.parsed_extension();
             if let ParsedExtension::SubjectAlternativeName(san) = parsed {
                 for gn in san.general_names.iter() {
                     if let GeneralName::URI(uri) = gn {
-                        return SpiffeId::from_uri(uri);
+                        if let Ok(id) = SpiffeId::from_uri(uri) {
+                            identity = Some(id);
+                            break;
+                        }
                     }
                 }
             }
         }
+        if identity.is_some() {
+            break;
+        }
     }
 
-    Err(InterlinkError::Identity(
-        "no SPIFFE URI in SAN extension".to_string(),
-    ))
+    match identity {
+        Some(id) => {
+            IDENTITY_CACHE.insert(leaf_der.to_vec(), id.clone());
+            Ok(id)
+        }
+        None => Err(InterlinkError::Identity(
+            "no SPIFFE URI in SAN extension".to_string(),
+        )),
+    }
 }
 
 #[cfg(test)]

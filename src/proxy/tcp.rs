@@ -241,17 +241,40 @@ impl TcpProxy {
 
         debug!("handling connection from {} → {}", peer_addr, upstream);
 
+        // Overlap the upstream TCP connect with the mTLS handshake — both
+        // are independent and either may be the bottleneck.
         metrics::record_handshake_start();
-        let tls_stream = match self.tls_server.accept(stream).await {
+        let (tls_result, upstream_result) = tokio::join!(
+            self.tls_server.accept(stream),
+            TcpStream::connect(&upstream),
+        );
+
+        let tls_stream = match tls_result {
             Ok(s) => s,
             Err(e) => {
                 warn!("mTLS handshake failed from {}: {}", peer_addr, e);
                 metrics::record_handshake_error();
+                // Drop the upstream connection if it succeeded.
+                if let Ok(up) = upstream_result {
+                    let _ = up.into_std().map(|s| s.shutdown(std::net::Shutdown::Both));
+                }
                 metrics::record_connection(0, 0);
                 return;
             }
         };
         metrics::record_handshake(true);
+
+        let mut upstream_stream = match upstream_result {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("upstream connect failed to {}: {}", upstream, e);
+                metrics::record_connection(0, 0);
+                return;
+            }
+        };
+        if let Err(e) = configure_socket(&upstream_stream) {
+            warn!("failed to configure upstream socket {}: {}", upstream, e);
+        }
 
         let peer_id = &tls_stream.peer_identity;
         debug!("mTLS connection from {} identity={}", peer_addr, peer_id);
@@ -262,6 +285,9 @@ impl TcpProxy {
             Decision::Allow => {}
             Decision::Deny(reason) => {
                 warn!("policy denied {} → {}: {}", peer_id, self.local_id, reason);
+                let _ = upstream_stream
+                    .into_std()
+                    .map(|s| s.shutdown(std::net::Shutdown::Both));
                 metrics::record_connection(0, 0);
                 return;
             }
@@ -283,25 +309,13 @@ impl TcpProxy {
             }
         };
         let detected = ProtocolDetector::detect(&detect_buf[..detect_len]);
-        info!(
+        debug!(
             "detected protocol for {} → {}: {:?}",
             peer_id, upstream, detected
         );
 
-        let mut upstream_stream = match TcpStream::connect(&upstream).await {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("upstream connect failed to {}: {}", upstream, e);
-                metrics::record_connection(0, 0);
-                return;
-            }
-        };
-        if let Err(e) = configure_socket(&upstream_stream) {
-            warn!("failed to configure upstream socket {}: {}", upstream, e);
-        }
-
         let el = start.elapsed();
-        info!(
+        debug!(
             "connection: {} → {} handshake={:?} protocol={:?}",
             peer_id, upstream, el, detected
         );
