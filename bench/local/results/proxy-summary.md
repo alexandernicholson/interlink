@@ -5,15 +5,18 @@ Proxy: interlinkd (inbound mTLS → plain TCP)
 Load: Fortio HTTPS + mTLS
 Profiles: 60s each
 
-## interlink-q320-c160
+## proxy-interlink-q320-c160
 
-p50_ms=202.247 p90_ms=203.901 p99_ms=204.274 avg_ms=201.782 actual_qps=318.9 errors=0
+p50_ms=1.605 p90_ms=3.206 p99_ms=4.848 avg_ms=1.783 actual_qps=320.0 errors=0
+avg_cpu_percent=0.98 peak_cpu_percent=2.20 avg_memory_rss_kb=20976.9 peak_memory_rss_kb=22768.0
 
-## interlink-q3200-c1600
+## proxy-interlink-q3200-c1600
 
-p50_ms=209.938 p90_ms=217.803 p99_ms=219.572 avg_ms=206.247 actual_qps=3188.7 errors=0
+p50_ms=7.429 p90_ms=11.967 p99_ms=18.990 avg_ms=7.697 actual_qps=3199.4 errors=0
+avg_cpu_percent=2.25 peak_cpu_percent=3.10 avg_memory_rss_kb=62206.8 peak_memory_rss_kb=78184.0
 
-## interlink-q12800-c6400
+## proxy-interlink-q12800-c6400
 
-p50_ms=225.077 p90_ms=245.037 p99_ms=249.528 avg_ms=217.875 actual_qps=12748.1 errors=0
+p50_ms=22.523 p90_ms=34.681 p99_ms=71.292 avg_ms=23.647 actual_qps=12787.5 errors=0
+avg_cpu_percent=5.30 peak_cpu_percent=6.70 avg_memory_rss_kb=212340.7 peak_memory_rss_kb=243368.0
 
