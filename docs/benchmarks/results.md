@@ -55,3 +55,26 @@ Build: `cargo bench`
 | Test | Time |
 |------|------|
 | 100 rules, 10K evaluations | 8.2 µs per evaluation (avg) |
+
+<hr />
+
+## Service Mesh Comparison
+
+For a reproducible multi-mesh benchmark harness, see [`bench/`](../../bench/). The first set of interlink numbers below were produced locally with Fortio over HTTPS + mTLS (1 KB payload, 200 ms fixed delay). Full details are in [`bench/results/local.md`](../../bench/results/local.md).
+
+| Profile | RPS | Connections | p99 latency | peak CPU | peak memory |
+|---------|-----|-------------|-------------|----------|-------------|
+| light   | 320 | 160         | 202.9 ms    | 1.4 %    | 12.3 MB     |
+| medium  | 3,200 | 1,600     | 209.2 ms    | 2.2 %    | 47.7 MB     |
+| heavy   | 12,800 | 6,400    | 225.1 ms    | 6.6 %    | 156.6 MB    |
+
+Comparable published mesh figures:
+
+| Mesh | Proxy memory at moderate load | Proxy CPU at 1,000 RPS |
+|------|------------------------------|------------------------|
+| **interlink** (measured) | ~43 MB @ 3,200 RPS | <3 % @ 3,200 RPS |
+| Linkerd (Buoyant real-world) | 50–180 MB typical | 35–250 mCPU |
+| Istio sidecar (Istio docs) | ~60 MB | ~0.20 vCPU |
+| Istio ambient ztunnel | ~12 MB | ~0.06 vCPU |
+
+The Linkerd and Istio numbers are from upstream documentation, not yet from our harness. Head-to-head Kubernetes results will be added once the `bench/kubernetes/` workflow is executed in a cluster with Linkerd and Istio ambient installed.

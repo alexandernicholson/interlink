@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Aggregate Fortio JSON and metrics CSVs into a comparison table."""
+
+import csv
+import json
+import os
+from pathlib import Path
+
+BENCH_DIR = Path(__file__).resolve().parent.parent
+RESULTS_DIR = BENCH_DIR / "results"
+OUTPUT = RESULTS_DIR / "comparison.md"
+
+MESHES = ["interlink", "linkerd", "istio-ambient"]
+PROFILES = [
+    ("light", 320, 160),
+    ("medium", 3200, 1600),
+    ("heavy", 12800, 6400),
+]
+
+
+def parse_fortio(path: Path) -> dict:
+    with path.open() as f:
+        d = json.load(f)
+    hist = d.get("DurationHistogram", {})
+    percentiles = {p["Percentile"]: p["Value"] * 1000 for p in hist.get("Percentiles", [])}
+    return {
+        "p50": percentiles.get(50, 0),
+        "p90": percentiles.get(90, 0),
+        "p99": percentiles.get(99, 0),
+        "avg": hist.get("Avg", 0) * 1000,
+        "actual_qps": d.get("ActualQPS", 0),
+        "errors": sum(d.get("RetCodes", {}).values()) - d.get("RetCodes", {}).get("200", 0),
+    }
+
+
+def aggregate_csv(path: Path) -> dict:
+    cpu_vals = []
+    mem_vals = []
+    with path.open() as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                cpu_vals.append(float(row.get("cpu_millicores", row.get("cpu_percent", 0))))
+                mem_vals.append(float(row.get("memory_rss_kb", 0)))
+            except ValueError:
+                continue
+    if not cpu_vals:
+        return {"avg_cpu": 0, "peak_cpu": 0, "avg_mem": 0, "peak_mem": 0}
+    return {
+        "avg_cpu": sum(cpu_vals) / len(cpu_vals),
+        "peak_cpu": max(cpu_vals),
+        "avg_mem": sum(mem_vals) / len(mem_vals),
+        "peak_mem": max(mem_vals),
+    }
+
+
+def main() -> None:
+    rows = []
+    for mesh in MESHES:
+        mesh_dir = RESULTS_DIR / mesh
+        if not mesh_dir.exists():
+            continue
+        for profile, qps, conns in PROFILES:
+            label = f"{mesh}-q{qps}-c{conns}"
+            fortio_path = mesh_dir / f"fortio-{label}.json"
+            metrics_path = mesh_dir / f"metrics-{label}.csv"
+            if not fortio_path.exists():
+                continue
+            f = parse_fortio(fortio_path)
+            m = aggregate_csv(metrics_path) if metrics_path.exists() else {}
+            rows.append(
+                {
+                    "mesh": mesh,
+                    "profile": profile,
+                    "p50": f"{f['p50']:.2f}",
+                    "p90": f"{f['p90']:.2f}",
+                    "p99": f"{f['p99']:.2f}",
+                    "avg_cpu": f"{m.get('avg_cpu', 0):.1f}",
+                    "peak_cpu": f"{m.get('peak_cpu', 0):.1f}",
+                    "avg_mem": f"{m.get('avg_mem', 0):.1f}",
+                    "peak_mem": f"{m.get('peak_mem', 0):.1f}",
+                    "qps": f"{f['actual_qps']:.1f}",
+                    "errors": str(f["errors"]),
+                }
+            )
+
+    with OUTPUT.open("w") as f:
+        f.write("# Service Mesh Benchmark Comparison\n\n")
+        f.write("| Mesh | Profile | p50 ms | p90 ms | p99 ms | avg CPU | peak CPU | avg mem KB | peak mem KB | QPS | errors |\n")
+        f.write("|------|---------|--------|--------|--------|---------|----------|------------|-------------|-----|--------|\n")
+        for r in rows:
+            f.write(
+                f"| {r['mesh']} | {r['profile']} | {r['p50']} | {r['p90']} | {r['p99']} | "
+                f"{r['avg_cpu']} | {r['peak_cpu']} | {r['avg_mem']} | {r['peak_mem']} | {r['qps']} | {r['errors']} |\n"
+            )
+        f.write("\n")
+
+    print(f"Wrote comparison table to {OUTPUT}")
+
+
+if __name__ == "__main__":
+    main()

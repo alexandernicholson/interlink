@@ -1,0 +1,106 @@
+# interlinkd deployed as a node-level daemonset in transparent-proxy mode.
+# Each node runs one interlinkd that intercepts pod traffic via iptables.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: interlink
+  namespace: bench
+  labels:
+    app: interlink
+spec:
+  selector:
+    matchLabels:
+      app: interlink
+  template:
+    metadata:
+      labels:
+        app: interlink
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: interlink
+      initContainers:
+        - name: iptables-init
+          image: alpine:3.20
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+                - NET_RAW
+            runAsUser: 0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              apk add --no-cache iptables
+              # Redirect inbound traffic destined for the app to interlink inbound port.
+              iptables -t nat -N INTERLINK_INBOUND 2>/dev/null || true
+              iptables -t nat -F INTERLINK_INBOUND
+              iptables -t nat -A INTERLINK_INBOUND -p tcp -m tcp --dport 4143 -j RETURN
+              iptables -t nat -A INTERLINK_INBOUND -p tcp -m tcp --dport 4140 -j RETURN
+              iptables -t nat -A INTERLINK_INBOUND -p tcp -m tcp --dport 4192 -j RETURN
+              iptables -t nat -A INTERLINK_INBOUND -p tcp -j REDIRECT --to-ports 4143
+              iptables -t nat -A PREROUTING -p tcp -j INTERLINK_INBOUND
+              # Redirect outbound traffic to interlink outbound port.
+              iptables -t nat -N INTERLINK_OUTBOUND 2>/dev/null || true
+              iptables -t nat -F INTERLINK_OUTBOUND
+              iptables -t nat -A INTERLINK_OUTBOUND -p tcp -m tcp --dport 4143 -j RETURN
+              iptables -t nat -A INTERLINK_OUTBOUND -p tcp -m tcp --dport 4140 -j RETURN
+              iptables -t nat -A INTERLINK_OUTBOUND -p tcp -m tcp --dport 4192 -j RETURN
+              iptables -t nat -A INTERLINK_OUTBOUND -p tcp -j REDIRECT --to-ports 4140
+              iptables -t nat -A OUTPUT -p tcp -j INTERLINK_OUTBOUND
+          volumeMounts:
+            - name: xtables-lock
+              mountPath: /run/xtables.lock
+      containers:
+        - name: interlinkd
+          image: interlink-bench/interlinkd:latest
+          imagePullPolicy: IfNotPresent
+          args: ["--config", "/etc/interlink/interlink.json"]
+          env:
+            - name: INTERLINK_CONFIG_FILE
+              value: "/etc/interlink/interlink.json"
+            - name: INTERLINK_CA_BUNDLE_PATH
+              value: "/etc/interlink/certs/ca.der"
+            - name: INTERLINK_CERT_PATH
+              value: "/etc/interlink/certs/server.der"
+            - name: INTERLINK_KEY_PATH
+              value: "/etc/interlink/certs/server.key"
+          ports:
+            - containerPort: 4143
+              name: inbound
+              hostPort: 4143
+            - containerPort: 4140
+              name: outbound
+              hostPort: 4140
+            - containerPort: 4192
+              name: admin
+              hostPort: 4192
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+                - NET_RAW
+          volumeMounts:
+            - name: config
+              mountPath: /etc/interlink
+            - name: certs
+              mountPath: /etc/interlink/certs
+            - name: xtables-lock
+              mountPath: /run/xtables.lock
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "32Mi"
+      volumes:
+        - name: config
+          configMap:
+            name: interlink-config
+        - name: certs
+          secret:
+            secretName: interlink-certs
+        - name: xtables-lock
+          hostPath:
+            path: /run/xtables.lock
+            type: FileOrCreate

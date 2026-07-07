@@ -36,6 +36,46 @@ fn main() {
     fs::write(out.join("client.der"), &client_cert).expect("write client cert");
     fs::write(out.join("client.key"), &client_key).expect("write client key");
 
+    // Also emit PEM versions for tools like curl and fortio that expect PEM.
+    fn der_to_pem(label: &str, der: &[u8]) -> String {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        use std::fmt::Write;
+        let b64 = STANDARD.encode(der);
+        let mut pem = String::new();
+        writeln!(pem, "-----BEGIN {}-----", label).unwrap();
+        for chunk in b64.as_bytes().chunks(64) {
+            pem.push_str(std::str::from_utf8(chunk).unwrap());
+            pem.push('\n');
+        }
+        writeln!(pem, "-----END {}-----", label).unwrap();
+        pem
+    }
+    fs::write(
+        out.join("ca.pem"),
+        der_to_pem("CERTIFICATE", ca.root_cert_der()),
+    )
+    .expect("write CA PEM");
+    fs::write(
+        out.join("server.pem"),
+        der_to_pem("CERTIFICATE", &server_cert),
+    )
+    .expect("write server PEM");
+    fs::write(
+        out.join("server-key.pem"),
+        der_to_pem("PRIVATE KEY", &server_key),
+    )
+    .expect("write server key PEM");
+    fs::write(
+        out.join("client.pem"),
+        der_to_pem("CERTIFICATE", &client_cert),
+    )
+    .expect("write client PEM");
+    fs::write(
+        out.join("client-key.pem"),
+        der_to_pem("PRIVATE KEY", &client_key),
+    )
+    .expect("write client key PEM");
+
     println!("{}", out.display());
     println!("CA + certs written to: {:?}", out);
     println!("  ca.der       — root CA certificate");

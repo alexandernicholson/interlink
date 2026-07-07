@@ -1,0 +1,38 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fortio-load
+  namespace: bench
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: fortio
+          image: fortio/fortio:1.66.0
+          command:
+            - fortio
+            - load
+            - -json
+            - /tmp/results/fortio.json
+            - -qps
+            - "${QPS}"
+            - -c
+            - "${CONNECTIONS}"
+            - -t
+            - "${DURATION}s"
+            - -payload-size
+            - "${PAYLOAD_SIZE}"
+            - -labels
+            - "${LABEL}"
+            - http://echo-server:8080/echo
+          volumeMounts:
+            - name: results
+              mountPath: /tmp/results
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+      volumes:
+        - name: results
+          emptyDir: {}

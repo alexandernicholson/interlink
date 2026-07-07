@@ -1,0 +1,7 @@
+# Enable Linkerd automatic sidecar injection for the benchmark namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bench
+  annotations:
+    linkerd.io/inject: enabled

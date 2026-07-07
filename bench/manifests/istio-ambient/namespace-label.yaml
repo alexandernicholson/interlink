@@ -1,0 +1,7 @@
+# Enable Istio ambient mode for the benchmark namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bench
+  labels:
+    istio.io/dataplane-mode: ambient

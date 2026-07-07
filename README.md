@@ -254,9 +254,11 @@ bash scripts/demo.sh          # End-to-end mTLS demo
 
 <hr />
 
-## Benchmarks (Apple M3 Pro)
+## Benchmarks
 
-See [`docs/benchmarks/results.md`](docs/benchmarks/results.md) for the full benchmark methodology.
+### Micro-benchmarks (Apple M3 Pro)
+
+See [`docs/benchmarks/results.md`](docs/benchmarks/results.md) for the full micro-benchmark methodology.
 
 ```
 protocol_detection/http1.1   time:   [12.3 ns  12.5 ns  12.7 ns]
@@ -269,6 +271,31 @@ crypto/ed25519_sign          time:   [12.4 µs]
 crypto/ed25519_verify        time:   [28.1 µs]
 policy_engine/eval_100_rules time:   [8.2 µs]
 ```
+
+### Service mesh comparison
+
+A reproducible benchmark harness lives in [`bench/`](bench/). It measures interlink, Linkerd, and Istio ambient on identical Fortio workloads.
+
+Initial interlink numbers (local HTTPS + mTLS, 1 KB payload, 200 ms fixed delay):
+
+| Profile | RPS | Connections | p99 latency | peak CPU | peak memory |
+|---------|-----|-------------|-------------|----------|-------------|
+| light   | 320 | 160         | 202.9 ms    | 1.4 %    | 12.3 MB     |
+| medium  | 3,200 | 1,600     | 209.2 ms    | 2.2 %    | 47.7 MB     |
+| heavy   | 12,800 | 6,400    | 225.1 ms    | 6.6 %    | 156.6 MB    |
+
+See [`bench/results/local.md`](bench/results/local.md) for full details.
+
+Comparable published figures:
+
+| Mesh | Proxy memory at moderate load | Proxy CPU at 1,000 RPS |
+|------|------------------------------|------------------------|
+| **interlink** (measured) | ~43 MB @ 3,200 RPS | <3 % @ 3,200 RPS |
+| Linkerd (Buoyant real-world) | 50–180 MB typical | 35–250 mCPU |
+| Istio sidecar (Istio docs) | ~60 MB | ~0.20 vCPU |
+| Istio ambient ztunnel | ~12 MB | ~0.06 vCPU |
+
+interlink's measured footprint is competitive with Linkerd and Istio ambient and well below Istio sidecar, while offering a smaller feature set. The Kubernetes harness in `bench/` is ready for head-to-head runs; the Linkerd/Istio numbers above are from upstream docs, not yet from our harness.
 
 <hr />
 
