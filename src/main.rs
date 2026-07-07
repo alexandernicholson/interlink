@@ -103,7 +103,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tls_server,
         policy.clone(),
         // Skip service discovery when a static default_upstream is configured.
-        if config.default_upstream.is_some() { None } else { Some(discovery.clone()) },
+        if config.default_upstream.is_some() {
+            None
+        } else {
+            Some(discovery.clone())
+        },
     )
     .with_shutdown(inbound_shutdown);
     let inbound_handle = Arc::new(inbound_proxy).spawn();

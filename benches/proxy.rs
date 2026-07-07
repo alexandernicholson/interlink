@@ -1,11 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
-// Benchmarks for the core proxy hot path.
-//
-// These measure operations that happen on every connection:
-// 1. Protocol detection from raw bytes (first 32 bytes)
-// 2. SPIFFE ID parsing from URI string
-// 3. Buffer copy throughput (memcpy proxy-path)
+use interlink::common::identity::{CompiledPattern, SegmentGlob, SpiffeId};
+use interlink::policy::{patterns, PolicyEngine};
 
 fn bench_protocol_detection(c: &mut Criterion) {
     let http11 = b"GET /api/v1/users HTTP/1.1\r\nHost: example.com\r\n";
@@ -55,7 +51,7 @@ fn bench_spiffe_id_parse(c: &mut Criterion) {
 }
 
 fn bench_memory_copy(c: &mut Criterion) {
-    let data = vec![0xABu8; 16384]; // 16 KB buffer
+    let data = vec![0xABu8; 16384];
 
     let mut group = c.benchmark_group("memory_copy");
     group.throughput(criterion::Throughput::Bytes(16384));
@@ -72,9 +68,6 @@ fn bench_memory_copy(c: &mut Criterion) {
 }
 
 fn bench_policy_evaluation(c: &mut Criterion) {
-    use interlink::common::identity::SpiffeId;
-    use interlink::policy::{patterns, PolicyEngine};
-
     let engine = PolicyEngine::new();
     for i in 0..100u32 {
         let ns = format!("ns-{}", i);
@@ -97,6 +90,39 @@ fn bench_policy_evaluation(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_compiled_pattern(c: &mut Criterion) {
+    let id = SpiffeId::new("cluster.local", "default", "web-api");
+    let compiled = CompiledPattern::from_uri("spiffe://cluster.local/ns/default/sa/web*").unwrap();
+    let string_pattern = "spiffe://cluster.local/ns/default/sa/web*";
+
+    let mut group = c.benchmark_group("pattern_match");
+    group.throughput(criterion::Throughput::Elements(1));
+
+    group.bench_function("compiled", |b| {
+        b.iter(|| black_box(id.matches_compiled(black_box(&compiled))))
+    });
+
+    group.bench_function("string", |b| {
+        b.iter(|| black_box(id.matches_pattern(black_box(string_pattern))))
+    });
+
+    group.finish();
+}
+
+fn bench_segment_glob(c: &mut Criterion) {
+    let glob = SegmentGlob::new("web*api");
+    let value = "web-foo-api";
+
+    let mut group = c.benchmark_group("segment_glob");
+    group.throughput(criterion::Throughput::Elements(1));
+
+    group.bench_function("match", |b| {
+        b.iter(|| black_box(glob.matches(black_box(value))))
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     name = benches;
     config = Criterion::default()
@@ -104,6 +130,7 @@ criterion_group!(
         .nresamples(100_000)
         .warm_up_time(std::time::Duration::from_millis(500))
         .measurement_time(std::time::Duration::from_secs(3));
-    targets = bench_protocol_detection, bench_spiffe_id_parse, bench_memory_copy, bench_policy_evaluation
+    targets = bench_protocol_detection, bench_spiffe_id_parse, bench_memory_copy,
+              bench_policy_evaluation, bench_compiled_pattern, bench_segment_glob
 );
 criterion_main!(benches);

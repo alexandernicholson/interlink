@@ -5,6 +5,98 @@ use url::Url;
 
 use crate::common::error::InterlinkError;
 
+/// A pre-compiled glob pattern for a single SPIFFE path segment (namespace or
+/// service account). Eliminates `split('*')` per match evaluation.
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct SegmentGlob {
+    parts: Vec<String>,
+    ends_with_wildcard: bool,
+}
+
+impl SegmentGlob {
+    pub fn new(pattern: &str) -> Self {
+        let parts: Vec<String> = pattern.split('*').map(|s| s.to_string()).collect();
+        let ends_with_wildcard = pattern.ends_with('*');
+        Self {
+            parts,
+            ends_with_wildcard,
+        }
+    }
+
+    pub fn matches(&self, value: &str) -> bool {
+        if self.parts.is_empty() || (self.parts.len() == 1 && self.parts[0].is_empty()) {
+            return true; // bare `*`
+        }
+        let mut rest = value;
+        for (i, part) in self.parts.iter().enumerate() {
+            if part.is_empty() {
+                continue;
+            }
+            match rest.find(part.as_str()) {
+                Some(idx) => {
+                    if i == 0 && idx != 0 {
+                        return false;
+                    }
+                    rest = &rest[idx + part.len()..];
+                }
+                None => return false,
+            }
+        }
+        if !self.ends_with_wildcard && !rest.is_empty() {
+            return false;
+        }
+        true
+    }
+}
+
+/// A pre-compiled policy pattern that avoids `Url::parse` on every evaluation.
+///
+/// Parsed once at rule-insertion time.
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct CompiledPattern {
+    pub trust_domain: String,
+    pub namespace: SegmentGlob,
+    pub service_account: SegmentGlob,
+}
+
+impl CompiledPattern {
+    pub fn from_uri(uri: &str) -> Result<Self, InterlinkError> {
+        let parsed = Url::parse(uri)
+            .map_err(|e| InterlinkError::Identity(format!("invalid pattern URI: {}", e)))?;
+        if parsed.scheme() != "spiffe" {
+            return Err(InterlinkError::Identity(format!(
+                "expected spiffe:// scheme, got {}",
+                parsed.scheme()
+            )));
+        }
+        let trust_domain = parsed
+            .host_str()
+            .ok_or_else(|| InterlinkError::Identity("missing trust domain".into()))?
+            .to_string();
+        let segments: Vec<&str> = parsed.path().trim_start_matches('/').split('/').collect();
+        if segments.len() != 4 || segments[0] != "ns" || segments[2] != "sa" {
+            return Err(InterlinkError::Identity(format!(
+                "malformed SPIFFE path: expected /ns/<ns>/sa/<sa>, got {}",
+                parsed.path()
+            )));
+        }
+        Ok(Self {
+            trust_domain,
+            namespace: SegmentGlob::new(segments[1]),
+            service_account: SegmentGlob::new(segments[3]),
+        })
+    }
+
+    /// Match any SPIFFE ID (wildcard trust domain, namespace, and service account).
+    pub fn any() -> Self {
+        Self {
+            trust_domain: String::new(),
+            namespace: SegmentGlob::new("*"),
+            service_account: SegmentGlob::new("*"),
+        }
+    }
+}
+
 /// A SPIFFE identity as defined by the SPIFFE standard.
 ///
 /// Format: spiffe://<trust-domain>/ns/<namespace>/sa/<service-account>
@@ -99,75 +191,20 @@ impl SpiffeId {
     /// Check if this identity matches a policy pattern (supports wildcards).
     ///
     /// Patterns use the same SPIFFE URI layout but may contain `*` wildcards
-    /// in the namespace and/or service account segments. A `*` matches any
-    /// sequence of characters within a single path segment.
-    ///
-    /// Examples:
-    /// - `spiffe://trust/ns/*/sa/*` matches any namespace/service.
-    /// - `spiffe://trust/ns/default/sa/web*` matches `web`, `web-api`, etc.
+    /// in the namespace and/or service account segments.
     pub fn matches_pattern(&self, pattern: &str) -> bool {
-        let parsed = match Url::parse(pattern) {
-            Ok(u) => u,
-            Err(_) => return false,
-        };
-
-        if parsed.scheme() != "spiffe" {
-            return false;
-        }
-
-        let pat_trust_domain = match parsed.host_str() {
-            Some(h) => h,
-            None => return false,
-        };
-
-        let segments: Vec<&str> = parsed.path().trim_start_matches('/').split('/').collect();
-        if segments.len() != 4 || segments[0] != "ns" || segments[2] != "sa" {
-            return false;
-        }
-
-        self.trust_domain == pat_trust_domain
-            && segment_matches(&self.namespace, segments[1])
-            && segment_matches(&self.service_account, segments[3])
-    }
-}
-
-/// Match a segment against a pattern that may contain `*` wildcards.
-fn segment_matches(value: &str, pattern: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-
-    // Simple glob-style matching: split pattern on `*` and ensure each part
-    // appears in order within the value.
-    let parts: Vec<&str> = pattern.split('*').collect();
-    if parts.is_empty() {
-        return value.is_empty();
-    }
-
-    let mut rest = value;
-    for (i, part) in parts.iter().enumerate() {
-        if part.is_empty() {
-            continue;
-        }
-        match rest.find(part) {
-            Some(idx) => {
-                // The first part must start at the beginning of the value.
-                if i == 0 && idx != 0 {
-                    return false;
-                }
-                rest = &rest[idx + part.len()..];
-            }
-            None => return false,
+        match CompiledPattern::from_uri(pattern) {
+            Ok(cp) => self.matches_compiled(&cp),
+            Err(_) => false,
         }
     }
 
-    // If the pattern did not end with `*`, the last matched part must reach
-    // the end of the value.
-    if !pattern.ends_with('*') && !rest.is_empty() {
-        return false;
+    /// Match against a pre-compiled pattern (avoids `Url::parse` overhead).
+    pub fn matches_compiled(&self, pattern: &CompiledPattern) -> bool {
+        (pattern.trust_domain.is_empty() || self.trust_domain == pattern.trust_domain)
+            && pattern.namespace.matches(&self.namespace)
+            && pattern.service_account.matches(&self.service_account)
     }
-
-    true
 }
 
 impl fmt::Display for SpiffeId {

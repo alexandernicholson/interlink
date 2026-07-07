@@ -41,11 +41,12 @@ if [[ ! -x "${INTERLINK_BIN}" ]]; then
     CARGO_TARGET_DIR="${CARGO_TARGET}" cargo build --release --bin interlinkd 2>&1
 fi
 
-log "starting echo-server (plain HTTP, port ${ECHO_PORT})"
+PROFILE_DELAY="${PROFILE_DELAY:-200ms}"
+log "starting echo-server (plain HTTP, port ${ECHO_PORT}, delay ${PROFILE_DELAY})"
 docker rm -f echo-server 2>/dev/null || true
 docker run -d --rm --network host --name echo-server \
     interlink-bench/echo-server:latest \
-    -addr ":${ECHO_PORT}" -delay 200ms >/dev/null
+    -addr ":${ECHO_PORT}" -delay "${PROFILE_DELAY}" >/dev/null
 sleep 1
 
 log "starting interlinkd proxy on port ${INBOUND_PORT}"

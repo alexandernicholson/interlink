@@ -179,7 +179,9 @@ impl TcpProxy {
             return;
         }
 
-        let permit = self.connection_semaphore.clone().acquire_owned().await;
+        // Use try_acquire_owned to avoid head-of-line blocking — the accept
+        // loop never stalls when the connection limit is reached.
+        let permit = self.connection_semaphore.clone().try_acquire_owned();
         match permit {
             Ok(p) => {
                 self.active_connections.fetch_add(1, Ordering::Release);
@@ -239,6 +241,7 @@ impl TcpProxy {
 
         debug!("handling connection from {} → {}", peer_addr, upstream);
 
+        metrics::record_handshake_start();
         let tls_stream = match self.tls_server.accept(stream).await {
             Ok(s) => s,
             Err(e) => {
@@ -251,7 +254,7 @@ impl TcpProxy {
         metrics::record_handshake(true);
 
         let peer_id = &tls_stream.peer_identity;
-        info!("mTLS connection from {} identity={}", peer_addr, peer_id);
+        debug!("mTLS connection from {} identity={}", peer_addr, peer_id);
 
         let decision = self.policy.evaluate(peer_id, &self.local_id);
         metrics::record_policy(&decision);

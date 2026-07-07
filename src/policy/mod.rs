@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 
-use crate::common::identity::SpiffeId;
+use crate::common::identity::{CompiledPattern, SpiffeId};
 
 /// Authorization decision after checking all applicable policies.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,18 +13,13 @@ pub enum Decision {
 }
 
 /// A policy rule that matches a source identity against a target identity.
-///
-/// Format uses SPIFFE IDs with wildcard support:
-/// - `spiffe://trust/ns/*/sa/*` matches any service in any namespace
-/// - `spiffe://trust/ns/default/*` matches any service in default namespace
 #[derive(Debug, Clone)]
 pub struct PolicyRule {
-    /// SPIFFE ID pattern for the source (caller).
-    /// Supports wildcards: `*` matches any segment.
-    pub source_pattern: String,
+    /// Pre-compiled SPIFFE ID pattern for the source (caller).
+    pub source: CompiledPattern,
 
-    /// SPIFFE ID pattern for the destination (callee).
-    pub destination_pattern: String,
+    /// Pre-compiled SPIFFE ID pattern for the destination (callee).
+    pub destination: CompiledPattern,
 
     /// Whether to allow or deny matching traffic.
     pub decision: Decision,
@@ -77,8 +72,8 @@ impl PolicyEngine {
         // 1. Check namespace policies for destination namespace
         if let Some(rules) = self.namespace_policies.get(&destination.namespace) {
             for rule in rules.iter() {
-                if source.matches_pattern(&rule.source_pattern)
-                    && destination.matches_pattern(&rule.destination_pattern)
+                if source.matches_compiled(&rule.source)
+                    && destination.matches_compiled(&rule.destination)
                 {
                     return rule.decision.clone();
                 }
@@ -87,8 +82,8 @@ impl PolicyEngine {
 
         // 2. Check global policies
         for rule in self.global_policies.load().iter() {
-            if source.matches_pattern(&rule.source_pattern)
-                && destination.matches_pattern(&rule.destination_pattern)
+            if source.matches_compiled(&rule.source)
+                && destination.matches_compiled(&rule.destination)
             {
                 return rule.decision.clone();
             }
@@ -123,9 +118,10 @@ pub mod patterns {
 
     /// Allow all traffic within the same namespace.
     pub fn allow_same_namespace(trust_domain: &str, namespace: &str) -> PolicyRule {
+        let ns_pat = format!("spiffe://{}/ns/{}/sa/*", trust_domain, namespace);
         PolicyRule {
-            source_pattern: format!("spiffe://{}/ns/{}/sa/*", trust_domain, namespace),
-            destination_pattern: format!("spiffe://{}/ns/{}/sa/*", trust_domain, namespace),
+            source: CompiledPattern::from_uri(&ns_pat).unwrap(),
+            destination: CompiledPattern::from_uri(&ns_pat).unwrap(),
             decision: Decision::Allow,
             description: format!("Allow all traffic within namespace {}", namespace),
         }
@@ -134,8 +130,8 @@ pub mod patterns {
     /// Allow a specific source to talk to a specific destination.
     pub fn allow(from: &str, to: &str, description: &str) -> PolicyRule {
         PolicyRule {
-            source_pattern: from.to_string(),
-            destination_pattern: to.to_string(),
+            source: CompiledPattern::from_uri(from).unwrap(),
+            destination: CompiledPattern::from_uri(to).unwrap(),
             decision: Decision::Allow,
             description: description.to_string(),
         }
@@ -144,8 +140,8 @@ pub mod patterns {
     /// Deny all traffic from a specific source.
     pub fn deny(source: &str, description: &str) -> PolicyRule {
         PolicyRule {
-            source_pattern: source.to_string(),
-            destination_pattern: "spiffe://*/ns/*/sa/*".to_string(),
+            source: CompiledPattern::from_uri(source).unwrap(),
+            destination: CompiledPattern::any(),
             decision: Decision::Deny("blocklisted source"),
             description: description.to_string(),
         }
@@ -223,8 +219,9 @@ mod tests {
             patterns::allow_same_namespace("trust.local", "default"),
         );
         engine.set_global_policies(vec![PolicyRule {
-            source_pattern: "spiffe://trust.local/ns/default/sa/blocked".into(),
-            destination_pattern: "spiffe://trust.local/ns/*/sa/*".into(),
+            source: CompiledPattern::from_uri("spiffe://trust.local/ns/default/sa/blocked")
+                .unwrap(),
+            destination: CompiledPattern::from_uri("spiffe://trust.local/ns/*/sa/*").unwrap(),
             decision: Decision::Deny("blocked from all services"),
             description: String::new(),
         }]);
@@ -244,8 +241,9 @@ mod tests {
         engine.add_namespace_rule(
             "default",
             PolicyRule {
-                source_pattern: "spiffe://trust.local/ns/*/sa/*".into(),
-                destination_pattern: "spiffe://trust.local/ns/default/sa/api".into(),
+                source: CompiledPattern::from_uri("spiffe://trust.local/ns/*/sa/*").unwrap(),
+                destination: CompiledPattern::from_uri("spiffe://trust.local/ns/default/sa/api")
+                    .unwrap(),
                 decision: Decision::Allow,
                 description: "any namespace can call api".into(),
             },
@@ -271,8 +269,10 @@ mod tests {
         engine.add_namespace_rule(
             "default",
             PolicyRule {
-                source_pattern: "spiffe://trust.local/ns/default/sa/evil".into(),
-                destination_pattern: "spiffe://trust.local/ns/default/sa/*".into(),
+                source: CompiledPattern::from_uri("spiffe://trust.local/ns/default/sa/evil")
+                    .unwrap(),
+                destination: CompiledPattern::from_uri("spiffe://trust.local/ns/default/sa/*")
+                    .unwrap(),
                 decision: Decision::Deny("blocked source"),
                 description: "deny evil".into(),
             },
