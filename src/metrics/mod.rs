@@ -18,6 +18,7 @@ pub struct InterlinkMetrics {
     pub handshake_duration: Histogram,
     pub policy_allowed_total: Counter,
     pub policy_denied_total: Counter,
+    pub saturation_rejections_total: Counter,
 }
 
 impl Default for InterlinkMetrics {
@@ -37,6 +38,7 @@ impl InterlinkMetrics {
             handshake_duration: histogram!("interlink_handshake_duration_seconds"),
             policy_allowed_total: counter!("interlink_policy_allowed_total"),
             policy_denied_total: counter!("interlink_policy_denied_total"),
+            saturation_rejections_total: counter!("interlink_saturation_rejections_total"),
         }
     }
 }
@@ -49,12 +51,19 @@ pub fn init_metrics_exporter() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Record a connection completion with explicit duration.
+/// Record a completed connection with histogram observation.
 pub fn record_connection(bytes_up: u64, bytes_down: u64, duration: std::time::Duration) {
     let m = &INTERLINK_METRICS;
     m.connection_duration.record(duration.as_secs_f64());
     m.connections_total.increment(1);
     m.bytes_total.increment(bytes_up + bytes_down);
+    m.connections_active.decrement(1);
+}
+
+/// Record a failed connection (no histogram — C2: no sentinel values).
+pub fn record_connection_failed() {
+    let m = &INTERLINK_METRICS;
+    m.connections_total.increment(1);
     m.connections_active.decrement(1);
 }
 
@@ -77,7 +86,7 @@ pub fn record_handshake_error() {
 
 /// Record a connection rejected due to the saturation limit.
 pub fn record_saturation_rejection() {
-    INTERLINK_METRICS.connections_total.increment(1);
+    INTERLINK_METRICS.saturation_rejections_total.increment(1);
 }
 
 /// Record a policy decision.

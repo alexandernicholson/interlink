@@ -16,7 +16,6 @@ use crate::proxy::config::ProxyConfig;
 use crate::proxy::configure_socket;
 use crate::proxy::get_original_dst;
 use crate::proxy::handshake::TlsHandshake;
-use crate::proxy::pool::ConnectionPool;
 
 /// The outbound TCP proxy that wraps local plaintext connections in mTLS.
 ///
@@ -28,7 +27,6 @@ use crate::proxy::pool::ConnectionPool;
 ///   5. Policy evaluation (default-deny)
 ///   6. Bidirectional data copy
 pub struct OutboundProxy {
-    config: ProxyConfig,
     connection_semaphore: Arc<Semaphore>,
     listen_port: u16,
     tls_client: Arc<dyn TlsHandshake>,
@@ -37,7 +35,6 @@ pub struct OutboundProxy {
     shutdown: Option<watch::Receiver<bool>>,
     active_connections: Arc<AtomicUsize>,
     local_id: SpiffeId,
-    connection_pool: Arc<ConnectionPool>,
 }
 
 impl OutboundProxy {
@@ -74,7 +71,6 @@ impl OutboundProxy {
             .and_then(|s| SpiffeId::from_uri(s).ok())
             .unwrap_or_else(|| SpiffeId::new(&config.trust_domain, "default", "proxy"));
         Self {
-            config,
             connection_semaphore: Arc::new(Semaphore::new(max_conn)),
             listen_port: port,
             tls_client,
@@ -83,7 +79,6 @@ impl OutboundProxy {
             shutdown: None,
             active_connections: Arc::new(AtomicUsize::new(0)),
             local_id,
-            connection_pool: ConnectionPool::new(),
         }
     }
 
@@ -102,29 +97,25 @@ impl OutboundProxy {
     /// Resolve a hostname upstream to an IP:port via DNS.
     ///
     /// If the upstream is already a socket address, it is returned unchanged.
-    async fn resolve_upstream(&self, upstream: &str) -> Result<String, InterlinkError> {
-        if upstream.parse::<std::net::SocketAddr>().is_ok() {
-            return Ok(upstream.to_string());
+    async fn resolve_upstream(&self, upstream: &str) -> Result<std::net::SocketAddr, InterlinkError> {
+        if let Ok(sa) = upstream.parse::<std::net::SocketAddr>() {
+            return Ok(sa);
         }
-
         let Some(discovery) = self.discovery.as_ref() else {
-            return Ok(upstream.to_string());
-        };
-
-        let resolved = discovery.resolve(upstream).await?;
-        let Some(first) = resolved.addrs.into_iter().next() else {
             return Err(InterlinkError::DnsResolution(format!(
-                "no endpoints for {}",
+                "cannot resolve hostname '{}' without discovery",
                 upstream
             )));
         };
-
+        let resolved = discovery.resolve(upstream).await?;
+        let first = resolved.addrs.into_iter().next().ok_or_else(|| {
+            InterlinkError::DnsResolution(format!("no endpoints for {}", upstream))
+        })?;
         let port = upstream
             .rsplit_once(':')
             .and_then(|(_, p)| p.parse::<u16>().ok())
             .unwrap_or(first.port());
-
-        Ok(format!("{}:{}", first.ip(), port))
+        Ok(std::net::SocketAddr::new(first.ip(), port))
     }
 
     pub fn spawn(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
@@ -251,7 +242,7 @@ impl OutboundProxy {
             Ok(addr) => addr,
             Err(e) => {
                 warn!("failed to resolve outbound upstream {}: {}", upstream, e);
-                metrics::record_connection(0, 0, std::time::Duration::ZERO);
+                metrics::record_connection_failed();
                 return;
             }
         };
@@ -262,7 +253,8 @@ impl OutboundProxy {
         );
 
         let handshake_start = Instant::now();
-        let mut tls_stream = match self.tls_client.connect(&upstream).await {
+        let upstream_str = upstream.to_string();
+        let mut tls_stream = match self.tls_client.connect(&upstream_str).await {
             Ok(s) => {
                 metrics::record_handshake(handshake_start.elapsed());
                 s
@@ -270,7 +262,7 @@ impl OutboundProxy {
             Err(e) => {
                 warn!("outbound mTLS handshake failed to {}: {}", upstream, e);
                 metrics::record_handshake_error();
-                metrics::record_connection(0, 0, std::time::Duration::ZERO);
+                metrics::record_connection_failed();
                 return;
             }
         };
@@ -290,7 +282,7 @@ impl OutboundProxy {
                     "policy denied {} → {}: {}",
                     self.local_id, upstream_id, reason
                 );
-                metrics::record_connection(0, 0, std::time::Duration::ZERO);
+                metrics::record_connection_failed();
                 return;
             }
         }

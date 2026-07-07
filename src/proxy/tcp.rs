@@ -91,25 +91,25 @@ impl TcpProxy {
         self
     }
 
-    async fn resolve_upstream(&self, upstream: &str) -> Result<String, InterlinkError> {
-        if upstream.parse::<std::net::SocketAddr>().is_ok() {
-            return Ok(upstream.to_string());
+    async fn resolve_upstream(&self, upstream: &str) -> Result<std::net::SocketAddr, InterlinkError> {
+        if let Ok(sa) = upstream.parse::<std::net::SocketAddr>() {
+            return Ok(sa);
         }
         let Some(discovery) = self.discovery.as_ref() else {
-            return Ok(upstream.to_string());
-        };
-        let resolved = discovery.resolve(upstream).await?;
-        let Some(first) = resolved.addrs.into_iter().next() else {
             return Err(InterlinkError::DnsResolution(format!(
-                "no endpoints for {}",
+                "cannot resolve hostname '{}' without discovery",
                 upstream
             )));
         };
+        let resolved = discovery.resolve(upstream).await?;
+        let first = resolved.addrs.into_iter().next().ok_or_else(|| {
+            InterlinkError::DnsResolution(format!("no endpoints for {}", upstream))
+        })?;
         let port = upstream
             .rsplit_once(':')
             .and_then(|(_, p)| p.parse::<u16>().ok())
             .unwrap_or(first.port());
-        Ok(format!("{}:{}", first.ip(), port))
+        Ok(std::net::SocketAddr::new(first.ip(), port))
     }
 
     pub fn spawn(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
@@ -196,6 +196,7 @@ impl TcpProxy {
             }
             Err(_) => {
                 warn!("connection limit reached, rejecting {}", peer_addr);
+                metrics::record_saturation_rejection();
                 let _ = stream.into_std().map(|s| {
                     let _ = s.shutdown(std::net::Shutdown::Both);
                 });
@@ -236,7 +237,7 @@ impl TcpProxy {
             Ok(addr) => addr,
             Err(e) => {
                 warn!("failed to resolve upstream {}: {}", upstream, e);
-                metrics::record_connection(0, 0, std::time::Duration::ZERO);
+                metrics::record_connection_failed();
                 return;
             }
         };
@@ -258,7 +259,7 @@ impl TcpProxy {
                 if let Ok(up) = upstream_result {
                     let _ = up.into_std().map(|s| s.shutdown(std::net::Shutdown::Both));
                 }
-                metrics::record_connection(0, 0, std::time::Duration::ZERO);
+                metrics::record_connection_failed();
                 return;
             }
         };
@@ -268,7 +269,7 @@ impl TcpProxy {
             Ok(s) => s,
             Err(e) => {
                 warn!("upstream connect failed to {}: {}", upstream, e);
-                metrics::record_connection(0, 0, std::time::Duration::ZERO);
+                metrics::record_connection_failed();
                 return;
             }
         };
@@ -288,7 +289,7 @@ impl TcpProxy {
                 let _ = upstream_stream
                     .into_std()
                     .map(|s| s.shutdown(std::net::Shutdown::Both));
-                metrics::record_connection(0, 0, std::time::Duration::ZERO);
+                metrics::record_connection_failed();
                 return;
             }
         }
@@ -298,13 +299,13 @@ impl TcpProxy {
         let detect_len = match tls_reader.read(&mut detect_buf).await {
             Ok(0) => {
                 debug!("client {} closed before sending data", peer_id);
-                metrics::record_connection(0, 0, std::time::Duration::ZERO);
+                metrics::record_connection_failed();
                 return;
             }
             Ok(n) => n,
             Err(e) => {
                 warn!("protocol detection read failed for {}: {}", peer_id, e);
-                metrics::record_connection(0, 0, std::time::Duration::ZERO);
+                metrics::record_connection_failed();
                 return;
             }
         };
@@ -325,7 +326,7 @@ impl TcpProxy {
                 "failed to write detected bytes to upstream {}: {}",
                 upstream, e
             );
-            metrics::record_connection(0, 0, std::time::Duration::ZERO);
+            metrics::record_connection_failed();
             return;
         }
 

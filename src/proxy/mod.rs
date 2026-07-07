@@ -2,7 +2,6 @@ pub mod config;
 pub mod handshake;
 pub(crate) mod original_dst;
 pub mod outbound;
-pub(crate) mod pool;
 pub mod tcp;
 
 pub use handshake::{TlsClient, TlsHandshake, TlsServer};
