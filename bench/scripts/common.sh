@@ -12,6 +12,7 @@ export PATH="${BIN_DIR}:${PATH}"
 KIND_VERSION="v0.24.0"
 KUBECTL_VERSION="v1.30.0"
 LINKERD_VERSION="stable-2.14.10"
+LINKERD_CLI_VERSION="stable-2.14.10"
 ISTIO_VERSION="1.24.0"
 FORTIO_VERSION="1.66.0"
 
@@ -47,15 +48,34 @@ sample_metrics() {
     end=$(($(date +%s) + duration))
     while [[ $(date +%s) -lt ${end} ]]; do
         local metrics
-        metrics=$(kubectl top pod -n "${namespace}" "${pod}" --no-headers --containers 2>/dev/null || true)
+        metrics=$(kubectl top pod -n "${namespace}" "${pod}" --no-headers 2>/dev/null || true)
         if [[ -n "${metrics}" ]]; then
-            # Output format: container  cpu(cores)  memory(bytes)
             local ts
             ts=$(date +%s)
-            echo "${metrics}" | awk -v ts="${ts}" '{print ts "," $2 * 1000 "," $3}' >> "${output}"
+            echo "${metrics}" | awk -v ts="${ts}" '{
+                cpu = $2
+                mem = $3
+                gsub(/[^0-9.]/, "", cpu)
+                if (mem ~ /Ki$/) { gsub(/Ki$/, "", mem) }
+                else if (mem ~ /Mi$/) { gsub(/Mi$/, "", mem); mem = mem * 1024 }
+                else if (mem ~ /Gi$/) { gsub(/Gi$/, "", mem); mem = mem * 1048576 }
+                print ts "," cpu "," int(mem)
+            }' >> "${output}"
         fi
         sleep 2
     done
+}
+
+collect_fortio_logs() {
+    local namespace="$1"
+    local label="$2"
+    local output="$3"
+    local pod
+    pod=$(kubectl get pods -n "${namespace}" -l "${label}" -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || true)
+    if [[ -n "${pod}" ]]; then
+        # Strip the human-readable report; Fortio JSON starts with a line containing '{'.
+        kubectl logs -n "${namespace}" "${pod}" --tail=-1 2>/dev/null | sed -n '/^{/,$p' > "${output}" || true
+    fi
 }
 
 aggregate_metrics() {

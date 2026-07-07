@@ -5,6 +5,9 @@ metadata:
   namespace: bench
 spec:
   template:
+    metadata:
+      annotations:
+        linkerd.io/inject: disabled
     spec:
       restartPolicy: Never
       containers:
@@ -14,11 +17,14 @@ spec:
             - fortio
             - load
             - -json
-            - /tmp/results/fortio.json
+            - /dev/stdout
+            - -quiet
             - -qps
             - "${QPS}"
             - -c
             - "${CONNECTIONS}"
+            - -timeout
+            - "${FORTIO_TIMEOUT}s"
             - -t
             - "${DURATION}s"
             - -payload-size
@@ -26,13 +32,7 @@ spec:
             - -labels
             - "${LABEL}"
             - http://echo-server:8080/echo
-          volumeMounts:
-            - name: results
-              mountPath: /tmp/results
           resources:
             requests:
               cpu: "500m"
               memory: "256Mi"
-      volumes:
-        - name: results
-          emptyDir: {}

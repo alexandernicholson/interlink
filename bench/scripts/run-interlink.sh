@@ -26,17 +26,25 @@ log "loading images into kind"
 kind load docker-image --name "${CLUSTER_NAME}" interlink-bench/echo-server:latest
 kind load docker-image --name "${CLUSTER_NAME}" interlink-bench/interlinkd:latest
 
-log "generating interlink test certificates"
+log "generating interlink test certificates (DER format for interlinkd)"
 CA_DIR="${RESULTS}/certs"
 mkdir -p "${CA_DIR}"
-# Use rcgen or openssl to generate a small CA + leaf cert.
-# For reproducibility we generate with fixed filenames expected by interlinkd.
-openssl req -x509 -newkey ed25519 -keyout "${CA_DIR}/ca.key" -out "${CA_DIR}/ca.der" -days 1 -nodes -subj "/CN=interlink-bench-ca" 2>/dev/null || {
-    log "openssl not available; please provide certs at ${CA_DIR}"
-    exit 1
-}
-openssl req -newkey ed25519 -keyout "${CA_DIR}/server.key" -out "${CA_DIR}/server.csr" -nodes -subj "/" 2>/dev/null
-openssl x509 -req -in "${CA_DIR}/server.csr" -CA "${CA_DIR}/ca.der" -CAkey "${CA_DIR}/ca.key" -CAcreateserial -out "${CA_DIR}/server.der" -days 1 2>/dev/null
+# interlinkd expects DER/PKCS#8 format, not PEM.
+# Generate CA key (PKCS#8 DER) and self-signed cert (DER).
+openssl genpkey -algorithm ed25519 -outform DER -out "${CA_DIR}/ca.key" 2>/dev/null
+openssl req -x509 -key "${CA_DIR}/ca.key" -keyform DER -out "${CA_DIR}/ca.der" -outform DER -days 1 -nodes -subj "/CN=interlink-bench-ca" 2>/dev/null
+# Generate server key (PKCS#8 DER), CSR, and signed cert (DER).
+openssl genpkey -algorithm ed25519 -outform DER -out "${CA_DIR}/server.key" 2>/dev/null
+openssl req -new -key "${CA_DIR}/server.key" -keyform DER -out "${CA_DIR}/server.csr" -subj "/" 2>/dev/null
+openssl x509 -req -in "${CA_DIR}/server.csr" -CA "${CA_DIR}/ca.der" -CAform DER -CAkey "${CA_DIR}/ca.key" -CAkeyform DER -CAcreateserial -out "${CA_DIR}/server.der" -outform DER -days 1 2>/dev/null
+
+# Verify DER files.
+for f in ca.key ca.der server.key server.der; do
+    if [[ ! -s "${CA_DIR}/${f}" ]]; then
+        log "ERROR: failed to generate ${CA_DIR}/${f}"
+        exit 1
+    fi
+done
 
 kubectl create namespace bench || true
 kubectl create secret generic interlink-certs -n bench \
@@ -57,10 +65,8 @@ wait_for_pod bench "app=interlink"
 log "installing metrics-server"
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 kubectl patch deployment metrics-server -n kube-system --type='json' -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
-
-# Wait for metrics-server to be ready.
-sleep 30
-kubectl wait --for=condition=ready pod -n kube-system -l k8s-app=metrics-server --timeout=120s
+# Wait for the deployment to be available; tolerate timeout since metrics-server is non-critical for Fortio.
+kubectl wait --for=condition=available deployment/metrics-server -n kube-system --timeout=120s 2>/dev/null || true
 
 run_profile() {
     local qps="$1"
@@ -74,13 +80,11 @@ run_profile() {
 
     kubectl delete job fortio-load -n bench --ignore-not-found=true
     envsubst < "${BENCH_DIR}/load/fortio-job.yaml" | kubectl apply -f -
-    kubectl wait --for=condition=complete job/fortio-load -n bench --timeout=400s
+    kubectl wait --for=condition=complete job/fortio-load -n bench --timeout=400s 2>/dev/null || true
 
     kill "${sampler_pid}" 2>/dev/null || true
 
-    local pod
-    pod=$(kubectl get pod -n bench -l job-name=fortio-load -o jsonpath='{.items[0].metadata.name}')
-    kubectl cp "${pod}:/tmp/results/fortio.json" "${RESULTS}/fortio-${label}.json" -n bench
+    collect_fortio_logs bench "job-name=fortio-load" "${RESULTS}/fortio-${label}.json"
     kubectl delete job fortio-load -n bench --ignore-not-found=true
 
     {
@@ -90,7 +94,7 @@ run_profile() {
     } >> "${RESULTS}/summary.txt"
 }
 
-export QPS CONNECTIONS DURATION PAYLOAD_SIZE LABEL
+export QPS CONNECTIONS DURATION PAYLOAD_SIZE LABEL FORTIO_TIMEOUT
 for QPS in 320 3200 12800; do
     case "${QPS}" in
         320) CONNECTIONS=160 ;;
@@ -99,6 +103,7 @@ for QPS in 320 3200 12800; do
     esac
     DURATION=300
     PAYLOAD_SIZE=1024
+    FORTIO_TIMEOUT=120
     LABEL="interlink-q${QPS}-c${CONNECTIONS}"
     run_profile "${QPS}" "${CONNECTIONS}"
 done

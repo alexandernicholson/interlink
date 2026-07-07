@@ -1,0 +1,9 @@
+profile=linkerd-q320-c160
+p50_ms=207.171 p90_ms=212.366 p99_ms=213.535 avg_ms=207.080 actual_qps=319.8 errors=0
+avg_cpu_millicores=38.3 peak_cpu_millicores=42.0 avg_memory_rss_kb=35548.4 peak_memory_rss_kb=38912.0
+profile=linkerd-q3200-c1600
+p50_ms=259.384 p90_ms=291.892 p99_ms=299.207 avg_ms=256.791 actual_qps=3196.7 errors=0
+avg_cpu_millicores=352.0 peak_cpu_millicores=391.0 avg_memory_rss_kb=237173.6 peak_memory_rss_kb=259072.0
+profile=linkerd-q12800-c6400
+p50_ms=550.661 p90_ms=652.039 p99_ms=695.482 avg_ms=538.730 actual_qps=11868.6 errors=0
+avg_cpu_millicores=1373.5 peak_cpu_millicores=1562.0 avg_memory_rss_kb=887452.7 peak_memory_rss_kb=958464.0

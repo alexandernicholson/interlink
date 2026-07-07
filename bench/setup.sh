@@ -34,7 +34,7 @@ fi
 # linkerd
 if [[ ! -x "${BIN_DIR}/linkerd" ]]; then
     log "downloading linkerd ${LINKERD_VERSION}"
-    curl -sL "https://github.com/linkerd/linkerd2/releases/download/${LINKERD_VERSION}/linkerd2-cli-${LINKERD_VERSION}-${OS}" -o "${BIN_DIR}/linkerd"
+    curl -sL "https://github.com/linkerd/linkerd2/releases/download/${LINKERD_VERSION}/linkerd2-cli-${LINKERD_VERSION}-${OS}-${ARCH}" -o "${BIN_DIR}/linkerd"
     chmod +x "${BIN_DIR}/linkerd"
 fi
 

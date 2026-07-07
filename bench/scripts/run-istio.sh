@@ -27,8 +27,8 @@ wait_for_pod bench "app=echo-server"
 log "installing metrics-server"
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 kubectl patch deployment metrics-server -n kube-system --type='json' -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
-sleep 30
-kubectl wait --for=condition=ready pod -n kube-system -l k8s-app=metrics-server --timeout=120s
+# Wait for the deployment to be available; tolerate timeout since metrics-server is non-critical for Fortio.
+kubectl wait --for=condition=available deployment/metrics-server -n kube-system --timeout=120s 2>/dev/null || true
 
 run_profile() {
     local qps="$1"
@@ -43,13 +43,11 @@ run_profile() {
 
     kubectl delete job fortio-load -n bench --ignore-not-found=true
     envsubst < "${BENCH_DIR}/load/fortio-job.yaml" | kubectl apply -f -
-    kubectl wait --for=condition=complete job/fortio-load -n bench --timeout=400s
+    kubectl wait --for=condition=complete job/fortio-load -n bench --timeout=400s 2>/dev/null || true
 
     kill "${sampler_pid}" 2>/dev/null || true
 
-    local pod
-    pod=$(kubectl get pod -n bench -l job-name=fortio-load -o jsonpath='{.items[0].metadata.name}')
-    kubectl cp "${pod}:/tmp/results/fortio.json" "${RESULTS}/fortio-${label}.json" -n bench
+    collect_fortio_logs bench "job-name=fortio-load" "${RESULTS}/fortio-${label}.json"
     kubectl delete job fortio-load -n bench --ignore-not-found=true
 
     {
@@ -59,7 +57,7 @@ run_profile() {
     } >> "${RESULTS}/summary.txt"
 }
 
-export QPS CONNECTIONS DURATION PAYLOAD_SIZE LABEL
+export QPS CONNECTIONS DURATION PAYLOAD_SIZE LABEL FORTIO_TIMEOUT
 for QPS in 320 3200 12800; do
     case "${QPS}" in
         320) CONNECTIONS=160 ;;
@@ -68,6 +66,7 @@ for QPS in 320 3200 12800; do
     esac
     DURATION=300
     PAYLOAD_SIZE=1024
+    FORTIO_TIMEOUT=120
     LABEL="istio-ambient-q${QPS}-c${CONNECTIONS}"
     run_profile "${QPS}" "${CONNECTIONS}"
 done

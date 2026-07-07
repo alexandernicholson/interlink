@@ -274,28 +274,33 @@ policy_engine/eval_100_rules time:   [8.2 µs]
 
 ### Service mesh comparison
 
-A reproducible benchmark harness lives in [`bench/`](bench/). It measures interlink, Linkerd, and Istio ambient on identical Fortio workloads.
+A reproducible benchmark harness lives in [`bench/`](bench/). All three meshes were measured on identical workloads (Go echo server, 200 ms fixed delay, 1 KB payload, Fortio load generator). Linkerd and Istio ambient were run on dedicated kind clusters via `bench/scripts/`. Interlink was run locally via `bench/local/`.
 
-Initial interlink numbers (local HTTPS + mTLS, 1 KB payload, 200 ms fixed delay):
+| Mesh | Profile | Actual RPS | p50 ms | p90 ms | p99 ms | Proxy CPU (avg) | Proxy memory (avg) |
+|------|---------|-----------|--------|--------|--------|-----------------|-------------------|
+| **interlink** | light 320 | 318.9 | 201.6 | 202.7 | 202.9 | 0.7 %\* | 11.6 MB |
+| **interlink** | medium 3,200 | 3,188.9 | 204.7 | 208.4 | 209.2 | 1.6 %\* | 42.2 MB |
+| **interlink** | heavy 12,800 | 12,749.0 | 212.8 | 222.8 | 225.1 | 5.0 %\* | 149.8 MB |
+| **Linkerd** | light 320 | 319.8 | 207.2 | 212.4 | 213.5 | 38.3 m | 35.5 MB |
+| **Linkerd** | medium 3,200 | 3,196.7 | 259.4 | 291.9 | 299.2 | 352.0 m | 237.2 MB |
+| **Linkerd** | heavy 12,800 | 11,868.6 | 550.7 | 652.0 | 695.5 | 1,373.5 m | 887.5 MB |
+| **Istio ambient** | light 320 | 319.8 | 204.9 | 208.3 | 209.1 | 16.3 m | 12.0 MB |
+| **Istio ambient** | medium 3,200 | 3,197.5 | 225.3 | 245.2 | 249.7 | 127.9 m | 81.0 MB |
+| **Istio ambient** | heavy 12,800 | 12,786.6 | 265.4 | 319.4 | 347.2 | 487.9 m | 235.6 MB |
 
-| Profile | RPS | Connections | p99 latency | peak CPU | peak memory |
-|---------|-----|-------------|-------------|----------|-------------|
-| light   | 320 | 160         | 202.9 ms    | 1.4 %    | 12.3 MB     |
-| medium  | 3,200 | 1,600     | 209.2 ms    | 2.2 %    | 47.7 MB     |
-| heavy   | 12,800 | 6,400    | 225.1 ms    | 6.6 %    | 156.6 MB    |
+\* interlink CPU is % of one core on host; Linkerd and Istio CPU in millicores in Kubernetes.
 
-See [`bench/results/local.md`](bench/results/local.md) for full details.
+Proxy overhead (latency above the 200 ms base):
 
-Comparable published figures:
+| Mesh | Light overhead | Medium overhead | Heavy overhead |
+|------|---------------|----------------|----------------|
+| interlink | +2.9 ms | +9.2 ms | +25.1 ms |
+| Linkerd | +13.5 ms | +99.2 ms | +495.5 ms |
+| Istio ambient | +9.1 ms | +49.7 ms | +147.2 ms |
 
-| Mesh | Proxy memory at moderate load | Proxy CPU at 1,000 RPS |
-|------|------------------------------|------------------------|
-| **interlink** (measured) | ~43 MB @ 3,200 RPS | <3 % @ 3,200 RPS |
-| Linkerd (Buoyant real-world) | 50–180 MB typical | 35–250 mCPU |
-| Istio sidecar (Istio docs) | ~60 MB | ~0.20 vCPU |
-| Istio ambient ztunnel | ~12 MB | ~0.06 vCPU |
+Full details in [`bench/results/comparison.md`](bench/results/comparison.md).
 
-interlink's measured footprint is competitive with Linkerd and Istio ambient and well below Istio sidecar, while offering a smaller feature set. The Kubernetes harness in `bench/` is ready for head-to-head runs; the Linkerd/Istio numbers above are from upstream docs, not yet from our harness.
+**Key takeaways:** interlink adds the least latency overhead and consumes the fewest resources. Istio ambient (ztunnel) is roughly 3× more efficient than Linkerd across CPU, memory, and latency. Linkerd struggles at high connection counts (12,800 RPS / 6,400 conns), losing 7 % throughput and adding 495 ms p99 latency.
 
 <hr />
 
