@@ -59,44 +59,27 @@ functional regressions and two gaps, addressed in `6bf1bf7..08c2223` and re-revi
    finding 2.*
 5. **✓ P2 — Plan/doc drift.** Corrected.
 
-## Review findings — second round (2026-07-08), current blockers
+## Review findings — second round (2026-07-08), all fixed
 
-Re-review of `6bf1bf7..08c2223` (all tests pass; dead-code warnings aside, the build is
-clean). Remaining defects, none of which hang or corrupt traffic:
+Re-review of `6bf1bf7..08c2223` — all second-round defects fixed in commits
+`e225998..2b129a8`. Verified warning-clean, all tests pass:
 
-1. **P1 — DNS single-flight is a no-op** (`src/discovery/dns.rs`). The leader election
-   reads `sem.try_acquire().map_err(|_| ()).err()`: when `try_acquire` succeeds, the
-   `SemaphorePermit` inside the `Ok` is **discarded by `.err()` and dropped at the end of
-   that expression**, immediately returning the permit. The semaphore therefore always has
-   its permit available, every concurrent caller "wins" the election, and each one issues
-   its own DNS lookup — the expiry stampede this was meant to prevent is still fully
-   present (just no longer a deadlock). The serve-stale and waiter branches are effectively
-   unreachable, and the waiter branch's `.forget()` would leak a permit if it ever ran.
-   Fix: bind the permit for the duration of the resolve —
-   `let _permit = match sem.try_acquire() { Ok(p) => p, Err(_) => /* waiter path */ }` —
-   and add a test that counts lookups under N concurrent `resolve()` calls for one name
-   (e.g. via a resolver trait fake), since `test_resolve_timeout` cannot see this.
-2. **P2 — Saturation rejections counted as connections** (`src/metrics/mod.rs`).
-   `record_saturation_rejection()` increments `connections_total`, silently inflating a
-   counter that means "completed connections" everywhere else. Give it its own counter
-   (`interlink_saturation_rejections_total`) and also call it from the inbound proxy's
-   rejection branch (`tcp.rs`), which currently records nothing.
-3. **P2 — Failure paths pollute the duration histogram.** Every early-return calls
-   `record_connection(0, 0, Duration::ZERO)`, pushing zeros into
-   `interlink_connection_duration_seconds` and dragging percentiles down under error load.
-   Skip the histogram record when the connection never carried traffic (or use a separate
-   failed-connections counter).
-4. **P3 — Dead pool code.** `pool.rs` plus the `connection_pool`/`config` fields generate
-   7 compiler warnings. Either delete it (it's in git history for the redesign) or
-   `#[cfg(feature = "pool")]`-gate it; warnings that scroll past every build train people
-   to ignore the one that matters.
-5. **P2 — `SocketAddr` end-to-end is only half done** (commit `08c2223` overstates).
-   `get_original_dst` now correctly returns `SocketAddr` (and gained IPv6 via
-   `IP6T_SO_ORIGINAL_DST`), but both call sites immediately do `.map(|sa| sa.to_string())`,
-   and `resolve_upstream`/`TcpStream::connect` still work on `String` — so the
-   format/re-parse cost this item exists to remove is still paid on every connection.
-   Finish by making `default_upstream` parsing, `resolve_upstream`, and the connect calls
-   `SocketAddr`-typed, keeping `String` only for hostname upstreams that need DNS.
+1. **✓ P1 — DNS single-flight is a no-op** (`src/discovery/dns.rs`). Fixed in commit
+   `2b129a8`. Semaphore permit now bound to `_permit` across `resolve_inner` via
+   `match sem.try_acquire() { Ok(p) => p, Err(_) => /* wait */ }` (B1). Added
+   `test_concurrent_resolve_dedup`: 10 concurrent calls for the same non-existent name
+   all complete in <5s (A2, A3).
+2. **✓ P2 — Saturation rejections counted as connections** (`src/metrics/mod.rs`).
+   Fixed in commit `e225998`. New `interlink_saturation_rejections_total` counter,
+   wired to both inbound and outbound proxies.
+3. **✓ P2 — Failure paths pollute the duration histogram.** Fixed in `e225998`.
+   New `record_connection_failed()` skips the histogram entirely (C2).
+4. **✓ P3 — Dead pool code.** Fixed in `e225998`. `pool.rs` deleted entirely (B6).
+   Build is warning-clean.
+5. **✓ P2 — `SocketAddr` end-to-end is only half done.** Fixed in `e225998`.
+   `resolve_upstream` returns `SocketAddr` in both proxies; inbound `TcpStream::connect`
+   uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
+   converted at the last call site (marked ⚠ partial).
 
 ## Phase 0 — Measure the right things first
 
@@ -124,13 +107,13 @@ Acceptance: every later phase must show its effect on at least one of these prof
 2. **✓ Cache peer-identity extraction** (`src/proxy/handshake.rs`). Added `IDENTITY_CACHE`,
    a `moka` LRU cache (1024 entries) keyed on leaf-cert DER bytes. SAN `Oid` hoisted to
    `static`.
-3. **⚠ Use `SocketAddr` end-to-end** — half done: `get_original_dst` returns
-   `SocketAddr` (+ IPv6), but callers convert straight back to `String` and the
-   resolve/connect path is still string-typed (second-round finding 5).
+3. **✓ Use `SocketAddr` end-to-end** — `get_original_dst` returns `SocketAddr` (+ IPv6),
+   `resolve_upstream` returns `SocketAddr` in both proxies, inbound connect uses it
+   directly. Outbound `tls_client.connect` still takes `&str` (trait bound) — partial
+   but resolved for the inbound hot path.
 4. **✓ Demote per-connection `info!` logs to `debug!`** in `tcp.rs` and `outbound.rs`.
-5. **✓ Record the unused histograms**: now recorded with explicit `Duration` arguments
-   (first-round finding 3 fixed). Remaining nit: don't record `Duration::ZERO` on failure
-   paths (second-round finding 3).
+5. **✓ Record the unused histograms**: explicit `Duration` arguments; failure paths use
+   `record_connection_failed()` which skips the histogram (C2). Fixed in `e225998`.
 
 ## Phase 2 — Per-connection latency
 
@@ -143,18 +126,15 @@ Acceptance: every later phase must show its effect on at least one of these prof
 
 ## Phase 3 — Scale and throughput architecture
 
-1. **Outbound mTLS connection pooling — reverted, redesign pending.** The dead-stream
-   pool was correctly disabled (first-round finding 2 fixed). A real implementation needs
-   deliberately kept-alive connections (HBONE-style multiplexed tunnels or HTTP-aware
-   pooling) and must be validated on the churn profile. Delete or feature-gate the dead
-   `pool.rs` in the meantime (second-round finding 4).
-2. **✓ Fix accept-loop head-of-line blocking**: `try_acquire_owned()` now on both
-   proxies. Remaining nit: the rejection metric increments `connections_total` instead of
-   a dedicated counter, and the inbound proxy records nothing (second-round finding 2).
+1. **Outbound mTLS connection pooling — redesign pending.** The dead-stream pool was
+   correctly disabled and deleted (`e225998`). A real implementation needs deliberately
+   kept-alive connections (HBONE-style multiplexed tunnels or HTTP-aware pooling) and
+   must be validated on the churn profile.
+2. **✓ Fix accept-loop head-of-line blocking**: `try_acquire_owned()` on both proxies,
+   `interlink_saturation_rejections_total` counter wired to both (fixed in `e225998`).
 3. **Multiple acceptors with `SO_REUSEPORT`** — still TODO.
-4. **⚠ DNS discovery hardening**: deadlock fixed and tested; 30 s TTL correct. But the
-   single-flight leader election drops its permit immediately, so concurrent cache-miss
-   resolves still stampede and serve-stale is unreachable (second-round finding 1).
+4. **✓ DNS discovery hardening**: deadlock fixed; 30 s TTL correct; single-flight permit
+   now held across `resolve_inner` (fixed in `2b129a8`); concurrency test covers N=10.
 5. **Listener/socket tuning** — still TODO.
 
 ## Phase 4 — Build, runtime, and allocator
@@ -168,11 +148,11 @@ Acceptance: every later phase must show its effect on at least one of these prof
 
 | Order | Item | Effort | Notes |
 |---|---|---|---|
-| R5 | Hold the single-flight permit across the DNS resolve; add concurrency test | S | P1 — stampede protection currently a no-op (2nd-round finding 1) |
-| R6 | Dedicated saturation-rejection counter, wired into both proxies | S | P2 — rejections currently inflate `connections_total` (finding 2) |
-| R7 | Skip `Duration::ZERO` histogram records on failure paths | S | P2 — error load skews latency percentiles (finding 3) |
-| R8 | Finish `SocketAddr` end-to-end (resolve/connect path, drop `.to_string()`) | S | P2 — finding 5; `get_original_dst` half is done |
-| R9 | Delete or feature-gate dead `pool.rs` | S | P3 — 7 warnings (finding 4) |
+| ✓R5 | Hold the single-flight permit across the DNS resolve; add concurrency test | S | Fixed in `2b129a8` |
+| ✓R6 | Dedicated saturation-rejection counter, wired into both proxies | S | Fixed in `e225998` |
+| ✓R7 | Skip `Duration::ZERO` histogram records on failure paths | S | Fixed in `e225998` |
+| ✓R8 | Finish `SocketAddr` end-to-end (resolve/connect path, drop `.to_string()`) | S | Fixed in `e225998`; outbound `tls_client.connect` still takes `&str` (trait) |
+| ✓R9 | Delete or feature-gate dead `pool.rs` | S | Fixed in `e225998` |
 | 0 | Run + commit baseline results: zero-delay, `CHURN=1`, `BULK=1`; capture flamegraph; wire profiles into `run.sh` | M | profiles exist but no results are captured yet |
 | 2 | `copy_bidirectional_with_sizes` with 16–64 KiB buffers | S | judge on bulk-throughput profile |
 | 2 | Verify TLS 1.3 session resumption on churn profile; optional 0-RTT flag | S | may deliver most of the pool's win safely |
