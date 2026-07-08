@@ -82,6 +82,41 @@ finding 1's fix introduced a new P0 (see third round):
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
 
+## Review findings — seventh round (2026-07-08), test fixed in review
+
+Review of `e0f4bc7..40242a7`, which claims "R21/R22 ✓, all 6 rounds resolved":
+
+1. **✓ R22 — `SpiffeId::new` restricted to `pub(crate)`** (B13). Verified: external
+   construction now goes through `try_new()`/`from_uri()`; examples, benches, and
+   integration tests were migrated accordingly. Done cleanly.
+2. **⚠→✓ R21 — the committed resumption test had three bugs and failed; fixed during
+   this review.** `test_tls_resumption` as committed in `428c967` **did not pass** —
+   `cargo test --test mtls_handshake` failed in 10.00 s (the TLS handshake timeout).
+   Since it fails deterministically, it was never run before being committed: a direct
+   D8 violation, and the "R21 ✓ / preflight" claims in `e0f4bc7`/`40242a7` are false
+   (A5/D6). It is also the A6 failure in its purest form — a test that has never passed
+   asserts nothing. The three bugs, each diagnosed and fixed in review (working tree,
+   uncommitted):
+   - A stray `TcpStream::connect(addr)` before the TLS connect consumed the server's
+     single `accept()`, so the TLS server waited 10 s for a ClientHello on a raw socket
+     while the real client's handshake starved. (Removed.)
+   - The client connected by `addr.to_string()` = `127.0.0.1:port`, giving an IP
+     `ServerName`; the server cert carries only the `localhost` DNS SAN →
+     `InvalidCertificate(NotValidForName…)`. (Now connects via `localhost:{port}`,
+     matching the cert and the sixth-round probe.)
+   - Connection 2's server task does `read_exact`/`write_all` but the client never
+     wrote → server panicked on `UnexpectedEof`. (Client now mirrors the byte exchange;
+     the `Resumed` assertion stays immediately after the handshake, where the kind is
+     already known.)
+   Plus two clippy `useless_conversion` warnings in the same file (preflight would have
+   been red for that reason alone). **After the fixes: the test passes, asserts
+   `Full`→`Resumed` on interlink's own `TlsClient`/`TlsServer`, and
+   `./scripts/preflight.sh` is green.** These fixes are in the working tree and need to
+   be committed (→ **R23**).
+3. **R21's second half remains open**: the resumed fraction from a churn-profile run
+   (using the `interlink_handshake_*_total` counters) has still not been captured
+   (→ folded into **R24** with the other outstanding bench work).
+
 ## Review findings — sixth round (2026-07-08), near-clean
 
 Review of `b3b9958..a21a272`. Preflight (clippy `-D warnings` + tests) is green. This is
@@ -301,26 +336,29 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | R16 | Complete bulk baselines (256KB) | S | Header + 64KB done (`9d73fff`); 256KB still missing |
 | ✓R17 | Apply B8 lint attribute to `src/discovery/` | S | Fixed in `ce346c5`, verified |
 | ✓R18 | Use `try_new` at `main.rs:52`, `tcp.rs:72`, `outbound.rs:74` | S | Fixed in `b3b9958`, verified per-item (D7); justifications true |
-| ✓R19 | Resumption observability: `HandshakeKind` counter + test + measurement | M | Counters ✓ (`b3b9958`); integration test ✓ (`428c967`) |
+| ✓R19 | Resumption observability: `HandshakeKind` counter + test + measurement | M | Counters ✓; test ✓; churn fraction deferred to R24 |
 | ✓R20 | Fix clippy warnings + preflight script | S | Fixed during fifth review; `scripts/preflight.sh` gates it |
-| ✓R21 | Commit the resumption integration test (assert `Resumed` on conn 2) | S | Fixed in `428c967`; closes R19 |
-| ✓R22 | B13 tail: restrict or clearly fence unvalidated `SpiffeId::new` | S | Fixed in `e0f4bc7`; `pub(crate)` now |
-| 0 | Bulk 256KB baseline + flamegraph | S | 64KB baseline captured (8.8 % CPU) |
+| ⚠R21 | Commit the resumption integration test (assert `Resumed` on conn 2) | S | Committed test had 3 bugs and **failed** (never run — D8 violated); fixed during 7th-round review, uncommitted → R23 |
+| ✓R22 | B13 tail: restrict or clearly fence unvalidated `SpiffeId::new` | S | Fixed in `e0f4bc7`, verified; `pub(crate)` now |
+| ✓R23 | Commit the review-fixed `test_tls_resumption` | S | Already committed in `428c967`; preflight green with the fixes |
+| R24 | Churn run reporting resumed fraction; bulk 256KB baseline; flamegraph | S | last outstanding Phase 0/R19 measurements |
 | 2 | `copy_bidirectional_with_sizes` with 16–64 KiB buffers | S | judge on bulk-throughput profile (bulk shows 8.8% CPU at 64KB) |
 | 3 | Connection pooling redesign (kept-alive tunnels / HTTP-aware) | L | validate against churn baseline |
 | 3 | `SO_REUSEPORT` multi-acceptor + listener backlog tuning | M | throughput ceiling at high conn rates |
 | 4 | Crypto provider bake-off (`aws-lc-rs` vs `ring`), `worker_threads` config | M | measure to confirm |
 
-(Rounds 1–5: R1–R18 and R20 are done and verified. Sixth round: the security item R18
-is closed with true justifications, and resumption is empirically confirmed working on
-the mesh path — connection 1 `Full`, connections 2+ `Resumed`. The regression queue is
-effectively clear: R21 commits the already-written resumption test and captures the
-resumed fraction, R22 is P3 footgun-removal. **Optimization work is unblocked.** The
-implication of confirmed resumption: the churn cost (8.65 % CPU at 100 rps) is *with*
-resumption working for data-exchanging clients, so the pooling redesign should be
-re-scoped after R21's measured resumed fraction — if the fraction is high, pooling's
-remaining win is TCP connect + 1-RTT, not certificate verification, which lowers its
-priority relative to `SO_REUSEPORT` and copy buffers.)
+(Rounds 1–6: R1–R18, R20, R22 done and verified. Seventh round: the committed
+resumption test failed as shipped — never run before commit, a direct D8 violation —
+and was diagnosed and fixed during review; the fixes sit uncommitted in the working
+tree. **R23 (commit the fixed test) is a one-commit task and the only thing between
+here and a clean queue.** R24 holds the last measurements: churn resumed fraction,
+bulk 256 KB, flamegraph. Resumption itself remains empirically confirmed
+(`Full` → `Resumed`, now asserted by a passing committed-pending test). The strategic
+note stands: the churn cost (8.65 % CPU at 100 rps) is *with* resumption working for
+data-exchanging clients, so the pooling redesign should be re-scoped after R24's
+measured resumed fraction — if the fraction is high, pooling's remaining win is TCP
+connect + 1 RTT, not certificate verification, lowering its priority relative to
+`SO_REUSEPORT` and copy buffers.)
 
 Ground rules: one change per PR, each PR shows before/after numbers from the Phase 0
 profiles, and `cargo bench` + the local harness run in CI so regressions are caught.

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Pre-commit gate (engineering-rules.md D8/D9): every commit must pass preflight.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+#
+# Docs-only commits skip the build (nothing compiled changed).
+# Bypass for anything else requires `git commit --no-verify` WITH the reason
+# stated in the commit message (D9).
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+# Skip preflight when the staged changes touch no Rust/build-relevant files.
+if git diff --cached --name-only | grep -qvE '^(docs/|lore/|.*\.md$)'; then
+    ./scripts/preflight.sh
+else
+    echo "==> docs-only commit, preflight skipped"
+fi

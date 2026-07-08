@@ -16,7 +16,9 @@ mkdir -p "${CERT_DIR}"
 INBOUND_PORT="${INBOUND_PORT:-14443}"
 ECHO_PORT="${ECHO_PORT:-18080}"
 FORTIO_IMAGE="fortio/fortio:1.66.0"
-CARGO_TARGET="/tmp/opencode/interlink-target"
+# Build on disk, never tmpfs: the LTO release build needs several GB of
+# intermediate artifacts and /tmp is a RAM-backed tmpfs (caused ENOSPC).
+CARGO_TARGET="${CARGO_TARGET:-${REPO_ROOT}/target/bench}"
 INTERLINK_BIN="${CARGO_TARGET}/release/interlinkd"
 
 log() { echo "[$(date -Iseconds)] $*" >&2; }

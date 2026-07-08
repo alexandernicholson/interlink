@@ -44,12 +44,26 @@ touches as performance- and security-sensitive.
   benchmarks/probes therefore measure full-handshake cost only.
 - **`copy_bidirectional` shuts both streams down** (close_notify sent) before
   returning — a stream is never reusable after it.
+- **TLS identity naming is exact**: an IP `ServerName` (`127.0.0.1`) never matches a
+  DNS SAN (`localhost`), and the client resumption cache is keyed by `ServerName` —
+  dial by the name in the cert (rule C8).
+
+## Environment notes
+
+- **Never set `CARGO_TARGET_DIR` under `/tmp`** — it is a 15 GB RAM-backed tmpfs on
+  this machine, and the LTO release build's intermediate artifacts fill it (this caused
+  the "no space left on device" compile failures on 2026-07-08). Build into the repo's
+  `target/` (bench harness uses `target/bench`); the root filesystem has the space.
 - **`docs/performance-plan.md`** — the current performance workstream, with verified
   status per item. Update it in the same PR as the work; mark items honestly
   (✓ done / ⚠ partial / TODO) and never claim a result without attached numbers.
 
 ## Commands
 
+- **One-time setup per clone**: `git config core.hooksPath .githooks` — enables the
+  pre-commit hook that runs `./scripts/preflight.sh` (clippy `-D warnings` + tests) on
+  every non-docs commit. Rules D8/D9. `--no-verify` only for docs-only commits, with
+  the reason in the commit message.
 - Build/test: `cargo build`, `cargo test` (must be warning-clean; clippy too)
 - Microbenchmarks: `cargo bench --bench proxy`
 - End-to-end benchmarks: `bench/local/run.sh` and `bench/local/run-proxy.sh`

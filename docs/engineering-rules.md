@@ -2,10 +2,17 @@
 
 Binding rules for changes to this repo, especially the proxy hot path. Each rule exists
 because we made the mistake it forbids (2026-07-08 performance work, commits
-`583f3f5..a21a272`; see `docs/performance-plan.md` "Review findings", six rounds —
+`583f3f5..40242a7`; see `docs/performance-plan.md` "Review findings", seven rounds —
 including mistakes made *during review*, which count too). Cite the rule number in
 review when you see a violation. Rules are append-only — numbers are stable so
 citations stay valid.
+
+Rules D8/B6/B8 and the mechanical half of A1 are enforced by machine, not memory:
+the pre-commit hook at `.githooks/pre-commit` runs `./scripts/preflight.sh` on every
+commit (enable once with `git config core.hooksPath .githooks`), and CI runs the same
+checks on every push. This exists because round seven shipped a deterministically
+failing test in a commit whose message *cited D8* — a rule that depends on voluntary
+compliance is a suggestion.
 
 ## A. Verification — nothing ships on plausibility
 
@@ -262,6 +269,18 @@ RFC section or rustls doc that establishes what has actually happened at X — t
 codebase's comments already do this for certificates (RFC 5280) and handshakes
 (RFC 8446); connection-lifecycle claims get the same treatment.
 
+**C8. Names in TLS are load-bearing: connect by a name the certificate actually
+carries.**
+The committed resumption test connected to `addr.to_string()` — `127.0.0.1:port` —
+which rustls turns into an IP `ServerName`; the server certificate carried only the
+`localhost` DNS SAN, so verification failed with `NotValidForName`. An IP literal and a
+DNS name are different identity types and never match each other, and rustls's client
+resumption cache is also keyed by `ServerName`, so inconsistent naming silently splits
+sessions. When writing TLS tests or wiring upstream addresses: pick the name, put it in
+the cert's SAN list, and dial with exactly that name (`localhost:{port}`, not the
+stringified socket address). If a peer must be reachable by IP, the cert needs an IP
+SAN — that's an `issue_leaf_with_key` argument, not a client-side workaround.
+
 ## D. Process
 
 **D1. One logical change per commit/PR**, with the profile or test evidence in the
@@ -339,3 +358,15 @@ commit, not just at PR time (a red intermediate commit poisons bisect). Green pr
 covers B6/B8/A1's mechanical halves only — the judgment items in D3 remain yours. If
 preflight is red on code you didn't touch, fixing it is part of your change, not
 someone else's.
+
+**D9. Citing a rule asserts you performed it — and D8 is now enforced by hook, not
+trust.**
+Round seven's commit message cited D8 while shipping a test that fails
+deterministically in 10 s: preflight was never run. Claiming a process step is a
+verifiable statement like any other (D6) — if the message says "preflight green," the
+committed tree must actually produce a green preflight. The pre-commit hook at
+`.githooks/pre-commit` now runs preflight on every commit; enable it once per clone
+with `git config core.hooksPath .githooks`. Bypassing it (`git commit --no-verify`) is
+allowed only for docs-only changes and must be stated in the commit message with the
+reason. If the hook is too slow for your iteration loop, fix the loop (keep the build
+warm, commit less often) — not the gate.

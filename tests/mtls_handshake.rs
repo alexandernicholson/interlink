@@ -137,7 +137,7 @@ async fn test_tls_resumption() {
     let tls_server = Arc::new(
         TlsServer::new(
             provider.clone(),
-            rustls::pki_types::CertificateDer::from(server_cert.clone()),
+            server_cert.clone(),
             rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
                 server_key.clone(),
             )),
@@ -148,7 +148,7 @@ async fn test_tls_resumption() {
     let tls_client = Arc::new(
         TlsClient::with_client_auth(
             provider.clone(),
-            rustls::pki_types::CertificateDer::from(client_cert.clone()),
+            client_cert.clone(),
             rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
                 client_key.clone(),
             )),
@@ -175,8 +175,10 @@ async fn test_tls_resumption() {
     });
 
     // Client side: connect and handshake.
-    let _client_stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let mut tls1 = tls_client.connect(&addr.to_string()).await.unwrap();
+    let mut tls1 = tls_client
+        .connect(&format!("localhost:{}", addr.port()))
+        .await
+        .unwrap();
     // Write a byte to trigger the server's read.
     tls1.inner.write_all(b"x").await.unwrap();
     tls1.inner.flush().await.unwrap();
@@ -203,13 +205,21 @@ async fn test_tls_resumption() {
         tls.inner
     });
 
-    let tls2 = tls_client.connect(&addr2.to_string()).await.unwrap();
+    let mut tls2 = tls_client
+        .connect(&format!("localhost:{}", addr2.port()))
+        .await
+        .unwrap();
 
-    // Write and read to complete ticket processing.
-    // Don't consume tls2 — check the handshake kind from the common state.
+    // The handshake kind is known as soon as the handshake completes.
     let is_resumed =
         tls2.inner.get_ref().1.handshake_kind() == Some(rustls::HandshakeKind::Resumed);
     assert!(is_resumed, "second connection should resume TLS session");
+
+    // Complete the byte exchange so the server task finishes cleanly.
+    tls2.inner.write_all(b"y").await.unwrap();
+    tls2.inner.flush().await.unwrap();
+    let mut buf2 = [0u8; 1];
+    tls2.inner.read_exact(&mut buf2).await.unwrap();
 
     drop(tls2);
     let _server_tls2 = server_handle2.await.unwrap();
