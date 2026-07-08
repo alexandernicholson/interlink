@@ -1,5 +1,18 @@
-# interlinkd deployed as a node-level daemonset in transparent-proxy mode.
-# Each node runs one interlinkd that intercepts pod traffic via iptables.
+# interlinkd as a node-level daemon (ztunnel-style), hostNetwork.
+#
+# Interception model (single workload port, matching what the other meshes
+# intercept — the app's traffic, not cluster infrastructure):
+#   - Pod egress (packets arriving from local pod veths) destined for the pod
+#     CIDR on the workload port -> outbound proxy :4140, which recovers the
+#     original destination via SO_ORIGINAL_DST and dials it over mTLS
+#     (mux tunnels when the peer negotiates il/mux/1).
+#   - Cross-node mesh traffic (packets arriving on eth0) destined for local
+#     pods on the workload port -> inbound proxy :4143, which terminates mTLS
+#     and forwards to the recovered original destination.
+#   - Host-originated traffic (kubelet probes, the proxy's own upstream dials)
+#     is never redirected: locally generated packets don't traverse PREROUTING,
+#     and there are deliberately no OUTPUT-chain rules (a catch-all OUTPUT
+#     redirect eats control-plane traffic and melts the cluster — observed).
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -34,22 +47,16 @@ spec:
             - |
               set -e
               apk add --no-cache iptables
-              # Redirect inbound traffic destined for the app to interlink inbound port.
-              iptables -t nat -N INTERLINK_INBOUND 2>/dev/null || true
-              iptables -t nat -F INTERLINK_INBOUND
-              iptables -t nat -A INTERLINK_INBOUND -p tcp -m tcp --dport 4143 -j RETURN
-              iptables -t nat -A INTERLINK_INBOUND -p tcp -m tcp --dport 4140 -j RETURN
-              iptables -t nat -A INTERLINK_INBOUND -p tcp -m tcp --dport 4192 -j RETURN
-              iptables -t nat -A INTERLINK_INBOUND -p tcp -j REDIRECT --to-ports 4143
-              iptables -t nat -A PREROUTING -p tcp -j INTERLINK_INBOUND
-              # Redirect outbound traffic to interlink outbound port.
-              iptables -t nat -N INTERLINK_OUTBOUND 2>/dev/null || true
-              iptables -t nat -F INTERLINK_OUTBOUND
-              iptables -t nat -A INTERLINK_OUTBOUND -p tcp -m tcp --dport 4143 -j RETURN
-              iptables -t nat -A INTERLINK_OUTBOUND -p tcp -m tcp --dport 4140 -j RETURN
-              iptables -t nat -A INTERLINK_OUTBOUND -p tcp -m tcp --dport 4192 -j RETURN
-              iptables -t nat -A INTERLINK_OUTBOUND -p tcp -j REDIRECT --to-ports 4140
-              iptables -t nat -A OUTPUT -p tcp -j INTERLINK_OUTBOUND
+              POD_CIDR="10.244.0.0/16"
+              APP_PORT="8080"
+              iptables -t nat -N INTERLINK 2>/dev/null || true
+              iptables -t nat -F INTERLINK
+              # Pod egress (local pod veth) -> outbound proxy.
+              iptables -t nat -A INTERLINK -i veth+ -p tcp -d "${POD_CIDR}" --dport "${APP_PORT}" -j REDIRECT --to-ports 4140
+              # Cross-node mesh traffic (node uplink) -> inbound proxy.
+              iptables -t nat -A INTERLINK -i eth0 -p tcp -d "${POD_CIDR}" --dport "${APP_PORT}" -j REDIRECT --to-ports 4143
+              iptables -t nat -D PREROUTING -j INTERLINK 2>/dev/null || true
+              iptables -t nat -A PREROUTING -j INTERLINK
           volumeMounts:
             - name: xtables-lock
               mountPath: /run/xtables.lock
@@ -57,46 +64,43 @@ spec:
         - name: interlinkd
           image: interlink-bench/interlinkd:latest
           imagePullPolicy: IfNotPresent
-          args: ["--config", "/etc/interlink/interlink.json"]
           env:
-            - name: INTERLINK_CONFIG_FILE
-              value: "/etc/interlink/interlink.json"
+            - name: INTERLINK_TRUST_DOMAIN
+              value: "bench.local"
+            - name: INTERLINK_IDENTITY
+              value: "spiffe://bench.local/ns/bench/sa/proxy"
             - name: INTERLINK_CA_BUNDLE_PATH
               value: "/etc/interlink/certs/ca.der"
             - name: INTERLINK_CERT_PATH
               value: "/etc/interlink/certs/server.der"
             - name: INTERLINK_KEY_PATH
               value: "/etc/interlink/certs/server.key"
+            - name: INTERLINK_ALLOW_ALL
+              value: "true"
+            - name: INTERLINK_MUX
+              value: "${INTERLINK_MUX}"
+            - name: INTERLINK_LOG_LEVEL
+              value: "warn"
+            - name: INTERLINK_MAX_CONNECTIONS
+              value: "20000"
           ports:
             - containerPort: 4143
               name: inbound
-              hostPort: 4143
             - containerPort: 4140
               name: outbound
-              hostPort: 4140
-            - containerPort: 4192
-              name: admin
-              hostPort: 4192
           securityContext:
             capabilities:
               add:
                 - NET_ADMIN
                 - NET_RAW
           volumeMounts:
-            - name: config
-              mountPath: /etc/interlink
             - name: certs
               mountPath: /etc/interlink/certs
-            - name: xtables-lock
-              mountPath: /run/xtables.lock
           resources:
             requests:
               cpu: "100m"
               memory: "32Mi"
       volumes:
-        - name: config
-          configMap:
-            name: interlink-config
         - name: certs
           secret:
             secretName: interlink-certs

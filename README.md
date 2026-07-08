@@ -1,6 +1,6 @@
 # interlink
 
-**A lightweight, RFC-first service mesh proxy written in Rust.** Zero-config mTLS, automatic protocol detection, policy-based authorization. Designed for 1M devices — from cloud servers to smartphones.
+**A lightweight, RFC-first service mesh proxy written in Rust.** Zero-config mTLS, automatic protocol detection, policy-based authorization, and ALPN-negotiated multiplexed tunnels that amortize the TLS handshake across all connections to a peer (−63 % proxy CPU under connection churn). Designed for 1M devices — from cloud servers to smartphones.
 
 ```mermaid
 graph LR
@@ -87,15 +87,19 @@ Environment variable equivalents:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `INTERLINK_INBOUND_PORT` | Inbound transparent proxy port | 4143 |
-| `INTERLINK_OUTBOUND_PORT` | Outbound transparent proxy port | 4140 |
-| `INTERLINK_ADMIN_PORT` | Admin / health / metrics port | 4192 |
-| `INTERLINK_CA_CERT_PATH` | Path to CA certificate (DER or PEM) | — |
-| `INTERLINK_CA_KEY_PATH` | Path to CA private key | — |
-| `INTERLINK_NODE_NAME` | Kubernetes node name | `unknown-node` |
-| `INTERLINK_CLUSTER_DOMAIN` | Kubernetes cluster DNS domain | `cluster.local` |
-| `INTERLINK_METRICS_ENABLED` | Enable Prometheus metrics | `true` |
-| `INTERLINK_CONFIG_FILE` | Path to JSON config file | `/etc/interlink/interlink.json` |
+| `INTERLINK_PROXY_INBOUND_PORT` | Inbound transparent proxy port | 4143 |
+| `INTERLINK_PROXY_OUTBOUND_PORT` | Outbound transparent proxy port (0 disables) | 4140 |
+| `INTERLINK_METRICS_PORT` | Prometheus metrics port | 4190 |
+| `INTERLINK_TRUST_DOMAIN` | SPIFFE trust domain | `cluster.local` |
+| `INTERLINK_IDENTITY` | This proxy's SPIFFE ID | derived |
+| `INTERLINK_CA_BUNDLE_PATH` | CA bundle (DER) for peer validation | — |
+| `INTERLINK_CERT_PATH` / `INTERLINK_KEY_PATH` | Leaf cert (DER) / key (PKCS#8 DER) | — |
+| `INTERLINK_DEFAULT_UPSTREAM` | Fallback upstream when `SO_ORIGINAL_DST` is unavailable | — |
+| `INTERLINK_MUX` | Offer multiplexed tunnels (ALPN `il/mux/1`) to peers | `true` |
+| `INTERLINK_ACCEPTORS` | SO_REUSEPORT acceptor tasks per listener (1–16) | `min(cores,4)` |
+| `INTERLINK_COPY_BUF_SIZE` | Relay copy buffer size in bytes (4 KiB–1 MiB) | `65536` |
+| `INTERLINK_MAX_CONNECTIONS` | Per-proxy connection limit | 1024 |
+| `INTERLINK_CONFIG_FILE` | Path to JSON config file | `/etc/interlink/config.json` |
 
 Runtime reload of policy and certificate settings is available via `POST /reload` on the admin port.
 
@@ -119,8 +123,11 @@ flowchart TB
         end
         subgraph Outbound["Outbound (port 4140)"]
             O[TCP Listener] --> OM[Orig. Dst Lookup]
-            OM --> OH[TLS 1.3 Handshake<br/>with client cert]
-            OH --> OF[Connect to Upstream]
+            OM --> OT{Mux tunnel<br/>to peer?}
+            OT -- yes --> OS[Open stream<br/>no handshake]
+            OT -- no --> OH[TLS 1.3 Handshake<br/>ALPN il/mux/1 + client cert]
+            OH --> OF[Tunnel or 1:1 relay]
+            OS --> OF
         end
         subgraph Admin["Admin (port 4192)"]
             AD[HTTP Server] --> AH["/healthz /readyz /reload"]
@@ -214,7 +221,8 @@ interlink/
 │   ├── proxy/
 │   │   ├── handshake.rs    # TlsHandshake trait, TlsClient, TlsServer
 │   │   ├── tcp.rs          # Inbound TcpProxy (accept, mTLS, forward, copy)
-│   │   ├── outbound.rs     # Outbound proxy with mTLS to upstream
+│   │   ├── outbound.rs     # Outbound proxy: mux tunnel pool + 1:1 fallback
+│   │   ├── mux.rs          # Multiplexed mTLS tunnels (yamux over ALPN il/mux/1)
 │   │   ├── original_dst.rs # SO_ORIGINAL_DST helper for transparent redirect
 │   │   └── config.rs       # ProxyConfig
 │   ├── admin/mod.rs        # Admin HTTP server (/healthz, /readyz, /reload)
@@ -229,8 +237,11 @@ interlink/
 ├── scripts/
 │   └── demo.sh             # End-to-end demo runner
 ├── tests/
-│   ├── e2e_proxy_test.rs   # Full mTLS handshake + echo test (12 tests)
-│   └── mtls_handshake.rs   # SPIFFE + protocol + policy tests (4 tests)
+│   ├── e2e_proxy_test.rs        # Full mTLS handshake + echo through proxy
+│   ├── mtls_handshake.rs        # SPIFFE, policy, TLS-resumption tests
+│   ├── mux_tunnel.rs            # Mux tunnels: 1 handshake for N conns, fallback
+│   ├── halfclose_propagation.rs # FIN/close_notify propagation through the relay
+│   └── proxy_shutdown.rs        # Accept-loop shutdown + bind-failure handling
 └── benches/
     ├── proxy.rs             # Protocol detection, SPIFFE parse benchmarks
     └── crypto.rs            # Ed25519 sign/verify, X25519 keygen
@@ -241,66 +252,66 @@ interlink/
 ## Test Suite
 
 ```bash
-cargo test                    # 67 tests: 51 unit + 12 e2e + 4 integration
+./scripts/preflight.sh        # clippy -D warnings + full test suite (pre-commit gate)
+cargo test                    # 81 tests across unit + integration suites
 cargo bench                   # Micro-benchmarks
 bash scripts/demo.sh          # End-to-end mTLS demo
 ```
 
-| Suite | Count | What it covers |
-|-------|-------|----------------|
-| Unit | 51 | SpiffeId, ProtocolDetector, CA, PolicyEngine, metrics, TCP copy, admin, config |
-| E2E | 12 | Full mTLS handshake, certificate validation, echo through proxy, denied paths |
-| Integration | 4 | Protocol detection all formats, multi-namespace policy, high-throughput |
+| Suite | What it covers |
+|-------|----------------|
+| Unit (56) | SpiffeId, compiled policy patterns, CA, DNS single-flight (gated-fake concurrency), metrics, config |
+| E2E (25) | mTLS handshake + echo through the proxy, TLS 1.3 resumption (`Full`→`Resumed`), mux tunnels (1 handshake for N connections, concurrent streams, legacy-peer fallback), half-close propagation, shutdown + bind-failure handling |
 
 <hr />
 
 ## Benchmarks
 
-### Micro-benchmarks (Apple M3 Pro)
+### Micro-benchmarks (Linux x86_64, 16 cores)
 
-See [`docs/benchmarks/results.md`](docs/benchmarks/results.md) for the full micro-benchmark methodology.
+See [`docs/benchmarks/results.md`](docs/benchmarks/results.md) for methodology.
 
 ```
-protocol_detection/http1.1   time:   [12.3 ns  12.5 ns  12.7 ns]
-protocol_detection/http2     time:   [4.1 ns   4.2 ns   4.3 ns]
-protocol_detection/tcp       time:   [5.8 ns   5.9 ns  6.0 ns]
-spiffe_id/parse              time:   [48.2 ns  48.9 ns  49.6 ns]
-spiffe_id/format             time:   [41.5 ns  42.1 ns  42.7 ns]
-memory_copy/copy_16kb        time:   [182.3 ns 183.1 ns 184.0 ns]
-crypto/ed25519_sign          time:   [12.4 µs]
-crypto/ed25519_verify        time:   [28.1 µs]
-policy_engine/eval_100_rules time:   [8.2 µs]
+policy_engine/evaluate       time:   [40.5 ns]   (compiled patterns; was 8.2 µs string-matched)
+pattern_match/compiled       time:   [25.9 ns]
+protocol_detection/http1.1   time:   [~12 ns]
+spiffe_id/parse              time:   [~49 ns]
 ```
+
+Hot-path numbers that matter more than microbenches: TLS 1.3 session resumption is
+verified end-to-end (`Full` → `Resumed`), and multiplexed tunnels carry ~19,000
+connections over a single TLS handshake (measured: −63 % combined proxy CPU and −46 %
+p50 latency at 500 conns/s churn versus per-connection handshakes — see
+`docs/performance-plan.md`).
 
 ### Service mesh comparison
 
-A reproducible benchmark harness lives in [`bench/`](bench/). All three meshes were measured on identical workloads (Go echo server, 200 ms fixed delay, 1 KB payload, Fortio load generator). Linkerd and Istio ambient were run on dedicated kind clusters via `bench/scripts/`. Interlink was run locally via `bench/local/`.
+A reproducible benchmark harness lives in [`bench/`](bench/). All meshes share one
+apples-to-apples topology: a **3-node kind cluster** (`bench/manifests/kind-3node.yaml`)
+with the load generator and the echo server pinned to separate worker nodes so mesh
+traffic always crosses the node boundary, identical workload (Go echo server, 200 ms
+fixed delay, 1 KB payload, Fortio), and CPU/memory sampled the same way
+(`kubectl top pod`, summed across each mesh's proxy pods).
 
-| Mesh | Profile | Actual RPS | p50 ms | p90 ms | p99 ms | Proxy CPU (avg) | Proxy memory (avg) |
-|------|---------|-----------|--------|--------|--------|-----------------|-------------------|
-| **interlink** | light 320 | 318.9 | 202.2 | 203.9 | 204.3 | 1.3 %\* | 13.9 MB |
-| **interlink** | medium 3,200 | 3,188.7 | 209.9 | 217.8 | 219.6 | 2.4 %\* | 62.2 MB |
-| **interlink** | heavy 12,800 | 12,748.1 | 225.1 | 245.0 | 249.5 | 7.0 %\* | 210.0 MB |
-| **Linkerd** | light 320 | 319.8 | 207.2 | 212.4 | 213.5 | 38.3 m | 35.5 MB |
-| **Linkerd** | medium 3,200 | 3,196.7 | 259.4 | 291.9 | 299.2 | 352.0 m | 237.2 MB |
-| **Linkerd** | heavy 12,800 | 11,868.6 | 550.7 | 652.0 | 695.5 | 1,373.5 m | 887.5 MB |
-| **Istio ambient** | light 320 | 319.8 | 204.9 | 208.3 | 209.1 | 16.3 m | 12.0 MB |
-| **Istio ambient** | medium 3,200 | 3,197.5 | 225.3 | 245.2 | 249.7 | 127.9 m | 81.0 MB |
-| **Istio ambient** | heavy 12,800 | 12,786.6 | 265.4 | 319.4 | 347.2 | 487.9 m | 235.6 MB |
+```bash
+cd bench
+./setup.sh                                  # pinned kind/kubectl/linkerd/istioctl
+./scripts/run-interlink.sh                  # interlink (mux tunnels)
+INTERLINK_MUX=false ./scripts/run-interlink.sh   # interlink (1:1 control)
+./scripts/run-linkerd.sh
+./scripts/run-istio.sh
+python3 scripts/aggregate.py                # -> bench/results/comparison.md
+```
 
-\* interlink CPU is % of one core on host; Linkerd and Istio CPU in millicores in Kubernetes.
+The refreshed comparison table is regenerated by `aggregate.py` after a full run; see
+[`bench/results/comparison.md`](bench/results/comparison.md) for the latest published
+numbers and [`lore/benchmark-status.md`](lore/benchmark-status.md) for methodology notes
+and current measurement caveats.
 
-Proxy overhead (latency above the 200 ms base):
-
-| Mesh | Light overhead | Medium overhead | Heavy overhead |
-|------|---------------|----------------|----------------|
-| interlink | +4.3 ms | +19.6 ms | +49.5 ms |
-| Linkerd | +13.5 ms | +99.2 ms | +495.5 ms |
-| Istio ambient | +9.1 ms | +49.7 ms | +147.2 ms |
-
-Full details in [`bench/results/comparison.md`](bench/results/comparison.md).
-
-**Key takeaways:** interlink adds the least latency overhead (4–50 ms above base) and consumes modest resources (~1–7 % CPU, 14–210 MB). Istio ambient (ztunnel) is roughly 3× more efficient than Linkerd across CPU, memory, and latency. Linkerd struggles at high connection counts (12,800 RPS / 6,400 conns), losing 7 % throughput and adding 495 ms p99 latency.
+Independently measured on the reproducible single-proxy harness (see
+`docs/performance-plan.md`): compiled policy evaluation at **40.5 ns**, verified TLS 1.3
+resumption, and multiplexed tunnels carrying **~19,000 connections over a single
+handshake** (−63 % proxy CPU) under connection churn.
 
 <hr />
 

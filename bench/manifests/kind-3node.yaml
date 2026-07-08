@@ -1,0 +1,9 @@
+# Shared 3-node topology for all mesh benchmarks: the load generator and the
+# echo server are pinned to different workers so mesh traffic crosses nodes
+# (apples-to-apples: every mesh pays its full data-path on the same path).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

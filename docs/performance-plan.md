@@ -90,6 +90,48 @@ finding 1's fix introduced a new P0 (see third round):
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
 
+## Fourteenth round (2026-07-08): unified K8s benchmark harness + a real concurrency finding
+
+The comparison harness was made apples-to-apples: all meshes now run on one shared
+3-node kind topology (`bench/manifests/kind-3node.yaml`, load-gen and echo pinned to
+separate workers so traffic crosses nodes), and interlink runs *in-cluster* as a
+transparent node daemon (`bench/manifests/interlink/daemonset.yaml`) instead of the old
+out-of-cluster `bench/local/` path. Data path verified end-to-end: mTLS + mux tunnels
+form, requests return 200. Several real harness bugs fixed on the way (all committed):
+Dockerfile (rust 1.88, `benches/`+`examples/` needed to parse the manifest); iptables
+interception that intercepts only the workload port and never the OUTPUT chain (a
+catch-all OUTPUT redirect melts the control plane); `SO_ORIGINAL_DST` self-connect guard;
+cert IP SANs (C8); fortio's "Successfully wrote…" status line corrupting `-json`
+capture (the recurring stdout-interleaving bug — parser now raw_decode-scans); and
+CPU sampling summed across all proxy pods rather than `items[0]` (which caught the idle
+daemon, not the busy one).
+
+**Finding (not yet a publishable comparison):** on the shared 16-core dev box, both
+interlink **and** the `INTERLINK_MUX=false` control variant collapse at the medium
+profile — ~920 RPS achieved vs 3,200 target, p99 ~18 s, dozens of connection errors —
+under 1,600 concurrent cross-node connections. Because *both* variants collapse
+identically, the dominant cause is host contention (fortio's 1,600 client threads + two
+proxies + docker builds + kube system on one box), consistent with the machine-noise
+ceiling documented in rounds 9/11. So the numbers are **contention-dominated and were
+not published** (A4/A10/C6 — no untrustworthy numbers in the README or comparison.md;
+the prior mixed-methodology table was left in place, not overwritten, and flagged
+pending a clean re-run).
+
+**Separately real, and worth its own investigation:** mux routes *all* connections
+between a node pair through **one** yamux session. That is exactly why it wins on churn
+(one handshake for thousands of sequential reconnects, −63 % CPU — round 13) but it also
+means high *concurrency* funnels through a single session's flow-control and stream
+scheduler. The medium collapse can't isolate this (contention masks it), but it is a
+plausible head-of-line-blocking bottleneck. Future work: cap streams per tunnel and open
+N tunnels per peer (or fall back to 1:1 above a concurrency threshold); quantify on a
+dedicated host. The mux tests only exercised ≤10 concurrent streams — a >1,000-stream
+test is the missing coverage (A8/A9 at scale).
+
+**To finish (needs a quiet, dedicated host):** run all four variants
+(interlink, interlink-nomux, linkerd, istio) at 300 s via the unified harness, then
+`python3 bench/scripts/aggregate.py` regenerates `bench/results/comparison.md` and the
+README table.
+
 ## Thirteenth round (2026-07-08): handshake avoidance implemented — mux tunnels
 
 **✓ ALPN-negotiated multiplexed mTLS tunnels** (`src/proxy/mux.rs`, ALPN `il/mux/1`),

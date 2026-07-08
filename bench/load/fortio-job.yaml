@@ -7,8 +7,10 @@ spec:
   template:
     metadata:
       annotations:
-        linkerd.io/inject: disabled
+        linkerd.io/inject: enabled
     spec:
+      nodeSelector:
+        bench-role: client
       restartPolicy: Never
       containers:
         - name: fortio

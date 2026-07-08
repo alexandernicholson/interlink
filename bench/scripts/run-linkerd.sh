@@ -10,7 +10,7 @@ RESULTS="${RESULTS_DIR}/linkerd"
 mkdir -p "${RESULTS}"
 
 log "creating kind cluster ${CLUSTER_NAME}"
-kind create cluster --name "${CLUSTER_NAME}"
+create_bench_cluster "${CLUSTER_NAME}"
 
 log "loading echo-server image"
 kind load docker-image --name "${CLUSTER_NAME}" interlink-bench/echo-server:latest
@@ -38,7 +38,7 @@ run_profile() {
     log "running profile ${label}"
 
     local metrics_out="${RESULTS}/metrics-${label}.csv"
-    sample_metrics bench "app=echo-server" "${metrics_out}" 300 &
+    sample_metrics bench "app=echo-server" "${metrics_out}" "${BENCH_DURATION:-300}" &
     local sampler_pid=$!
 
     kubectl delete job fortio-load -n bench --ignore-not-found=true
@@ -64,7 +64,7 @@ for QPS in 320 3200 12800; do
         3200) CONNECTIONS=1600 ;;
         12800) CONNECTIONS=6400 ;;
     esac
-    DURATION=300
+    DURATION="${BENCH_DURATION:-300}"
     PAYLOAD_SIZE=1024
     FORTIO_TIMEOUT=120
     LABEL="linkerd-q${QPS}-c${CONNECTIONS}"

@@ -13,6 +13,8 @@ spec:
       labels:
         app: echo-server
     spec:
+      nodeSelector:
+        bench-role: server
       containers:
         - name: echo-server
           image: interlink-bench/echo-server:latest

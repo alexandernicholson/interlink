@@ -6,76 +6,88 @@ BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${BENCH_DIR}/scripts/common.sh"
 
 CLUSTER_NAME="interlink-bench-interlink"
-RESULTS="${RESULTS_DIR}/interlink"
+# INTERLINK_MUX=false runs the no-tunnel control variant.
+export INTERLINK_MUX="${INTERLINK_MUX:-true}"
+VARIANT="interlink"
+if [[ "${INTERLINK_MUX}" == "false" ]]; then
+    VARIANT="interlink-nomux"
+fi
+RESULTS="${RESULTS_DIR}/${VARIANT}"
 mkdir -p "${RESULTS}"
 
-log "creating kind cluster ${CLUSTER_NAME}"
-cat > "${RESULTS_DIR}/kind-config.yaml" <<EOF
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-  - role: control-plane
-    extraPortMappings:
-      - containerPort: 8080
-        hostPort: 18080
-EOF
-
-kind create cluster --name "${CLUSTER_NAME}" --config "${RESULTS_DIR}/kind-config.yaml"
+log "creating kind cluster ${CLUSTER_NAME} (3-node shared topology)"
+create_bench_cluster "${CLUSTER_NAME}"
 
 log "loading images into kind"
 kind load docker-image --name "${CLUSTER_NAME}" interlink-bench/echo-server:latest
 kind load docker-image --name "${CLUSTER_NAME}" interlink-bench/interlinkd:latest
 
-log "generating interlink test certificates (DER format for interlinkd)"
+kubectl create namespace bench || true
+
+# Echo server first: its pod IP goes into the proxy certificate's IP SANs
+# (mesh peers dial pods by ip:port; an IP ServerName never matches a DNS SAN).
+log "deploying echo server"
+kubectl apply -n bench -f "${BENCH_DIR}/workloads/echo-server-deployment.yaml"
+wait_for_pod bench "app=echo-server"
+ECHO_IP=$(kubectl get pod -n bench -l app=echo-server -o jsonpath='{.items[0].status.podIP}')
+log "echo pod IP: ${ECHO_IP}"
+
+log "generating interlink certificates (SPIFFE URI + IP SANs, DER)"
 CA_DIR="${RESULTS}/certs"
 mkdir -p "${CA_DIR}"
-# interlinkd expects DER/PKCS#8 format, not PEM.
-# Generate CA key (PKCS#8 DER) and self-signed cert (DER).
+SPIFFE_ID="spiffe://bench.local/ns/bench/sa/proxy"
 openssl genpkey -algorithm ed25519 -outform DER -out "${CA_DIR}/ca.key" 2>/dev/null
-openssl req -x509 -key "${CA_DIR}/ca.key" -keyform DER -out "${CA_DIR}/ca.der" -outform DER -days 1 -nodes -subj "/CN=interlink-bench-ca" 2>/dev/null
-# Generate server key (PKCS#8 DER), CSR, and signed cert (DER).
+openssl req -x509 -key "${CA_DIR}/ca.key" -keyform DER -out "${CA_DIR}/ca.der" -outform DER \
+    -days 1 -subj "/CN=interlink-bench-ca" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,digitalSignature" 2>/dev/null
 openssl genpkey -algorithm ed25519 -outform DER -out "${CA_DIR}/server.key" 2>/dev/null
 openssl req -new -key "${CA_DIR}/server.key" -keyform DER -out "${CA_DIR}/server.csr" -subj "/" 2>/dev/null
-openssl x509 -req -in "${CA_DIR}/server.csr" -CA "${CA_DIR}/ca.der" -CAform DER -CAkey "${CA_DIR}/ca.key" -CAkeyform DER -CAcreateserial -out "${CA_DIR}/server.der" -outform DER -days 1 2>/dev/null
+openssl x509 -req -in "${CA_DIR}/server.csr" \
+    -CA "${CA_DIR}/ca.der" -CAform DER -CAkey "${CA_DIR}/ca.key" -CAkeyform DER \
+    -CAcreateserial -out "${CA_DIR}/server.der" -outform DER -days 1 \
+    -extfile <(printf "subjectAltName=URI:%s,IP:%s,DNS:localhost\nextendedKeyUsage=serverAuth,clientAuth\nkeyUsage=digitalSignature\n" "${SPIFFE_ID}" "${ECHO_IP}") 2>/dev/null
 
-# Verify DER files.
-for f in ca.key ca.der server.key server.der; do
-    if [[ ! -s "${CA_DIR}/${f}" ]]; then
-        log "ERROR: failed to generate ${CA_DIR}/${f}"
-        exit 1
-    fi
+for f in ca.der server.key server.der; do
+    [[ -s "${CA_DIR}/${f}" ]] || { log "ERROR: failed to generate ${f}"; exit 1; }
 done
 
-kubectl create namespace bench || true
 kubectl create secret generic interlink-certs -n bench \
     --from-file="${CA_DIR}/ca.der" \
     --from-file="${CA_DIR}/server.der" \
     --from-file="${CA_DIR}/server.key"
 
-log "deploying interlink"
-kubectl apply -n bench -f "${BENCH_DIR}/manifests/interlink/configmap.yaml"
+log "deploying interlink (mux=${INTERLINK_MUX})"
 kubectl apply -n bench -f "${BENCH_DIR}/manifests/interlink/rbac.yaml"
-kubectl apply -n bench -f "${BENCH_DIR}/manifests/interlink/daemonset.yaml"
-
-log "deploying echo server"
-kubectl apply -n bench -f "${BENCH_DIR}/workloads/echo-server-deployment.yaml"
-wait_for_pod bench "app=echo-server"
+envsubst '${INTERLINK_MUX}' < "${BENCH_DIR}/manifests/interlink/daemonset.yaml" | kubectl apply -n bench -f -
 wait_for_pod bench "app=interlink"
 
 log "installing metrics-server"
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 kubectl patch deployment metrics-server -n kube-system --type='json' -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
-# Wait for the deployment to be available; tolerate timeout since metrics-server is non-critical for Fortio.
 kubectl wait --for=condition=available deployment/metrics-server -n kube-system --timeout=120s 2>/dev/null || true
+
+# Smoke check: one meshed request must succeed before burning profile time.
+log "smoke check through the mesh"
+kubectl delete pod smoke -n bench --ignore-not-found=true >/dev/null 2>&1
+kubectl run smoke -n bench --restart=Never --image=fortio/fortio:${FORTIO_VERSION} \
+    --overrides='{"spec":{"nodeSelector":{"bench-role":"client"}}}' \
+    -- load -qps 2 -t 2s -c 1 http://echo-server:8080/echo
+kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/smoke -n bench --timeout=60s || {
+    log "ERROR: smoke request failed; interlink data path is broken"
+    kubectl logs -n bench -l app=interlink --tail=20 || true
+    exit 1
+}
+kubectl delete pod smoke -n bench --ignore-not-found=true >/dev/null 2>&1
 
 run_profile() {
     local qps="$1"
     local conns="$2"
-    local label="interlink-q${qps}-c${conns}"
+    local label="${VARIANT}-q${qps}-c${conns}"
     log "running profile ${label}"
 
     local metrics_out="${RESULTS}/metrics-${label}.csv"
-    sample_metrics bench "app=interlink" "${metrics_out}" 300 &
+    sample_metrics bench "app=interlink" "${metrics_out}" "${BENCH_DURATION:-300}" &
     local sampler_pid=$!
 
     kubectl delete job fortio-load -n bench --ignore-not-found=true
@@ -101,11 +113,11 @@ for QPS in 320 3200 12800; do
         3200) CONNECTIONS=1600 ;;
         12800) CONNECTIONS=6400 ;;
     esac
-    DURATION=300
+    DURATION="${BENCH_DURATION:-300}"
     PAYLOAD_SIZE=1024
     FORTIO_TIMEOUT=120
-    LABEL="interlink-q${QPS}-c${CONNECTIONS}"
+    LABEL="${VARIANT}-q${QPS}-c${CONNECTIONS}"
     run_profile "${QPS}" "${CONNECTIONS}"
 done
 
-log "interlink benchmark complete. Results in ${RESULTS}"
+log "${VARIANT} benchmark complete. Results in ${RESULTS}"
