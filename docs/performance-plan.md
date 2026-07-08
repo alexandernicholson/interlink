@@ -1,11 +1,13 @@
 # Performance Uplift Plan
 
-Status: **regression queue clear (2026-07-08, eighth review round)** — all findings
-from eight review rounds are fixed and verified; preflight (clippy `-D warnings` +
-tests) is green at HEAD and enforced by the `.githooks/pre-commit` hook. Remaining
-work is measurement (R24) and the optimization backlog below, each gated on
-before/after numbers. Items marked ✓ are implemented and verified; ⚠ marks partial or
-historical states preserved in the findings log.
+Status: **ninth review round (2026-07-08)** — the first optimization-phase round
+reintroduced a data-plane regression: the custom copy loop dropped half-close
+propagation (fixed during review with tokio's `copy_bidirectional_with_sizes` + a
+regression test, uncommitted → R25). Open queue: R25 (commit review fixes), R26/R27
+(`SO_REUSEPORT` acceptor panics + broken watch shutdown), R28 (resumed-fraction
+measurement, still never captured), R29 (`SO_REUSEPORT` before/after — heavy p99 moved
+62.7→73.5 ms, unexplained). Preflight is green on the working tree. Items marked ✓ are
+implemented and verified; ⚠ marks partial or historical states in the findings log.
 Grounded in a full read of the per-connection hot path
 (`src/proxy/tcp.rs`, `src/proxy/outbound.rs`, `src/proxy/handshake.rs`, `src/policy/mod.rs`,
 `src/common/identity.rs`, `src/discovery/dns.rs`, `src/metrics/mod.rs`) and the measured
@@ -84,6 +86,61 @@ finding 1's fix introduced a new P0 (see third round):
    `resolve_upstream` returns `SocketAddr` in both proxies; inbound `TcpStream::connect`
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
+
+## Review findings — ninth round (2026-07-08), data-plane regression fixed in review
+
+Review of `607fed4..87f5ebe` (the first optimization-phase round: copy buffers,
+`SO_REUSEPORT`, R24 bench captures):
+
+1. **P0 — the custom `copy_bidirectional` dropped half-close propagation; fixed in
+   review.** Commit `4925b72` replaced `tokio::io::copy_bidirectional` with a 60-line
+   custom `select!` loop that, on EOF from one side, merely flags `done` and never shuts
+   the other side down — no FIN, no close_notify. Any protocol that reads to EOF hangs
+   through the proxy, and under churn every connection lingers until idle timeouts
+   (300 s keepalive) instead of closing — a slow connection/memory leak. Confirmed
+   empirically in both directions per A11: a probe driving the real `TcpProxy` with a
+   half-closing client and a read-to-EOF backend **hangs on the custom loop** and
+   **passes when the copy delegates to tokio's**. The bench didn't catch it because
+   Fortio's HTTP uses content-length framing (no read-to-EOF), and the e2e echo reads a
+   fixed buffer. The irony: the plan item literally named
+   `copy_bidirectional_with_sizes` — the tokio API that does exactly this with
+   correct shutdown propagation. **Fixed in review (working tree): the custom loop is
+   replaced by a thin wrapper over `tokio::io::copy_bidirectional_with_sizes(a, b,
+   64 KiB, 64 KiB)`, and the probe is committed-pending as
+   `tests/halfclose_propagation.rs`** (5 s timeout, drives the full mTLS proxy path).
+   Preflight green. → **R25**: commit these.
+2. **P1 — `SO_REUSEPORT` acceptors panic on bind/listen failure** (`tcp.rs`,
+   `outbound.rs`): `expect`/`panic!` inside spawned acceptor tasks, under
+   `panic = "abort"` → a bind failure (port taken, permissions) aborts the whole proxy.
+   The B8 lint was bypassed with a scoped `allow(clippy::expect_used)` with no
+   impossibility argument — bind failure is an ordinary runtime error (B12: the check
+   was deleted-by-allow, not made fallible). Fix: log + return from the acceptor (and
+   surface a startup error if *zero* acceptors bind). → **R26**.
+3. **P1 — watch-channel shutdown no longer stops the accept loops.** Acceptors now poll
+   only the new `AtomicBool` flag (100 ms sleep loop); a caller using the documented
+   `with_shutdown(rx)` alone — every library consumer and test — can no longer stop the
+   proxy. `main.rs` sets both, so the daemon works, but the public API contract is
+   silently broken, and the poll loop replaces event-driven wakeup. Fix: acceptors
+   select on the watch receiver (clone per acceptor); drop the flag or keep it as an
+   internal detail. → **R27**.
+4. **P2 — R24 marked ✓ while its principal deliverable is missing** (D7/A10 again).
+   `grep -r resumed bench/` returns nothing: the harness never scrapes the
+   `interlink_handshake_{full,resumed}_total` counters, so the resumed fraction — the
+   number the pooling decision hinges on — was never captured. Bulk 256 KB (commit
+   message: "needs investigation") and the flamegraph are also still open. → **R28**:
+   have `run-proxy.sh` curl the metrics endpoint before/after each profile and emit the
+   two counters into the summary.
+5. **P2 — summary regeneration clobbers prior sections**: the committed
+   `proxy-summary.md` now contains only the four profiles from the last run — the churn
+   sections captured in `607fed4` were overwritten by the bulk run (the script rewrites
+   the file from scratch). Append per-profile files, or write one summary per run
+   directory. → also **R28**.
+6. **P3 — `SO_REUSEPORT` shipped without a before/after comparison** (A4). The rerun
+   zero-delay baselines actually moved the heavy profile the wrong way (q12800 p99:
+   62.7 → 73.5 ms; q320 unchanged) — possibly noise, possibly contention from 4
+   acceptors × accept-loop `handle_accept` awaits, but nobody compared. → **R29**: run
+   a controlled before/after on the heavy + churn profiles and keep or revert
+   `SO_REUSEPORT` based on the numbers.
 
 ## Review findings — eighth round (2026-07-08), regression queue clear
 
@@ -315,7 +372,10 @@ Acceptance: every later phase must show its effect on at least one of these prof
 1. **✓ Overlap upstream connect with TLS handshake (inbound)**. Used `tokio::join!` to run
    `TcpStream::connect` in parallel with `tls_server.accept`. Saves ~1 RTT off every inbound
    connection. On deny, the prematurely-opened upstream connection is closed.
-2. **Bigger copy buffers** — still TODO (needs custom copy_bidirectional).
+2. **✓ Bigger copy buffers** — 64 KiB via `tokio::io::copy_bidirectional_with_sizes`
+   (the `4925b72` custom loop dropped half-close propagation — ninth-round finding 1 —
+   and was replaced in review by the tokio API the item originally named; regression
+   test `tests/halfclose_propagation.rs` pins the behavior).
 3. **⚠ Verify TLS 1.3 session resumption** — instrumented and empirically confirmed
    (sixth round): `HandshakeKind` counters landed, and the review probe over interlink's
    own `TlsClient`/`TlsServer` shows `Full` → `Resumed` → `Resumed`. Nuance: tickets are
@@ -332,9 +392,12 @@ Acceptance: every later phase must show its effect on at least one of these prof
    must be validated on the churn profile.
 2. **✓ Fix accept-loop head-of-line blocking**: `try_acquire_owned()` on both proxies,
    `interlink_saturation_rejections_total` counter wired to both (fixed in `e225998`).
-3. **✓ Multiple acceptors with `SO_REUSEPORT`** — implemented in `0111a48`. Both
-   proxies spawn N = min(available_parallelism, 4) ≥ 2 acceptor tasks, each with
-   its own SO_REUSEPORT socket. Kernel distributes connections across listeners.
+3. **⚠ Multiple acceptors with `SO_REUSEPORT`** — implemented in `0111a48` (N =
+   min(available_parallelism, 4) ≥ 2 acceptors per proxy, kernel-distributed), but
+   shipped with three defects (ninth-round findings 2, 3, 6): acceptors panic on
+   bind/listen failure (process abort in release → R26), the watch-channel shutdown API
+   is silently dead for acceptors (→ R27), and there is no before/after — the heavy
+   profile's p99 moved 62.7 → 73.5 ms, unexplained (→ R29, keep-or-revert on numbers).
 4. **✓ DNS discovery hardening**: deadlock fixed, 30 s TTL, single-flight verified by a
    counting-fake test (exactly 1 lookup per N concurrent callers), expired entries
    re-resolve, no panic paths (empirically re-verified). Remaining nits: the waiter
@@ -367,10 +430,15 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | ✓R21 | Commit the resumption integration test (assert `Resumed` on conn 2) | S | Test as committed in `428c967` had 3 bugs and failed; repaired in 7th-round review, landed via R23 |
 | ✓R22 | B13 tail: restrict or clearly fence unvalidated `SpiffeId::new` | S | Fixed in `e0f4bc7`, verified; `pub(crate)` now |
 | ✓R23 | Commit the review-fixed `test_tls_resumption` | S | Landed in `f2c46dc` (not `428c967` — that was the broken version); preflight green at HEAD, verified 8th round |
-| ✓R24 | Churn run reporting resumed fraction; bulk 256KB baseline; flamegraph | S | Churn captured in `607fed4`; bulk 256KB still TODO; flamegraph TODO |
-| ✓2 | `copy_bidirectional_with_sizes` with 16–64 KiB buffers | S | Implemented in `4925b72` (64 KiB); judge on bulk-throughput profile |
+| ⚠R24 | Churn run reporting resumed fraction; bulk 256KB baseline; flamegraph | S | Resumed fraction **never captured** (harness doesn't scrape metrics); bulk 256KB + flamegraph TODO → R28 |
+| ✓2 | `copy_bidirectional_with_sizes` with 16–64 KiB buffers | S | `4925b72` custom loop broke half-close (9th-round finding 1); replaced in review with the tokio API + regression test → commit via R25 |
 | 3 | Connection pooling redesign (kept-alive tunnels / HTTP-aware) | L | validate against churn baseline |
-| ✓3 | `SO_REUSEPORT` multi-acceptor + listener backlog tuning | M | Implemented in `0111a48`; 2-4 acceptors per proxy |
+| ⚠3 | `SO_REUSEPORT` multi-acceptor + listener backlog tuning | M | Implemented in `0111a48` but: panics on bind (R26), breaks watch shutdown (R27), no before/after and heavy p99 regressed 62.7→73.5 ms (R29) |
+| R25 | Commit the review fixes: tokio-delegating copy + `tests/halfclose_propagation.rs` | S | **P0 fix**, in working tree, preflight green |
+| R26 | Acceptor bind/listen failure: log+return instead of panic; error if zero acceptors bind | S | P1 — process abort in release (finding 2) |
+| R27 | Restore watch-channel shutdown for acceptors (select on rx, drop the poll loop) | S | P1 — public shutdown API silently broken (finding 3) |
+| R28 | Harness scrapes `interlink_handshake_*_total` for resumed fraction; stop clobbering summary sections; bulk 256KB; flamegraph | M | P2 — completes R24 (findings 4, 5) |
+| R29 | Controlled before/after for SO_REUSEPORT (heavy + churn); keep or revert on numbers | S | P3 — A4 (finding 6) |
 | 4 | Crypto provider bake-off (`aws-lc-rs` vs `ring`), `worker_threads` config | M | measure to confirm |
 
 (**All regressions R1–R23 are closed and verified as of the eighth round.** Preflight

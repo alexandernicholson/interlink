@@ -14,71 +14,23 @@ pub use outbound::OutboundProxy;
 pub use tcp::TcpProxy;
 
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
-/// Buffer size for bidirectional data copy (64 KiB).
-/// Used by the custom `copy_bidirectional` in place of tokio's hardcoded 8 KiB.
+/// Buffer size for bidirectional data copy (64 KiB vs tokio's 8 KiB default).
 pub(crate) const COPY_BUF_SIZE: usize = 65536;
 
-/// Copy data bidirectionally between two async streams using 64 KiB buffers.
+/// Bidirectional copy with 64 KiB buffers.
 ///
-/// Uses a `select!` loop to read from whichever side is ready first, then
-/// writes to the other. The buffer is `COPY_BUF_SIZE` bytes per direction.
-pub(crate) async fn copy_bidirectional<A, B>(
-    a: &mut A,
-    b: &mut B,
-) -> std::io::Result<(u64, u64)>
+/// Delegates to tokio's `copy_bidirectional_with_sizes`, which propagates
+/// half-close: when one side reaches EOF, the other side is shut down
+/// (FIN / TLS close_notify), per C7 — protocols that read-to-EOF depend on it.
+pub(crate) async fn copy_bidirectional<A, B>(a: &mut A, b: &mut B) -> std::io::Result<(u64, u64)>
 where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut buf_a = vec![0u8; COPY_BUF_SIZE];
-    let mut buf_b = vec![0u8; COPY_BUF_SIZE];
-    let mut read_a = false;
-    let mut read_b = false;
-    let mut done_a = false;
-    let mut done_b = false;
-    let mut total_a = 0u64;
-    let mut total_b = 0u64;
-
-    loop {
-        tokio::select! {
-            biased;
-            // Read from A if not in progress and not done.
-            result = async { if !read_a && !done_a {
-                let n = a.read(&mut buf_a).await;
-                read_a = true;
-                n
-            } else { std::future::pending::<std::io::Result<usize>>().await } } => {
-                match result {
-                    Ok(0) => { done_a = true; read_a = false; }
-                    Ok(n) => { total_a += n as u64; b.write_all(&buf_a[..n]).await?; read_a = false; }
-                    Err(e) => return Err(e),
-                }
-            }
-            // Read from B if not in progress and not done.
-            result = async { if !read_b && !done_b {
-                let n = b.read(&mut buf_b).await;
-                read_b = true;
-                n
-            } else { std::future::pending::<std::io::Result<usize>>().await } } => {
-                match result {
-                    Ok(0) => { done_b = true; read_b = false; }
-                    Ok(n) => { total_b += n as u64; a.write_all(&buf_b[..n]).await?; read_b = false; }
-                    Err(e) => return Err(e),
-                }
-            }
-        }
-
-        if done_a && done_b {
-            return Ok((total_a, total_b));
-        }
-
-        // Flush writes after each round.
-        b.flush().await?;
-        a.flush().await?;
-    }
+    tokio::io::copy_bidirectional_with_sizes(a, b, COPY_BUF_SIZE, COPY_BUF_SIZE).await
 }
 
 /// Apply standard TCP tuning to a proxy socket.
