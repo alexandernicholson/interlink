@@ -197,7 +197,7 @@ fi
 
 echo "# interlink proxy benchmark summary" > "${RESULTS}/proxy-summary.md"
 echo "" >> "${RESULTS}/proxy-summary.md"
-echo "Server: Go echo-server (plain HTTP, 200 ms delay)" >> "${RESULTS}/proxy-summary.md"
+echo "Server: Go echo-server (plain HTTP, ${PROFILE_DELAY:-200ms} delay)" >> "${RESULTS}/proxy-summary.md"
 echo "Proxy: interlinkd (inbound mTLS → plain TCP)" >> "${RESULTS}/proxy-summary.md"
 echo "Load: Fortio HTTPS + mTLS" >> "${RESULTS}/proxy-summary.md"
 echo "Profiles: ${QUICK_DURATION}s each" >> "${RESULTS}/proxy-summary.md"
