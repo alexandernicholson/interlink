@@ -2,7 +2,7 @@
 
 Binding rules for changes to this repo, especially the proxy hot path. Each rule exists
 because we made the mistake it forbids (2026-07-08 performance work, commits
-`583f3f5..40242a7`; see `docs/performance-plan.md` "Review findings", seven rounds —
+`583f3f5..87f5ebe`; see `docs/performance-plan.md` "Review findings", nine rounds —
 including mistakes made *during review*, which count too). Cite the rule number in
 review when you see a violation. Rules are append-only — numbers are stable so
 citations stay valid.
@@ -214,6 +214,32 @@ infallible constructor is genuinely needed for compile-time constants, restrict 
 a public `new()` that skips the check, because every future call site inherits the
 footgun invisibly.
 
+**B14. Don't reimplement a primitive the ecosystem already provides — and if you must,
+replicate its documented semantics under test.**
+Round nine hand-rolled a 60-line `select!` copy loop to get 64 KiB buffers, when
+`tokio::io::copy_bidirectional_with_sizes` — the API the plan item literally named —
+already existed. The custom loop silently dropped half-close propagation (no
+FIN/close_notify on EOF), hanging every read-to-EOF protocol through the proxy. The
+same round replaced the existing watch-channel shutdown with a hand-rolled 100 ms poll
+loop. Mature primitives encode semantics you will not think of under deadline: shutdown
+propagation, cancel safety, flush discipline, wakeup correctness. Before writing a
+replacement for a std/tokio/rustls primitive: (a) check the docs for the configurable
+variant of the thing you want — it usually exists; (b) if it truly doesn't, list the
+primitive's documented behaviors in the PR and show a test for each one your version
+preserves. "It's just a copy loop" is how a one-line buffer-size change became a
+data-plane hang.
+
+**B15. A lint `#[allow]` is a proof obligation: the comment must argue impossibility,
+not convenience.**
+The `SO_REUSEPORT` acceptors carry `allow(clippy::expect_used)` over `expect`s on
+`bind()` and `listen()` — operations that fail in ordinary production circumstances
+(port taken, permission denied), inside spawned tasks, in a binary built with
+`panic = "abort"`. That allow bypassed B8 exactly the way deleting a validation
+bypassed it in round four (B12). A scoped allow is legitimate only when the
+accompanying comment states *why the failure cannot occur at runtime* (e.g. "input is
+a compile-time constant OID"). If the sentence you'd write is about likelihood ("bind
+rarely fails") rather than impossibility, the code needs an error path, not an allow.
+
 ## C. Hot-path and observability standards
 
 **C1. A metric name is a contract.**
@@ -281,6 +307,16 @@ the cert's SAN list, and dial with exactly that name (`localhost:{port}`, not th
 stringified socket address). If a peer must be reachable by IP, the cert needs an IP
 SAN — that's an `issue_leaf_with_key` argument, not a client-side workaround.
 
+**C9. Never leave a public API as a silent no-op.**
+The `SO_REUSEPORT` rewrite made the acceptors watch a new `AtomicBool` flag and stopped
+reading the watch-channel receiver — so `with_shutdown(rx)`, the documented shutdown
+API used by every library consumer and test, still compiles, still accepts a receiver,
+and does nothing. An API that quietly stops working is worse than a removed one: the
+compiler would have caught removal. When you change a mechanism, grep for every
+consumer of the old one and either wire it to the new mechanism, or delete/deprecate
+it so callers break loudly. A setter whose value is never read again is the smell to
+grep for.
+
 ## D. Process
 
 **D1. One logical change per commit/PR**, with the profile or test evidence in the
@@ -305,6 +341,13 @@ truth for what's proven vs. claimed.
 - [ ] Metrics: right counter, all paths, no sentinel histogram values (C1, C2)
 - [ ] Lint fixes preserved every assertion/validation they touched (B12); invariant
       types still have no unvalidated public constructor (B13)
+- [ ] Every `#[allow]` comment argues impossibility, not likelihood (B15)
+- [ ] Custom replacements for std/tokio/rustls primitives: the configurable variant
+      was checked first; documented semantics are listed and tested (B14)
+- [ ] Changed a mechanism? Every consumer of the old one is wired up or breaks
+      loudly — no silent no-op APIs (C9)
+- [ ] Re-ran a profile? New numbers diffed against previous, delta stated and
+      explained; optimization PRs quote their own before/after (D10, A4)
 - [ ] Changed a generator? Its committed outputs are regenerated in this PR (D5)
 - [ ] Commit message re-read against `git diff --stat` — every claim appears (A5, D6)
 - [ ] Closing a finding? Every enumerated item addressed or explicitly deferred (D7)
@@ -370,3 +413,13 @@ with `git config core.hooksPath .githooks`. Bypassing it (`git commit --no-verif
 allowed only for docs-only changes and must be stated in the commit message with the
 reason. If the hook is too slow for your iteration loop, fix the loop (keep the build
 warm, commit less often) — not the gate.
+
+**D10. Captured numbers are compared, not just committed.**
+Round nine regenerated the zero-delay baselines as a side effect of other work; the
+heavy profile's p99 had moved 62.7 → 73.5 ms — an 17 % regression sitting in the
+committed summary — and nobody noticed, because capture was treated as the finish line.
+Every time a profile is re-run: diff the new numbers against the previous committed
+numbers, state the delta and its believed cause in the PR (noise / expected / needs
+investigation), and treat an unexplained regression as a blocker for the change that
+produced it. An optimization PR in particular must quote its own before/after (A4) —
+"the numbers are in the results directory" is not a comparison.

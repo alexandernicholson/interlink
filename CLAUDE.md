@@ -31,8 +31,14 @@ touches as performance- and security-sensitive.
   is ⚠ partial, never ✓ (D7); "verify X" closes with an observable signal (metric,
   failing-test, or measurement), never with design reasoning (A10); a negative probe
   result is validated against the mechanism before being reported (A11);
-  connection-lifecycle claims cite the protocol point where the state holds (C7); and
-  run `./scripts/preflight.sh` before **every** commit (D8).
+  connection-lifecycle claims cite the protocol point where the state holds (C7);
+  never reimplement a std/tokio/rustls primitive without checking for the configurable
+  variant and testing the documented semantics you must preserve (B14 — a custom copy
+  loop once dropped half-close propagation and hung the data plane); an `#[allow]`
+  comment must argue impossibility, not likelihood (B15); no silent no-op public APIs —
+  wire every consumer of a changed mechanism or break it loudly (C9); re-captured
+  benchmark numbers are diffed against the previous run with the delta explained (D10);
+  and run `./scripts/preflight.sh` before **every** commit (D8).
 
 ## Verified protocol facts (don't re-derive, don't contradict without a new probe)
 

@@ -1,0 +1,16 @@
+# CI gate — same checks as .githooks/pre-commit / scripts/preflight.sh (rules D8/D9).
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: preflight (clippy -D warnings + tests)
+        run: ./scripts/preflight.sh
