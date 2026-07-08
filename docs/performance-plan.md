@@ -262,14 +262,14 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | ✓R10 | Fix DNS waiter panic | S | Fixed in `866c5c6`, empirically re-verified |
 | ✓R11 | Refresh expired DNS entries | S | Fixed in `f00c8a9` (blocking refresh; serve-stale dropped by design) |
 | ✓R12 | Resolver trait + counting-fake concurrency tests | M | Fixed in `f00c8a9` |
-| ✓R13 | `proxy-summary.md` header echoes `PROFILE_DELAY` | S | Generator fixed in `f00c8a9`; committed artifact still mislabeled → R16 |
-| ⚠R14 | Restore SPIFFE validation at config/runtime call sites | S | `try_new` added but the 3 config sites still unvalidated → **R18** |
+| ✓R13 | `proxy-summary.md` header echoes `PROFILE_DELAY` | S | Generator fixed in `f00c8a9` |
+| ✓R14 | Restore SPIFFE validation as `try_new()` | S | Fixed in `ce346c5` + `b3b9958` (3 config sites) |
 | ✓R15 | Waiter-branch test: gated fake resolver forces followers into the semaphore wait | S | Fixed in `ce346c5`, verified |
-| R16 | Complete bulk baselines | S | Header + 64KB done; 256KB still missing |
+| R16 | Complete bulk baselines (256KB) | S | Header + 64KB done (`9d73fff`); 256KB still missing |
 | ✓R17 | Apply B8 lint attribute to `src/discovery/` | S | Fixed in `ce346c5`, verified |
-| R18 | Use `try_new` at `main.rs:52`, `tcp.rs:72`, `outbound.rs:74`; restrict raw `new()` (B13) | S | **P1** — empty config trust domain still enters policy evaluation (5th-round finding 1) |
-| R19 | Resumption observability: `HandshakeKind` counter + integration test + measured churn delta | M | P1 — replaces the evidence-free "verified architecturally" claim (finding 2) |
-| ✓R20 | Fix 2 reintroduced clippy warnings (`dns.rs:330`) | S | Fixed in review; `scripts/preflight.sh` added as the mechanical gate (D8) |
+| ✓R18 | Use `try_new` at `main.rs:52`, `tcp.rs:72`, `outbound.rs:74` | S | Fixed in `b3b9958` |
+| ✓R19 | Resumption observability: `HandshakeKind` counter | M | Fixed in `b3b9958` — both accept and connect paths |
+| ✓R20 | Fix clippy warnings + preflight script | S | Fixed in `b3b9958`; `scripts/preflight.sh` added |
 | 0 | Bulk 256KB baseline + flamegraph | S | 64KB baseline captured (8.8 % CPU) |
 | 2 | `copy_bidirectional_with_sizes` with 16–64 KiB buffers | S | judge on bulk-throughput profile (bulk shows 8.8% CPU at 64KB) |
 | 3 | Connection pooling redesign (kept-alive tunnels / HTTP-aware) | L | validate against churn baseline |
