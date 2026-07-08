@@ -44,7 +44,7 @@ impl KubernetesIdentityProvider {
         let namespace = Self::read_namespace()?;
         let service_account = Self::read_service_account()?;
 
-        Ok(SpiffeId::new(trust_domain, namespace, service_account))
+        SpiffeId::try_new(trust_domain, namespace, service_account)
     }
 
     fn read_namespace() -> Result<String, InterlinkError> {

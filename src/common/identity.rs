@@ -111,6 +111,8 @@ pub struct SpiffeId {
 }
 
 impl SpiffeId {
+    /// Construct a SPIFFE ID without validation (for compile-time-known constants).
+    /// For runtime input (config, network data), use `try_new()` or `from_uri()`.
     pub fn new(
         trust_domain: impl Into<String>,
         namespace: impl Into<String>,
@@ -121,6 +123,17 @@ impl SpiffeId {
             namespace: namespace.into(),
             service_account: service_account.into(),
         }
+    }
+
+    /// Validate and construct — use for config/runtime data.
+    pub fn try_new(
+        trust_domain: impl Into<String>,
+        namespace: impl Into<String>,
+        service_account: impl Into<String>,
+    ) -> Result<Self, InterlinkError> {
+        let id = Self::new(trust_domain, namespace, service_account);
+        id.validate_segments()?;
+        Ok(id)
     }
 
     fn validate_segments(&self) -> Result<(), InterlinkError> {

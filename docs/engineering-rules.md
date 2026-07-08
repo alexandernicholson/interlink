@@ -58,6 +58,19 @@ production-shaped use. Error-path tests are necessary but not sufficient: for an
 coordination code, at minimum one test drives N concurrent callers through the
 *successful* flow (a barrier + a resolvable input caught the panic in seconds).
 
+**A9. A fake must be able to hold the system in its intermediate states — and the test
+must prove the contested branch ran.**
+The counting fake resolver returns `Ready` without ever yielding, so under the
+single-threaded test runtime no concurrent caller ever lands in the semaphore-wait
+branch — the dedup test passes via the cache-hit path, and the branch that panicked the
+process in round three is *still* unexecuted by any test. A fake that can't pause can't
+test coordination: give fakes a gate (`tokio::sync::Notify`, a channel, or an injected
+delay) so the test can park the leader mid-operation and force followers into the
+waiting path. Then assert the branch was taken (a counter on the wait path, or assert
+lookups == 1 *while the leader is provably still in flight*), not just that outputs look
+right. Corollary of A2/A8: coverage of a concurrent function means coverage of its
+*interleavings*, not its lines.
+
 ## B. Rust rules
 
 **B1. RAII guards must be bound to a named variable for their intended scope.**
@@ -148,6 +161,25 @@ is injected as a trait object or generic, with the production impl as the defaul
 constructor. The unit tests then use a counting/failing/delaying fake to pin the
 coordination properties.
 
+**B12. Never satisfy a lint by deleting the behavior it flags.**
+To comply with B8's `deny(clippy::expect_used)`, the `validate_segments().expect(…)` call
+was removed from `SpiffeId::new` — so the lint passed and `SpiffeId::new("", "", "")` now
+silently constructs an invalid identity that flows into policy evaluation. The lint
+forbids the *panic*, not the *check*: the correct transformations are panic → `Result`
+(`try_new`), panic → validated-at-boundary (parse config once, store the typed value), or
+— for a genuinely infallible case — a scoped `#[allow]` with a one-line justification.
+If your lint fix removes an assertion, a validation, an error branch, or a log, you have
+changed behavior, and the PR must say so in those words (A5) and defend it.
+
+**B13. A type with an invariant must not expose an unvalidated public constructor.**
+`SpiffeId`'s segments must be non-empty — that's what makes it safe to feed to the policy
+engine (B5). Such a type gets `try_new() -> Result<Self, _>` as the only public
+construction path from runtime data; struct literals stay private to the module. If an
+infallible constructor is genuinely needed for compile-time constants, restrict it
+(`#[cfg(test)]`, `pub(crate)` with a doc comment naming the caller's obligation) — never
+a public `new()` that skips the check, because every future call site inherits the
+footgun invisibly.
+
 ## C. Hot-path and observability standards
 
 **C1. A metric name is a contract.**
@@ -201,7 +233,8 @@ truth for what's proven vs. claimed.
 **D3. Pre-merge checklist** (all must hold):
 - [ ] `cargo test` passes; new paths have tests (A1), concurrency has concurrency tests (A2)
 - [ ] Each new test was made to fail once, asserts its named property, and covers the
-      success path (A6, A7, A8)
+      success path (A6, A7, A8); concurrency tests force the contested branch via a
+      gated/delayed fake (A9)
 - [ ] `cargo build` + `cargo clippy` warning-clean (B6); no panic paths in
       connection-handling code (B8)
 - [ ] Every `unreachable!()` has a divergence proof per arm — or was restructured away (B7)
@@ -209,7 +242,10 @@ truth for what's proven vs. claimed.
 - [ ] Perf-motivated change has attached numbers from an honestly-labeled run (A4, C6)
 - [ ] Sibling proxy file checked for the same pattern (C3)
 - [ ] Metrics: right counter, all paths, no sentinel histogram values (C1, C2)
-- [ ] Commit message states exactly what is and isn't done (A5)
+- [ ] Lint fixes preserved every assertion/validation they touched (B12); invariant
+      types still have no unvalidated public constructor (B13)
+- [ ] Changed a generator? Its committed outputs are regenerated in this PR (D5)
+- [ ] Commit message re-read against `git diff --stat` — every claim appears (A5, D6)
 
 **D4. A fix to a reviewed defect gets re-reviewed against the *original* failure mode.**
 The single-flight bug was "fixed" twice; each fix satisfied the letter of the cited rule
@@ -218,3 +254,19 @@ The single-flight bug was "fixed" twice; each fix satisfied the letter of the ci
 property in the PR ("N concurrent resolves → 1 lookup, waiters get the result, no
 panic, entries refresh after TTL") and show the test output that demonstrates each
 clause — not just the clause the reviewer named.
+
+**D5. Fixing a generator means regenerating its committed artifacts in the same PR.**
+The benchmark-summary header was fixed to echo `PROFILE_DELAY`, but the committed
+`proxy-summary.md` — produced by the *old* script — still says "200 ms delay" above
+zero-delay numbers. A repo where the generator and its outputs disagree is worse than
+either bug alone: the artifact looks authoritative and the fix looks done. When you
+change any script that produces committed files (benchmark summaries, generated configs,
+codegen), rerun it and commit the regenerated outputs together with the script change;
+if rerunning isn't possible, delete the stale artifact rather than leave it mislabeled.
+
+**D6. Claims in commit messages are diff-checkable — check them.**
+"B8: add deny lints to proxy/discovery" landed with the attribute on every proxy module
+and *not* on discovery. Before committing, reread the message against `git diff --stat`:
+every claimed location, fix, and scope must appear in the diff. This is A5 applied
+mechanically; it costs thirty seconds and it has caught something in three of four
+review rounds.

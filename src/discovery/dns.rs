@@ -1,3 +1,6 @@
+// B8: No panic paths in connection-handling code — DNS is reachable from handle_connection.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -315,6 +318,72 @@ mod tests {
             let result = h.await.unwrap();
             assert!(result.is_some(), "should not timeout");
             assert!(result.unwrap().is_ok(), "should succeed");
+        }
+    }
+
+    /// R15: Waiter-branch test — uses a gated resolver that parks the leader
+    /// inside resolve_inner so that concurrent callers are forced into the
+    /// semaphore waiter path. Proves the waiter does not panic and returns
+    /// the same data as the leader.
+    #[tokio::test]
+    async fn test_waiter_branch() {
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        let resolver = Arc::new(GatedResolver {
+            gate: Arc::new(tokio::sync::Mutex::new(Some(rx))),
+        });
+        let sd = Arc::new(ServiceDiscovery::with_resolver(
+            resolver,
+            Duration::from_secs(30),
+        ));
+
+        let name = "gated.example.";
+        let n = 5;
+
+        let mut handles = Vec::with_capacity(n);
+        for _ in 0..n {
+            let sd = sd.clone();
+            handles.push(tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(5), sd.resolve(name)).await
+            }));
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let _ = tx.send(true);
+
+        let mut results: Vec<Result<ResolvedEndpoints, InterlinkError>> = Vec::with_capacity(n);
+        for h in handles {
+            let timeout_result = h.await.unwrap();
+            assert!(
+                timeout_result.is_ok(),
+                "waiter-branch: timeout should not fire (deadlock?)"
+            );
+            let dns_result: Result<ResolvedEndpoints, InterlinkError> = timeout_result.unwrap();
+            assert!(dns_result.is_ok(), "waiter-branch: all should succeed");
+            results.push(dns_result);
+        }
+
+        let first_ep = results.swap_remove(0).unwrap();
+        for r in results {
+            let ep = r.unwrap();
+            assert_eq!(
+                ep.addrs, first_ep.addrs,
+                "waiter-branch: all must return same addrs"
+            );
+        }
+    }
+
+    /// A gated resolver that blocks on a watch channel inside lookup().
+    struct GatedResolver {
+        gate: Arc<tokio::sync::Mutex<Option<tokio::sync::watch::Receiver<bool>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DnsResolver for GatedResolver {
+        async fn lookup(&self, _name: &str) -> Result<Vec<SocketAddr>, InterlinkError> {
+            let mut rx = self.gate.lock().await.take().unwrap();
+            let _ = rx.changed().await;
+            Ok(vec!["127.0.0.1:8080".parse().unwrap()])
         }
     }
 }
