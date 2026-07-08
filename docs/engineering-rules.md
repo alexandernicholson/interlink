@@ -1,10 +1,11 @@
 # Engineering Rules
 
 Binding rules for changes to this repo, especially the proxy hot path. Each rule exists
-because we shipped the mistake it forbids (2026-07-08 performance work, commits
-`583f3f5..8fbe693`; see `docs/performance-plan.md` "Review findings", three rounds).
-Cite the rule number in review when you see a violation. Rules are append-only —
-numbers are stable so citations stay valid.
+because we made the mistake it forbids (2026-07-08 performance work, commits
+`583f3f5..a21a272`; see `docs/performance-plan.md` "Review findings", six rounds —
+including mistakes made *during review*, which count too). Cite the rule number in
+review when you see a violation. Rules are append-only — numbers are stable so
+citations stay valid.
 
 ## A. Verification — nothing ships on plausibility
 
@@ -82,6 +83,20 @@ test that fails if the property is absent, or a measured before/after. If none e
 the honest status is "instrumented, not yet measured" or simply "not verified" — and
 "the docs say it's the default" is a reason to *expect* verification to succeed, not a
 substitute for it.
+
+**A11. Distrust a negative result from a new probe — validate the harness before
+reporting the failure.**
+The first resumption probe showed `Full` on every connection, which read as "TLS
+resumption is broken on the mesh path." The probe was broken instead: it completed
+handshakes but never read afterwards, so session tickets (post-handshake messages) were
+never processed and *no* client could have resumed under that harness. One protocol-level
+question ("how does the mechanism actually deliver its signal?") flipped the conclusion.
+Before reporting that a property doesn't hold: (a) explain the mechanism end-to-end and
+check the probe exercises every link of it, (b) where possible, run the probe against a
+configuration where the property is *known* to hold and watch it pass — a probe that has
+never produced a positive result validates nothing (the mirror image of A6: a test must
+be able to fail; a probe must be able to succeed). Report a negative only with the
+mechanism check attached.
 
 ## B. Rust rules
 
@@ -233,6 +248,20 @@ parameters (`PROFILE_DELAY`, QPS, connections, duration, payload, keepalive, git
 the harness itself, never typed by hand. A number whose conditions are mislabeled is
 worse than no number — it will be compared against the wrong baseline.
 
+**C7. Know the protocol's message timing before reasoning about connection lifecycle.**
+Two rounds of connection-reuse work were derailed by timing facts that were checkable up
+front: `copy_bidirectional` sends TLS close_notify before returning (so "pooled" streams
+were dead, B4), and TLS 1.3 session tickets arrive as *post-handshake* messages (so a
+connection that never reads after the handshake never acquires a ticket and never
+resumes — this repo's confirmed behavior). Corollaries for interlink: handshake-only
+probes measure nothing about resumption; pathological paths that close without reading
+(policy-denied outbound, connect-then-abandon) do not warm the session cache; and any
+future pooling/reuse design must state at which protocol message a connection becomes
+reusable. When a design depends on "the connection/session state at point X", cite the
+RFC section or rustls doc that establishes what has actually happened at X — this
+codebase's comments already do this for certificates (RFC 5280) and handshakes
+(RFC 8446); connection-lifecycle claims get the same treatment.
+
 ## D. Process
 
 **D1. One logical change per commit/PR**, with the profile or test evidence in the
@@ -262,6 +291,9 @@ truth for what's proven vs. claimed.
 - [ ] Closing a finding? Every enumerated item addressed or explicitly deferred (D7)
 - [ ] "Verify X" items closed with a signal — metric, failing-test, or measurement,
       not design reasoning (A10)
+- [ ] Negative probe/verification results validated against the mechanism (and a
+      known-good where possible) before being reported (A11)
+- [ ] Connection-lifecycle claims cite the protocol point where the state holds (C7, B4)
 
 **D4. A fix to a reviewed defect gets re-reviewed against the *original* failure mode.**
 The single-flight bug was "fixed" twice; each fix satisfied the letter of the cited rule

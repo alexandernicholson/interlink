@@ -54,7 +54,8 @@ async fn main() {
     let client_cert = std::fs::read(dir.join("client.der")).expect("read client.der");
     let client_key = std::fs::read(dir.join("client.key")).expect("read client.key");
 
-    let client_id = SpiffeId::new("example.local", "default", "frontend");
+    let client_id =
+        SpiffeId::try_new("example.local", "default", "frontend").expect("valid SPIFFE ID");
     let td = TrustDomain::new("example.local").with_ca(ca_der);
 
     let provider = Arc::new(FileIdentityProvider {

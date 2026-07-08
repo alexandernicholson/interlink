@@ -29,8 +29,21 @@ touches as performance- and security-sensitive.
   committed outputs ships with the generator fix (D5); re-read the commit message
   against the diff (D6); a finding enumerating N items closes item-by-item — one-of-N
   is ⚠ partial, never ✓ (D7); "verify X" closes with an observable signal (metric,
-  failing-test, or measurement), never with design reasoning (A10); and run
-  `./scripts/preflight.sh` before **every** commit (D8).
+  failing-test, or measurement), never with design reasoning (A10); a negative probe
+  result is validated against the mechanism before being reported (A11);
+  connection-lifecycle claims cite the protocol point where the state holds (C7); and
+  run `./scripts/preflight.sh` before **every** commit (D8).
+
+## Verified protocol facts (don't re-derive, don't contradict without a new probe)
+
+- **TLS 1.3 resumption works on the mesh path** (interlink `TlsClient` ↔ `TlsServer`,
+  rustls defaults): connection 1 is `Full`, subsequent connections are `Resumed`.
+  Observable via `interlink_handshake_full_total` / `interlink_handshake_resumed_total`.
+- **Session tickets are post-handshake messages**: a client that completes the
+  handshake but never reads processes no ticket and will never resume. Handshake-only
+  benchmarks/probes therefore measure full-handshake cost only.
+- **`copy_bidirectional` shuts both streams down** (close_notify sent) before
+  returning — a stream is never reusable after it.
 - **`docs/performance-plan.md`** — the current performance workstream, with verified
   status per item. Update it in the same PR as the work; mark items honestly
   (✓ done / ⚠ partial / TODO) and never claim a result without attached numbers.

@@ -40,7 +40,9 @@ fn bench_spiffe_id_parse(c: &mut Criterion) {
     });
 
     group.bench_function("format", |b| {
-        let id = interlink::common::identity::SpiffeId::new("cluster.local", "default", "payments");
+        let id =
+            interlink::common::identity::SpiffeId::try_new("cluster.local", "default", "payments")
+                .unwrap();
         b.iter(|| {
             let s = black_box(&id).to_uri();
             black_box(s);
@@ -74,8 +76,8 @@ fn bench_policy_evaluation(c: &mut Criterion) {
         engine.add_namespace_rule(&ns, patterns::allow_same_namespace("cluster.local", &ns));
     }
 
-    let src = SpiffeId::new("cluster.local", "ns-50", "svc");
-    let dst = SpiffeId::new("cluster.local", "ns-50", "other");
+    let src = SpiffeId::try_new("cluster.local", "ns-50", "svc").unwrap();
+    let dst = SpiffeId::try_new("cluster.local", "ns-50", "other").unwrap();
 
     let mut group = c.benchmark_group("policy_engine");
     group.throughput(criterion::Throughput::Elements(1));
@@ -91,7 +93,7 @@ fn bench_policy_evaluation(c: &mut Criterion) {
 }
 
 fn bench_compiled_pattern(c: &mut Criterion) {
-    let id = SpiffeId::new("cluster.local", "default", "web-api");
+    let id = SpiffeId::try_new("cluster.local", "default", "web-api").unwrap();
     let compiled = CompiledPattern::from_uri("spiffe://cluster.local/ns/default/sa/web*").unwrap();
     let string_pattern = "spiffe://cluster.local/ns/default/sa/web*";
 

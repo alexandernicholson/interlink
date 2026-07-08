@@ -111,9 +111,11 @@ pub struct SpiffeId {
 }
 
 impl SpiffeId {
-    /// Construct a SPIFFE ID without validation (for compile-time-known constants).
-    /// For runtime input (config, network data), use `try_new()` or `from_uri()`.
-    pub fn new(
+    /// Construct a SPIFFE ID without validation (for compile-time-known constants
+    /// within this crate). For runtime input (config, network data), use `try_new()`
+    /// or `from_uri()`. This constructor is intentionally `pub(crate)` — external
+    /// consumers must go through the validated path (B13).
+    pub(crate) fn new(
         trust_domain: impl Into<String>,
         namespace: impl Into<String>,
         service_account: impl Into<String>,

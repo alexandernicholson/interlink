@@ -58,9 +58,9 @@ fn test_policy_engine_multi_namespace() {
         ),
     );
 
-    let billing_svc = SpiffeId::new("cluster.local", "billing", "invoice-worker");
-    let grafana = SpiffeId::new("cluster.local", "monitoring", "grafana");
-    let unknown = SpiffeId::new("cluster.local", "default", "hacker");
+    let billing_svc = SpiffeId::try_new("cluster.local", "billing", "invoice-worker").unwrap();
+    let grafana = SpiffeId::try_new("cluster.local", "monitoring", "grafana").unwrap();
+    let unknown = SpiffeId::try_new("cluster.local", "default", "hacker").unwrap();
 
     assert_eq!(
         engine.evaluate(&billing_svc, &grafana),
@@ -91,7 +91,7 @@ fn test_high_volume_policy_lookup() {
     let start = std::time::Instant::now();
     let iterations = 10_000;
     for _ in 0..iterations {
-        let id = SpiffeId::new("cluster.local", "ns-50", "svc");
+        let id = SpiffeId::try_new("cluster.local", "ns-50", "svc").unwrap();
         let _ = engine.evaluate(&id, &id);
     }
     let elapsed = start.elapsed();

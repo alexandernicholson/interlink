@@ -65,13 +65,13 @@ impl MtlsTestHarness {
         let ca = CertificateAuthority::new(trust_domain).unwrap();
 
         // 2. Issue server identity with real key
-        let server_id = SpiffeId::new(trust_domain, ns, sa);
+        let server_id = SpiffeId::try_new(trust_domain, ns, sa).unwrap();
         let (server_cert, server_key_der) =
             ca.issue_leaf_with_key(&server_id, &["localhost"]).unwrap();
         let server_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(server_key_der));
 
         // 3. Issue client identity with real key
-        let client_id = SpiffeId::new(trust_domain, ns, "test-client");
+        let client_id = SpiffeId::try_new(trust_domain, ns, "test-client").unwrap();
         let (client_cert, client_key_der) =
             ca.issue_leaf_with_key(&client_id, &["localhost"]).unwrap();
 
@@ -183,7 +183,7 @@ impl IdentityProvider for TestIdentityProvider {
 #[tokio::test]
 async fn test_mtls_ca_creates_valid_certs() {
     let ca = CertificateAuthority::new(TRUST_DOMAIN).unwrap();
-    let id = SpiffeId::new(TRUST_DOMAIN, "ns1", "sa1");
+    let id = SpiffeId::try_new(TRUST_DOMAIN, "ns1", "sa1").unwrap();
     let cert = ca.issue_leaf(&id).unwrap();
 
     assert!(cert.len() > 200, "cert too small: {} bytes", cert.len());
@@ -213,8 +213,8 @@ async fn test_mtls_ca_creates_valid_certs() {
 #[test]
 fn test_policy_engine_default_deny() {
     let engine = PolicyEngine::new();
-    let src = SpiffeId::new(TRUST_DOMAIN, "default", "unknown");
-    let dst = SpiffeId::new(TRUST_DOMAIN, "billing", "api");
+    let src = SpiffeId::try_new(TRUST_DOMAIN, "default", "unknown").unwrap();
+    let dst = SpiffeId::try_new(TRUST_DOMAIN, "billing", "api").unwrap();
     assert_eq!(
         engine.evaluate(&src, &dst),
         Decision::Deny("no matching policy")
@@ -232,14 +232,14 @@ fn test_policy_engine_allow() {
             "allow default to billing",
         ),
     );
-    let src = SpiffeId::new(TRUST_DOMAIN, "default", "web");
-    let dst = SpiffeId::new(TRUST_DOMAIN, "billing", "api");
+    let src = SpiffeId::try_new(TRUST_DOMAIN, "default", "web").unwrap();
+    let dst = SpiffeId::try_new(TRUST_DOMAIN, "billing", "api").unwrap();
     assert_eq!(engine.evaluate(&src, &dst), Decision::Allow);
 }
 
 #[test]
 fn test_spiffe_id_roundtrip() {
-    let id = SpiffeId::new("cluster.local", "default", "web-api");
+    let id = SpiffeId::try_new("cluster.local", "default", "web-api").unwrap();
     let uri = id.to_uri();
     assert_eq!(uri, "spiffe://cluster.local/ns/default/sa/web-api");
     let parsed = SpiffeId::from_uri(&uri).unwrap();
@@ -248,7 +248,7 @@ fn test_spiffe_id_roundtrip() {
 
 #[test]
 fn test_spiffe_id_wildcard() {
-    let id = SpiffeId::new("trust", "default", "web");
+    let id = SpiffeId::try_new("trust", "default", "web").unwrap();
     assert!(id.matches_pattern("spiffe://trust/ns/default/sa/web"));
     assert!(id.matches_pattern("spiffe://trust/ns/*/sa/*"));
     assert!(!id.matches_pattern("spiffe://other/ns/default/sa/web"));
@@ -312,8 +312,8 @@ async fn test_mtls_direct_handshake_and_echo() {
     // to verify certs, keys, and identity extraction all work.
     let proxy_port = pick_port();
     let ca = CertificateAuthority::new(TRUST_DOMAIN).unwrap();
-    let server_id = SpiffeId::new(TRUST_DOMAIN, "default", "proxy");
-    let client_id = SpiffeId::new(TRUST_DOMAIN, "default", "test-client");
+    let server_id = SpiffeId::try_new(TRUST_DOMAIN, "default", "proxy").unwrap();
+    let client_id = SpiffeId::try_new(TRUST_DOMAIN, "default", "test-client").unwrap();
 
     let (server_cert, server_key_der) = ca.issue_leaf_with_key(&server_id, &["localhost"]).unwrap();
     let (client_cert, client_key_der) = ca.issue_leaf_with_key(&client_id, &["localhost"]).unwrap();
@@ -419,7 +419,7 @@ async fn test_proto_detection_edge_cases() {
 #[test]
 fn test_certificate_authority_extensions() {
     let ca = CertificateAuthority::new("ext-test.local").unwrap();
-    let id = SpiffeId::new("ext-test.local", "ns1", "sa1");
+    let id = SpiffeId::try_new("ext-test.local", "ns1", "sa1").unwrap();
     let cert = ca.issue_leaf(&id).unwrap();
     let parsed = x509_parser::parse_x509_certificate(&cert).unwrap().1;
 
@@ -446,12 +446,12 @@ async fn test_mtls_rejects_untrusted_client_ca() {
     let server_ca = CertificateAuthority::new("server.local").unwrap();
     let client_ca = CertificateAuthority::new("client.local").unwrap();
 
-    let server_id = SpiffeId::new("server.local", "default", "proxy");
+    let server_id = SpiffeId::try_new("server.local", "default", "proxy").unwrap();
     let (server_cert, server_key_der) = server_ca
         .issue_leaf_with_key(&server_id, &["localhost"])
         .unwrap();
 
-    let client_id = SpiffeId::new("client.local", "default", "client");
+    let client_id = SpiffeId::try_new("client.local", "default", "client").unwrap();
     let (client_cert, client_key_der) = client_ca
         .issue_leaf_with_key(&client_id, &["localhost"])
         .unwrap();
@@ -515,7 +515,7 @@ async fn test_mtls_rejects_untrusted_client_ca() {
 #[test]
 fn test_certificate_short_lived() {
     let ca = CertificateAuthority::new("ttl-test.local").unwrap();
-    let id = SpiffeId::new("ttl-test.local", "ns1", "sa1");
+    let id = SpiffeId::try_new("ttl-test.local", "ns1", "sa1").unwrap();
     let cert_der = ca.issue_leaf(&id).unwrap();
     let parsed = x509_parser::parse_x509_certificate(&cert_der).unwrap().1;
 

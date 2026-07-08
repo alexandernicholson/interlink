@@ -82,7 +82,39 @@ finding 1's fix introduced a new P0 (see third round):
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
 
-## Review findings — fifth round (2026-07-08), current blockers
+## Review findings — sixth round (2026-07-08), near-clean
+
+Review of `b3b9958..a21a272`. Preflight (clippy `-D warnings` + tests) is green. This is
+the first round where the fixes match their claims almost exactly:
+
+1. **✓ R18 — SPIFFE validation at the three config sites.** Verified: all three now use
+   `try_new(…).expect("trust_domain validated in Config::validate")`, and the
+   justification is *true* — `Config::load()` calls `validate()` (`config.rs:67`), which
+   rejects an empty trust domain, and the `expect` is startup-time with a scoped,
+   justified `allow` per B12. Per-item status (D7): `main.rs:52` ✓, `tcp.rs:72` ✓,
+   `outbound.rs:74` ✓, K8s provider ✓ (fifth round). The only remaining tail is B13:
+   `SpiffeId::new` is still a fully public unvalidated constructor guarded by a doc
+   comment — downgraded to P3 (all runtime call sites are now validated) → **R22**.
+2. **⚠ R19 — resumption observability: instrumentation ✓, evidence now exists (from
+   review), committed test still missing.** The `HandshakeKind` counters
+   (`interlink_handshake_full_total` / `interlink_handshake_resumed_total`) are correctly
+   recorded on both the client (`connect`) and server (`accept`) paths.
+   **Review ran the empirical probe the item asked for**, using interlink's own
+   `TlsClient`/`TlsServer` pair: connection 1 = `Full`, connections 2 and 3 =
+   `Resumed` — **TLS 1.3 resumption genuinely works on the mesh path**, so the fifth
+   round's "architecturally verified" conclusion happens to be true, now with evidence.
+   One nuance the probe surfaced, worth keeping: session tickets are *post-handshake*
+   messages — a client that completes the handshake but never reads (first probe
+   variant) processes no ticket and never resumes; any connection that exchanges data
+   does. Remaining to close R19 (→ **R21**): commit that probe as an integration test
+   (assert `Resumed` on connection 2) and capture the resumed fraction from the new
+   counters in a churn-profile run.
+3. **✓ R20 — clippy warnings.** Fixed (the `dns.rs:330` `mut` was removed during the
+   fifth review; `scripts/preflight.sh` gates the class). Note the commit message for
+   `b3b9958` claims R20 — the working-tree fix predated it; immaterial, noted for D6
+   hygiene.
+
+## Review findings — fifth round (2026-07-08), resolved — see sixth round
 
 Review of `ce346c5..d25495b` (all 70 tests pass). R15 and R17 are genuinely fixed;
 R14 was closed prematurely and one optimization item was marked done without evidence:
@@ -225,11 +257,12 @@ Acceptance: every later phase must show its effect on at least one of these prof
    `TcpStream::connect` in parallel with `tls_server.accept`. Saves ~1 RTT off every inbound
    connection. On deny, the prematurely-opened upstream connection is closed.
 2. **Bigger copy buffers** — still TODO (needs custom copy_bidirectional).
-3. **⚠ Verify TLS 1.3 session resumption** — *not yet verified* (fifth-round finding 2).
-   rustls defaults make resumption *plausible*, but nothing measures it: no
-   resumed-vs-full signal exists, no integration test, no churn delta. R19 adds a
-   `HandshakeKind`-based counter, a resumption integration test, and the measured
-   resumed fraction before this can be marked done.
+3. **⚠ Verify TLS 1.3 session resumption** — instrumented and empirically confirmed
+   (sixth round): `HandshakeKind` counters landed, and the review probe over interlink's
+   own `TlsClient`/`TlsServer` shows `Full` → `Resumed` → `Resumed`. Nuance: tickets are
+   post-handshake messages, so only connections that *read* after the handshake acquire
+   them. Remaining (R21): commit the probe as an integration test and capture the
+   resumed fraction from a churn run.
 4. *(Optional)* **TLS 1.3 0-RTT early data** — not yet.
 
 ## Phase 3 — Scale and throughput architecture
@@ -267,22 +300,27 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | ✓R15 | Waiter-branch test: gated fake resolver forces followers into the semaphore wait | S | Fixed in `ce346c5`, verified |
 | R16 | Complete bulk baselines (256KB) | S | Header + 64KB done (`9d73fff`); 256KB still missing |
 | ✓R17 | Apply B8 lint attribute to `src/discovery/` | S | Fixed in `ce346c5`, verified |
-| ✓R18 | Use `try_new` at `main.rs:52`, `tcp.rs:72`, `outbound.rs:74` | S | Fixed in `b3b9958` |
-| ✓R19 | Resumption observability: `HandshakeKind` counter | M | Fixed in `b3b9958` — both accept and connect paths |
-| ✓R20 | Fix clippy warnings + preflight script | S | Fixed in `b3b9958`; `scripts/preflight.sh` added |
+| ✓R18 | Use `try_new` at `main.rs:52`, `tcp.rs:72`, `outbound.rs:74` | S | Fixed in `b3b9958`, verified per-item (D7); justifications true |
+| ⚠R19 | Resumption observability: `HandshakeKind` counter + test + measurement | M | Counters ✓ (`b3b9958`); resumption empirically confirmed by review probe → remaining halves = R21 |
+| ✓R20 | Fix clippy warnings + preflight script | S | Fixed during fifth review; `scripts/preflight.sh` gates it |
+| R21 | Commit the resumption integration test (assert `Resumed` on conn 2); report resumed fraction from a churn run | S | closes R19; probe code exists in the sixth-round review |
+| R22 | B13 tail: restrict or clearly fence unvalidated `SpiffeId::new` | S | P3 — all runtime sites validated; this is footgun-removal |
 | 0 | Bulk 256KB baseline + flamegraph | S | 64KB baseline captured (8.8 % CPU) |
 | 2 | `copy_bidirectional_with_sizes` with 16–64 KiB buffers | S | judge on bulk-throughput profile (bulk shows 8.8% CPU at 64KB) |
 | 3 | Connection pooling redesign (kept-alive tunnels / HTTP-aware) | L | validate against churn baseline |
 | 3 | `SO_REUSEPORT` multi-acceptor + listener backlog tuning | M | throughput ceiling at high conn rates |
 | 4 | Crypto provider bake-off (`aws-lc-rs` vs `ring`), `worker_threads` config | M | measure to confirm |
 
-(R1–R4: first round, done. R5–R9: second round, done. R10–R13: third round, done.
-R14–R17: fourth round — R15/R17 done, R14 incomplete → R18, R16 nearly done.
-R18–R20: fifth-round follow-ups — **R18 first**; it is the reopened security item and
-has now survived two "fixed" claims without the named call sites being touched. R19 is
-both a regression fix (the false ✓) and the first step of the highest-value
-optimization: the resumed-handshake counter is exactly the instrumentation the churn
-work needs.)
+(Rounds 1–5: R1–R18 and R20 are done and verified. Sixth round: the security item R18
+is closed with true justifications, and resumption is empirically confirmed working on
+the mesh path — connection 1 `Full`, connections 2+ `Resumed`. The regression queue is
+effectively clear: R21 commits the already-written resumption test and captures the
+resumed fraction, R22 is P3 footgun-removal. **Optimization work is unblocked.** The
+implication of confirmed resumption: the churn cost (8.65 % CPU at 100 rps) is *with*
+resumption working for data-exchanging clients, so the pooling redesign should be
+re-scoped after R21's measured resumed fraction — if the fraction is high, pooling's
+remaining win is TCP connect + 1-RTT, not certificate verification, which lowers its
+priority relative to `SO_REUSEPORT` and copy buffers.)
 
 Ground rules: one change per PR, each PR shows before/after numbers from the Phase 0
 profiles, and `cargo bench` + the local harness run in CI so regressions are caught.
