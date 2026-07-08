@@ -103,3 +103,114 @@ fn test_high_volume_policy_lookup() {
         per_op
     );
 }
+
+/// R21: Verify TLS 1.3 session resumption works end-to-end over the mesh path.
+///
+/// Because tickets are post-handshake messages (RFC 8446 §4.6.1), a connection
+/// that never reads after the handshake never acquires a ticket and cannot resume.
+/// This test reads a byte on each connection to drive ticket delivery, then
+/// asserts the second handshake is `Resumed` (C7).
+#[tokio::test]
+async fn test_tls_resumption() {
+    use interlink::common::identity::SpiffeId;
+    use interlink::identity::ca::CertificateAuthority;
+    use interlink::proxy::handshake::{TlsClient, TlsServer};
+    use interlink::proxy::TlsHandshake;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let ca = CertificateAuthority::new("resume-test.local").unwrap();
+    let server_id = SpiffeId::try_new("resume-test.local", "default", "backend").unwrap();
+    let client_id = SpiffeId::try_new("resume-test.local", "default", "frontend").unwrap();
+
+    let (server_cert, server_key) = ca.issue_leaf_with_key(&server_id, &["localhost"]).unwrap();
+    let (client_cert, client_key) = ca.issue_leaf_with_key(&client_id, &["localhost"]).unwrap();
+
+    let provider = Arc::new(
+        interlink::identity::provider::StaticIdentityProvider::with_ca_bundle(
+            server_id.clone(),
+            vec![ca.root_cert_der().to_vec()],
+        ),
+    );
+
+    let tls_server = Arc::new(
+        TlsServer::new(
+            provider.clone(),
+            rustls::pki_types::CertificateDer::from(server_cert.clone()),
+            rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+                server_key.clone(),
+            )),
+        )
+        .unwrap(),
+    );
+
+    let tls_client = Arc::new(
+        TlsClient::with_client_auth(
+            provider.clone(),
+            rustls::pki_types::CertificateDer::from(client_cert.clone()),
+            rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+                client_key.clone(),
+            )),
+        )
+        .unwrap(),
+    );
+
+    // Bind a listener and get the port.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Connection 1: should be Full.
+    let tls_server1 = tls_server.clone();
+    let server_handle = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut tls = tls_server1.accept(stream).await.unwrap();
+        // Read one byte on the server side to drive ticket delivery.
+        let mut buf = [0u8; 1];
+        tls.inner.read_exact(&mut buf).await.unwrap();
+        // Echo back to let the client complete its read.
+        tls.inner.write_all(b"x").await.unwrap();
+        tls.inner.flush().await.unwrap();
+        tls.inner
+    });
+
+    // Client side: connect and handshake.
+    let _client_stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut tls1 = tls_client.connect(&addr.to_string()).await.unwrap();
+    // Write a byte to trigger the server's read.
+    tls1.inner.write_all(b"x").await.unwrap();
+    tls1.inner.flush().await.unwrap();
+    // Read the echo back — this processes any post-handshake messages.
+    let mut buf = [0u8; 1];
+    tls1.inner.read_exact(&mut buf).await.unwrap();
+
+    // Drop client connection 1.
+    let _server_tls = server_handle.await.unwrap();
+    drop(tls1);
+
+    // Connection 2: should be Resumed.
+    let listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr2 = listener2.local_addr().unwrap();
+
+    let tls_server2 = tls_server.clone();
+    let server_handle2 = tokio::spawn(async move {
+        let (stream, _) = listener2.accept().await.unwrap();
+        let mut tls = tls_server2.accept(stream).await.unwrap();
+        let mut buf = [0u8; 1];
+        tls.inner.read_exact(&mut buf).await.unwrap();
+        tls.inner.write_all(b"y").await.unwrap();
+        tls.inner.flush().await.unwrap();
+        tls.inner
+    });
+
+    let tls2 = tls_client.connect(&addr2.to_string()).await.unwrap();
+
+    // Write and read to complete ticket processing.
+    // Don't consume tls2 — check the handshake kind from the common state.
+    let is_resumed =
+        tls2.inner.get_ref().1.handshake_kind() == Some(rustls::HandshakeKind::Resumed);
+    assert!(is_resumed, "second connection should resume TLS session");
+
+    drop(tls2);
+    let _server_tls2 = server_handle2.await.unwrap();
+}
