@@ -1,0 +1,33 @@
+# Plain load-generator Deployment for Linkerd / Istio runs. Meshed like any
+# app pod (Linkerd: injected sidecar; Istio ambient: namespace label), so the
+# client leg carries real mesh mTLS on every mesh. Profiles run via
+# `kubectl exec ... fortio load`, avoiding Job+sidecar completion problems.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fortio-client
+  namespace: bench
+  labels:
+    app: fortio-client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fortio-client
+  template:
+    metadata:
+      labels:
+        app: fortio-client
+      annotations:
+        linkerd.io/inject: enabled
+    spec:
+      nodeSelector:
+        bench-role: client
+      containers:
+        - name: fortio
+          image: fortio/fortio:1.66.0
+          args: ["server"]
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"

@@ -6,12 +6,9 @@ BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${BENCH_DIR}/scripts/common.sh"
 
 CLUSTER_NAME="interlink-bench-interlink"
-# INTERLINK_MUX=false runs the no-tunnel control variant.
 export INTERLINK_MUX="${INTERLINK_MUX:-true}"
 VARIANT="interlink"
-if [[ "${INTERLINK_MUX}" == "false" ]]; then
-    VARIANT="interlink-nomux"
-fi
+[[ "${INTERLINK_MUX}" == "false" ]] && VARIANT="interlink-nomux"
 RESULTS="${RESULTS_DIR}/${VARIANT}"
 mkdir -p "${RESULTS}"
 
@@ -24,15 +21,7 @@ kind load docker-image --name "${CLUSTER_NAME}" interlink-bench/interlinkd:lates
 
 kubectl create namespace bench || true
 
-# Echo server first: its pod IP goes into the proxy certificate's IP SANs
-# (mesh peers dial pods by ip:port; an IP ServerName never matches a DNS SAN).
-log "deploying echo server"
-kubectl apply -n bench -f "${BENCH_DIR}/workloads/echo-server-deployment.yaml"
-wait_for_pod bench "app=echo-server"
-ECHO_IP=$(kubectl get pod -n bench -l app=echo-server -o jsonpath='{.items[0].status.podIP}')
-log "echo pod IP: ${ECHO_IP}"
-
-log "generating interlink certificates (SPIFFE URI + IP SANs, DER)"
+log "generating interlink certificates (SPIFFE URI SAN, DER)"
 CA_DIR="${RESULTS}/certs"
 mkdir -p "${CA_DIR}"
 SPIFFE_ID="spiffe://bench.local/ns/bench/sa/proxy"
@@ -46,7 +35,7 @@ openssl req -new -key "${CA_DIR}/server.key" -keyform DER -out "${CA_DIR}/server
 openssl x509 -req -in "${CA_DIR}/server.csr" \
     -CA "${CA_DIR}/ca.der" -CAform DER -CAkey "${CA_DIR}/ca.key" -CAkeyform DER \
     -CAcreateserial -out "${CA_DIR}/server.der" -outform DER -days 1 \
-    -extfile <(printf "subjectAltName=URI:%s,IP:%s,DNS:localhost\nextendedKeyUsage=serverAuth,clientAuth\nkeyUsage=digitalSignature\n" "${SPIFFE_ID}" "${ECHO_IP}") 2>/dev/null
+    -extfile <(printf "subjectAltName=URI:%s,DNS:localhost\nextendedKeyUsage=serverAuth,clientAuth\nkeyUsage=digitalSignature\n" "${SPIFFE_ID}") 2>/dev/null
 
 for f in ca.der server.key server.der; do
     [[ -s "${CA_DIR}/${f}" ]] || { log "ERROR: failed to generate ${f}"; exit 1; }
@@ -57,48 +46,39 @@ kubectl create secret generic interlink-certs -n bench \
     --from-file="${CA_DIR}/server.der" \
     --from-file="${CA_DIR}/server.key"
 
-log "deploying interlink (mux=${INTERLINK_MUX})"
-kubectl apply -n bench -f "${BENCH_DIR}/manifests/interlink/rbac.yaml"
-envsubst '${INTERLINK_MUX}' < "${BENCH_DIR}/manifests/interlink/daemonset.yaml" | kubectl apply -n bench -f -
-wait_for_pod bench "app=interlink"
+log "deploying echo server + interlink sidecar (mux=${INTERLINK_MUX})"
+envsubst '${INTERLINK_MUX}' < "${BENCH_DIR}/manifests/interlink/echo-with-sidecar.yaml" | kubectl apply -f -
+log "deploying fortio client + interlink sidecar"
+envsubst '${INTERLINK_MUX}' < "${BENCH_DIR}/manifests/interlink/fortio-client.yaml" | kubectl apply -f -
+wait_for_pod bench "app=echo-server"
+wait_for_pod bench "app=fortio-client"
 
 log "installing metrics-server"
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 kubectl patch deployment metrics-server -n kube-system --type='json' -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
 kubectl wait --for=condition=available deployment/metrics-server -n kube-system --timeout=120s 2>/dev/null || true
 
-# Smoke check: one meshed request must succeed before burning profile time.
+TARGET="http://127.0.0.1:4140/echo"   # the local outbound sidecar
+
 log "smoke check through the mesh"
-kubectl delete pod smoke -n bench --ignore-not-found=true >/dev/null 2>&1
-kubectl run smoke -n bench --restart=Never --image=fortio/fortio:${FORTIO_VERSION} \
-    --overrides='{"spec":{"nodeSelector":{"bench-role":"client"}}}' \
-    -- load -qps 2 -t 2s -c 1 http://echo-server:8080/echo
-kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/smoke -n bench --timeout=60s || {
-    log "ERROR: smoke request failed; interlink data path is broken"
-    kubectl logs -n bench -l app=interlink --tail=20 || true
+kubectl exec -n bench deploy/fortio-client -c fortio -- \
+    fortio load -quiet -qps 5 -c 1 -n 10 "${TARGET}" >/dev/null 2>&1 || {
+    log "ERROR: smoke request failed; sidecar data path is broken"
+    kubectl logs -n bench deploy/fortio-client -c interlinkd --tail=20 || true
+    kubectl logs -n bench deploy/echo-server -c interlinkd --tail=20 || true
     exit 1
 }
-kubectl delete pod smoke -n bench --ignore-not-found=true >/dev/null 2>&1
 
 run_profile() {
-    local qps="$1"
-    local conns="$2"
+    local qps="$1" conns="$2"
     local label="${VARIANT}-q${qps}-c${conns}"
     log "running profile ${label}"
-
     local metrics_out="${RESULTS}/metrics-${label}.csv"
-    sample_metrics bench "app=interlink" "${metrics_out}" "${BENCH_DURATION:-60}" &
+    sample_container_metrics bench interlinkd "${metrics_out}" "${BENCH_DURATION:-60}" &
     local sampler_pid=$!
-
-    kubectl delete job fortio-load -n bench --ignore-not-found=true
-    envsubst < "${BENCH_DIR}/load/fortio-job.yaml" | kubectl apply -f -
-    kubectl wait --for=condition=complete job/fortio-load -n bench --timeout=400s 2>/dev/null || true
-
+    exec_fortio_profile "${TARGET}" "${qps}" "${conns}" "${BENCH_DURATION:-60}" \
+        "${RESULTS}/fortio-${label}.json"
     kill "${sampler_pid}" 2>/dev/null || true
-
-    collect_fortio_logs bench "job-name=fortio-load" "${RESULTS}/fortio-${label}.json"
-    kubectl delete job fortio-load -n bench --ignore-not-found=true
-
     {
         echo "profile=${label}"
         parse_fortio_json "${RESULTS}/fortio-${label}.json"
@@ -106,19 +86,10 @@ run_profile() {
     } >> "${RESULTS}/summary.txt"
 }
 
-export QPS CONNECTIONS DURATION PAYLOAD_SIZE LABEL FORTIO_TIMEOUT
-# BENCH_PROFILES="qps:conns,..." overrides the default set. Default targets a
-# dedicated host; connections are Little's-law sized (rps x 0.2s delay x1.25).
-PROFILES_SPEC="${BENCH_PROFILES:-320:80,3200:800,12800:3200}"
+PROFILES_SPEC="${BENCH_PROFILES:-320:80,800:200,1600:400}"
 IFS=',' read -ra _PROFILES <<< "${PROFILES_SPEC}"
 for _p in "${_PROFILES[@]}"; do
-    QPS="${_p%%:*}"
-    CONNECTIONS="${_p##*:}"
-    DURATION="${BENCH_DURATION:-60}"
-    PAYLOAD_SIZE=1024
-    FORTIO_TIMEOUT=120
-    LABEL="${VARIANT}-q${QPS}-c${CONNECTIONS}"
-    run_profile "${QPS}" "${CONNECTIONS}"
+    run_profile "${_p%%:*}" "${_p##*:}"
 done
 
 log "${VARIANT} benchmark complete. Results in ${RESULTS}"

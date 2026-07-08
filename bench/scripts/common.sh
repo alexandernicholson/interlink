@@ -111,21 +111,62 @@ sample_metrics() {
     done
 }
 
-collect_fortio_logs() {
+# Sample CPU/mem of a named *container* summed across all pods in a namespace
+# (the mesh's proxy footprint: interlinkd sidecars / linkerd-proxy / ztunnel).
+sample_container_metrics() {
     local namespace="$1"
-    local label="$2"
+    local container="$2"
     local output="$3"
-    local pod
-    pod=$(kubectl get pods -n "${namespace}" -l "${label}" -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || true)
-    if [[ -n "${pod}" ]]; then
-        # Strip the human-readable report; Fortio JSON starts with a line containing '{'.
-        # Keep only the JSON object: from the first line that is exactly "{" to
-        # the closing "}". Fortio interleaves a "Successfully wrote N bytes..."
-        # status line into stdout that corrupts a naive /^{/,$p capture.
-        kubectl logs -n "${namespace}" "${pod}" --tail=-1 2>/dev/null \
-            | sed -n '/^{$/,/^}$/p' > "${output}" || true
-    fi
+    local duration="$4"
+    log "sampling container '${container}' in ${namespace} for ${duration}s -> ${output}"
+    echo "timestamp,cpu_millicores,memory_rss_kb" > "${output}"
+    local host_out="${output%.csv}.host.csv"
+    echo "timestamp,host_util_percent" > "${host_out}"
+    local prev
+    prev=$(awk '/^cpu / {for(i=2;i<=NF;i++)t+=$i; print t" "$5}' /proc/stat)
+    local end
+    end=$(($(date +%s) + duration))
+    while [[ $(date +%s) -lt ${end} ]]; do
+        local cur
+        cur=$(awk '/^cpu / {for(i=2;i<=NF;i++)t+=$i; print t" "$5}' /proc/stat)
+        awk -v p="${prev}" -v c="${cur}" -v ts="$(date +%s)" 'BEGIN {
+            split(p,a," "); split(c,b," ");
+            dt=b[1]-a[1]; di=b[2]-a[2];
+            if (dt>0) printf "%d,%.1f\n", ts, 100*(dt-di)/dt;
+        }' >> "${host_out}"
+        prev="${cur}"
+        local metrics
+        metrics=$(kubectl top pod -n "${namespace}" --containers --no-headers 2>/dev/null || true)
+        if [[ -n "${metrics}" ]]; then
+            echo "${metrics}" | awk -v ts="$(date +%s)" -v want="${container}" '$2==want {
+                cpu=$3; mem=$4
+                gsub(/[^0-9.]/, "", cpu)
+                if (mem ~ /Ki$/) { gsub(/Ki$/, "", mem) }
+                else if (mem ~ /Mi$/) { gsub(/Mi$/, "", mem); mem = mem * 1024 }
+                else if (mem ~ /Gi$/) { gsub(/Gi$/, "", mem); mem = mem * 1048576 }
+                sc += cpu; sm += int(mem)
+            } END { print ts "," sc+0 "," sm+0 }' >> "${output}"
+        fi
+        sleep 2
+    done
 }
+
+# Run one fortio profile by exec-ing into the fortio-client Deployment.
+# Stdout is the clean fortio JSON (kubectl exec separates stderr), so no log
+# scraping and no interleaving corruption. Args:
+#   $1 target URL   $2 qps   $3 conns   $4 duration_s   $5 output json path
+exec_fortio_profile() {
+    local target="$1" qps="$2" conns="$3" duration="$4" out="$5"
+    # Short warmup, discarded.
+    kubectl exec -n bench deploy/fortio-client -c fortio -- \
+        fortio load -quiet -qps "${qps}" -c "${conns}" -t 10s -payload-size 1024 \
+        "${target}" >/dev/null 2>&1 || true
+    kubectl exec -n bench deploy/fortio-client -c fortio -- \
+        fortio load -quiet -qps "${qps}" -c "${conns}" -t "${duration}s" \
+        -payload-size 1024 -timeout 120s -json /dev/stdout \
+        "${target}" 2>/dev/null > "${out}" || true
+}
+
 
 aggregate_metrics() {
     local input="$1"

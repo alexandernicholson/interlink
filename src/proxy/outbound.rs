@@ -122,15 +122,23 @@ impl OutboundProxy {
                 upstream
             )));
         };
-        let resolved = discovery.resolve(upstream).await?;
+        // Split "host:port" BEFORE the DNS lookup — a resolver query for
+        // "name:8080" can never succeed (":" is not valid in a hostname).
+        let (host, port) = match upstream.rsplit_once(':') {
+            Some((h, p)) => match p.parse::<u16>() {
+                Ok(port) => (h, Some(port)),
+                Err(_) => (upstream, None),
+            },
+            None => (upstream, None),
+        };
+        let resolved = discovery.resolve(host).await?;
         let first = resolved.addrs.into_iter().next().ok_or_else(|| {
             InterlinkError::DnsResolution(format!("no endpoints for {}", upstream))
         })?;
-        let port = upstream
-            .rsplit_once(':')
-            .and_then(|(_, p)| p.parse::<u16>().ok())
-            .unwrap_or(first.port());
-        Ok(std::net::SocketAddr::new(first.ip(), port))
+        Ok(std::net::SocketAddr::new(
+            first.ip(),
+            port.unwrap_or_else(|| first.port()),
+        ))
     }
 
     pub fn spawn(self: Arc<Self>) -> tokio::task::JoinHandle<()> {

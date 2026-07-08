@@ -1,0 +1,88 @@
+# interlink in its intended deployment model: a per-pod sidecar. No iptables,
+# no privileged init containers, no host networking. The Service targets the
+# sidecar's inbound mTLS port; the sidecar forwards to the app over localhost.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-server
+  namespace: bench
+  labels:
+    app: echo-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echo-server
+  template:
+    metadata:
+      labels:
+        app: echo-server
+    spec:
+      nodeSelector:
+        bench-role: server
+      containers:
+        - name: echo-server
+          image: interlink-bench/echo-server:latest
+          imagePullPolicy: IfNotPresent
+          # App listens on localhost only — all external traffic must come
+          # through the sidecar's mTLS inbound.
+          args: ["-addr", "127.0.0.1:8081", "-delay", "200ms"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+        - name: interlinkd
+          image: interlink-bench/interlinkd:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: INTERLINK_TRUST_DOMAIN
+              value: "bench.local"
+            - name: INTERLINK_IDENTITY
+              value: "spiffe://bench.local/ns/bench/sa/echo-server"
+            - name: INTERLINK_PROXY_INBOUND_PORT
+              value: "8080"
+            - name: INTERLINK_PROXY_OUTBOUND_PORT
+              value: "0"
+            - name: INTERLINK_DEFAULT_UPSTREAM
+              value: "127.0.0.1:8081"
+            - name: INTERLINK_CA_BUNDLE_PATH
+              value: "/etc/interlink/certs/ca.der"
+            - name: INTERLINK_CERT_PATH
+              value: "/etc/interlink/certs/server.der"
+            - name: INTERLINK_KEY_PATH
+              value: "/etc/interlink/certs/server.key"
+            - name: INTERLINK_ALLOW_ALL
+              value: "true"
+            - name: INTERLINK_MUX
+              value: "${INTERLINK_MUX}"
+            - name: INTERLINK_LOG_LEVEL
+              value: "warn"
+            - name: INTERLINK_MAX_CONNECTIONS
+              value: "20000"
+          ports:
+            - containerPort: 8080
+              name: mtls-inbound
+          volumeMounts:
+            - name: certs
+              mountPath: /etc/interlink/certs
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "32Mi"
+      volumes:
+        - name: certs
+          secret:
+            secretName: interlink-certs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-server
+  namespace: bench
+spec:
+  selector:
+    app: echo-server
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http

@@ -113,15 +113,23 @@ impl TcpProxy {
                 upstream
             )));
         };
-        let resolved = discovery.resolve(upstream).await?;
+        // Split "host:port" BEFORE the DNS lookup — a resolver query for
+        // "name:8080" can never succeed (":" is not valid in a hostname).
+        let (host, port) = match upstream.rsplit_once(':') {
+            Some((h, p)) => match p.parse::<u16>() {
+                Ok(port) => (h, Some(port)),
+                Err(_) => (upstream, None),
+            },
+            None => (upstream, None),
+        };
+        let resolved = discovery.resolve(host).await?;
         let first = resolved.addrs.into_iter().next().ok_or_else(|| {
             InterlinkError::DnsResolution(format!("no endpoints for {}", upstream))
         })?;
-        let port = upstream
-            .rsplit_once(':')
-            .and_then(|(_, p)| p.parse::<u16>().ok())
-            .unwrap_or(first.port());
-        Ok(std::net::SocketAddr::new(first.ip(), port))
+        Ok(std::net::SocketAddr::new(
+            first.ip(),
+            port.unwrap_or_else(|| first.port()),
+        ))
     }
 
     pub fn spawn(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
@@ -130,6 +138,14 @@ impl TcpProxy {
 
     pub async fn run(self: Arc<Self>) {
         let addr: std::net::SocketAddr = ([0, 0, 0, 0], self.listen_port).into();
+
+        // Port 0 disables this proxy (outbound-only sidecars), symmetric with
+        // the outbound proxy (C3). Without the guard we would bind an
+        // ephemeral port and serve mTLS on it unintentionally.
+        if self.listen_port == 0 {
+            info!("inbound proxy disabled (port 0)");
+            return;
+        }
 
         // Bind N SO_REUSEPORT listeners up front so bind/listen failures are
         // handled here (R26): log and skip a failed acceptor, refuse to run

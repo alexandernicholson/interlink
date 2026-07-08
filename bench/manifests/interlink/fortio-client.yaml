@@ -1,0 +1,72 @@
+# Load-generator pod with an interlink outbound sidecar. Fortio targets its
+# local sidecar (127.0.0.1:4140), which establishes the mTLS/mux path to the
+# echo Service — the sidecar model needs no traffic interception at all.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fortio-client
+  namespace: bench
+  labels:
+    app: fortio-client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fortio-client
+  template:
+    metadata:
+      labels:
+        app: fortio-client
+    spec:
+      nodeSelector:
+        bench-role: client
+      containers:
+        - name: fortio
+          image: fortio/fortio:1.66.0
+          # Idle server mode: profiles are driven via `kubectl exec fortio load`,
+          # which sidesteps Job-completion-with-sidecar semantics entirely and
+          # returns clean JSON on our stdout.
+          args: ["server"]
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+        - name: interlinkd
+          image: interlink-bench/interlinkd:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: INTERLINK_TRUST_DOMAIN
+              value: "bench.local"
+            - name: INTERLINK_IDENTITY
+              value: "spiffe://bench.local/ns/bench/sa/fortio-client"
+            - name: INTERLINK_PROXY_INBOUND_PORT
+              value: "0"
+            - name: INTERLINK_PROXY_OUTBOUND_PORT
+              value: "4140"
+            - name: INTERLINK_DEFAULT_UPSTREAM
+              value: "echo-server.bench.svc.cluster.local:8080"
+            - name: INTERLINK_CA_BUNDLE_PATH
+              value: "/etc/interlink/certs/ca.der"
+            - name: INTERLINK_CERT_PATH
+              value: "/etc/interlink/certs/server.der"
+            - name: INTERLINK_KEY_PATH
+              value: "/etc/interlink/certs/server.key"
+            - name: INTERLINK_ALLOW_ALL
+              value: "true"
+            - name: INTERLINK_MUX
+              value: "${INTERLINK_MUX}"
+            - name: INTERLINK_LOG_LEVEL
+              value: "warn"
+            - name: INTERLINK_MAX_CONNECTIONS
+              value: "20000"
+          volumeMounts:
+            - name: certs
+              mountPath: /etc/interlink/certs
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "32Mi"
+      volumes:
+        - name: certs
+          secret:
+            secretName: interlink-certs
