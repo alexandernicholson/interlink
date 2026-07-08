@@ -1,42 +1,44 @@
-{"ts":1783478206.417339,"level":"info","r":1,"file":"scli.go","line":125,"msg":"Starting","command":"Φορτίο","version":"1.66.0 h1:9F/200qIu136z847bxs/NeAoYdJaQlVofYlppi3qwcw= go1.22.5 amd64 linux","go-max-procs":16}
+{"ts":1783483684.013412,"level":"info","r":1,"file":"scli.go","line":125,"msg":"Starting","command":"Φορτίο","version":"1.66.0 h1:9F/200qIu136z847bxs/NeAoYdJaQlVofYlppi3qwcw= go1.22.5 amd64 linux","go-max-procs":16}
 Fortio 1.66.0 running at 500 queries per second, 16->16 procs, for 30s: https://localhost:14443/echo
-{"ts":1783478206.417749,"level":"info","r":1,"file":"httprunner.go","line":121,"msg":"Starting http test","run":0,"url":"https://localhost:14443/echo","threads":5,"qps":"500.0","warmup":"parallel","conn-reuse":""}
+{"ts":1783483684.013708,"level":"info","r":1,"file":"httprunner.go","line":121,"msg":"Starting http test","run":0,"url":"https://localhost:14443/echo","threads":5,"qps":"500.0","warmup":"parallel","conn-reuse":""}
 Starting at 500 qps with 5 thread(s) [gomax 16] for 30s : 3000 calls each (total 15000)
-{"ts":1783478236.423571,"level":"info","r":31,"file":"periodic.go","line":851,"msg":"T002 ended after 30.000840334s : 3000 calls. qps=99.99719896512683"}
-{"ts":1783478236.423639,"level":"info","r":29,"file":"periodic.go","line":851,"msg":"T000 ended after 30.000913294s : 3000 calls. qps=99.99695577934229"}
-{"ts":1783478236.423649,"level":"info","r":32,"file":"periodic.go","line":851,"msg":"T003 ended after 30.000922674s : 3000 calls. qps=99.99692451458901"}
-{"ts":1783478236.423902,"level":"info","r":30,"file":"periodic.go","line":851,"msg":"T001 ended after 30.001177463s : 3000 calls. qps=99.99607527737385"}
-{"ts":1783478236.423916,"level":"info","r":113,"file":"periodic.go","line":851,"msg":"T004 ended after 30.001192363s : 3000 calls. qps=99.99602561463033"}
-Ended after 30.001213693s : 15000 calls. qps=499.98
-{"ts":1783478236.423968,"level":"info","r":1,"file":"periodic.go","line":581,"msg":"Run ended","run":0,"elapsed":30001213693,"calls":15000,"qps":499.9797726016617}
-Sleep times : count 14995 avg 0.0082849907 +/- 0.0003888 min 0.006101261 max 0.009222268 sum 124.233435
-Aggregated Function Time : count 15000 avg 0.0011531196 +/- 0.0002417 min 0.000690928 max 0.00294762 sum 17.2967936
+{"ts":1783483714.019546,"level":"info","r":70,"file":"periodic.go","line":851,"msg":"T003 ended after 30.001721231s : 3000 calls. qps=99.99426289249624"}
+{"ts":1783483714.019744,"level":"info","r":68,"file":"periodic.go","line":851,"msg":"T001 ended after 30.00192071s : 3000 calls. qps=99.99359804321008"}
+{"ts":1783483714.019897,"level":"info","r":69,"file":"periodic.go","line":851,"msg":"T002 ended after 30.002073629s : 3000 calls. qps=99.9930883810711"}
+{"ts":1783483714.019911,"level":"info","r":67,"file":"periodic.go","line":851,"msg":"T000 ended after 30.002093859s : 3000 calls. qps=99.99302095710439"}
+{"ts":1783483714.019922,"level":"info","r":71,"file":"periodic.go","line":851,"msg":"T004 ended after 30.002095649s : 3000 calls. qps=99.99301499127088"}
+Ended after 30.002146679s : 15000 calls. qps=499.96
+{"ts":1783483714.020040,"level":"info","r":1,"file":"periodic.go","line":581,"msg":"Run ended","run":0,"elapsed":30002146679,"calls":15000,"qps":499.9642245766117}
+Sleep times : count 14995 avg 0.0082499039 +/- 0.0003888 min 0.006271024 max 0.00920655 sum 123.707308
+Aggregated Function Time : count 15000 avg 0.0011838095 +/- 0.0002353 min 0.000694617 max 0.003460938 sum 17.7571425
 # range, mid point, percentile, count
->= 0.000690928 <= 0.001 , 0.000845464 , 27.90, 4185
-> 0.001 <= 0.002 , 0.0015 , 99.51, 10741
-> 0.002 <= 0.00294762 , 0.00247381 , 100.00, 74
-# target 50% 0.00130863
-# target 75% 0.00165776
-# target 90% 0.00186724
-# target 99% 0.00199292
-# target 99.9% 0.00275553
+>= 0.000694617 <= 0.001 , 0.000847309 , 21.71, 3256
+> 0.001 <= 0.002 , 0.0015 , 99.56, 11678
+> 0.002 <= 0.003 , 0.0025 , 99.98, 63
+> 0.003 <= 0.00346094 , 0.00323047 , 100.00, 3
+# target 50% 0.00136342
+# target 75% 0.00168454
+# target 90% 0.00187721
+# target 99% 0.00199281
+# target 99.9% 0.00280952
 Error cases : no data
 # Socket and IP used for each connection:
-[0] 3001 socket used, resolved to 127.0.0.1:14443, connection timing : count 3001 avg 0.00068254116 +/- 0.0001998 min 0.000362829 max 0.002194903 sum 2.04830601
-[1] 3001 socket used, resolved to 127.0.0.1:14443, connection timing : count 3001 avg 0.00068493783 +/- 0.000199 min 0.000354269 max 0.002079313 sum 2.05549842
-[2] 3001 socket used, resolved to 127.0.0.1:14443, connection timing : count 3001 avg 0.00069079573 +/- 0.000207 min 0.000362169 max 0.002103413 sum 2.07307799
-[3] 3001 socket used, resolved to 127.0.0.1:14443, connection timing : count 3001 avg 0.00069107001 +/- 0.0002103 min 0.000360959 max 0.002058483 sum 2.07390111
-[4] 3001 socket used, resolved to 127.0.0.1:14443, connection timing : count 3001 avg 0.00069614096 +/- 0.0002206 min 0.000373408 max 0.002249652 sum 2.08911901
-Connection time histogram (s) : count 15005 avg 0.00068909714 +/- 0.0002076 min 0.000354269 max 0.002249652 sum 10.3399025
+[0] 3001 socket used, resolved to 127.0.0.1:14443, connection timing : count 3001 avg 0.00069853888 +/- 0.0001952 min 0.000357469 max 0.002015614 sum 2.09631517
+[1] 3001 socket used, resolved to 127.0.0.1:14443, connection timing : count 3001 avg 0.0007000604 +/- 0.0001938 min 0.000375789 max 0.001815193 sum 2.10088125
+[2] 3001 socket used, resolved to 127.0.0.1:14443, connection timing : count 3001 avg 0.00069846221 +/- 0.0001916 min 0.000385379 max 0.002250782 sum 2.09608509
+[3] 3001 socket used, resolved to 127.0.0.1:14443, connection timing : count 3001 avg 0.00070163234 +/- 0.0002001 min 0.000378029 max 0.002045644 sum 2.10559866
+[4] 3001 socket used, resolved to 127.0.0.1:14443, connection timing : count 3001 avg 0.00071378952 +/- 0.0002174 min 0.000386708 max 0.003156329 sum 2.14208234
+Connection time histogram (s) : count 15005 avg 0.00070249667 +/- 0.0001999 min 0.000357469 max 0.003156329 sum 10.5409625
 # range, mid point, percentile, count
->= 0.000354269 <= 0.001 , 0.000677134 , 91.19, 13683
-> 0.001 <= 0.002 , 0.0015 , 99.96, 1316
-> 0.002 <= 0.00224965 , 0.00212483 , 100.00, 6
-# target 50% 0.000708307
-# target 75% 0.00088535
-# target 90% 0.000991576
-# target 99% 0.00189054
-# target 99.9% 0.00199316
+>= 0.000357469 <= 0.001 , 0.000678735 , 91.28, 13697
+> 0.001 <= 0.002 , 0.0015 , 99.97, 1304
+> 0.002 <= 0.003 , 0.0025 , 99.99, 3
+> 0.003 <= 0.00315633 , 0.00307816 , 100.00, 1
+# target 50% 0.000709393
+# target 75% 0.000885378
+# target 90% 0.000990969
+# target 99% 0.001888
+# target 99.9% 0.00199156
 Sockets used: 15005 (for perfect keepalive, would be 5)
 Uniform: false, Jitter: false, Catchup allowed: true
 IP addresses distribution:
@@ -44,64 +46,71 @@ IP addresses distribution:
 Code 200 : 15000 (100.0 %)
 Response Header Sizes : count 15000 avg 137 +/- 0 min 137 max 137 sum 2055000
 Response Body/Total Sizes : count 15000 avg 1161 +/- 0 min 1161 max 1161 sum 17415000
-All done 15000 calls (plus 5 warmup) 1.153 ms avg, 500.0 qps
+All done 15000 calls (plus 5 warmup) 1.184 ms avg, 500.0 qps
+Successfully wrote 5626 bytes of Json data to /dev/stdout
 {
   "RunType": "HTTP",
   "Labels": "proxy-interlink-churn-q500-c5",
-  "StartTime": "2026-07-08T02:36:46.422720675Z",
+  "StartTime": "2026-07-08T04:08:04.01781352Z",
   "RequestedQPS": "500",
   "RequestedDuration": "30s",
-  "ActualQPS": 499.9797726016617,
-  "ActualDuration": 30001213693,
+  "ActualQPS": 499.9642245766117,
+  "ActualDuration": 30002146679,
   "NumThreads": 5,
   "Version": "1.66.0",
   "DurationHistogram": {
     "Count": 15000,
-    "Min": 0.000690928,
-    "Max": 0.00294762,
-    "Sum": 17.296793628999993,
-    "Avg": 0.001153119575266666,
-    "StdDev": 0.00024168577665348355,
+    "Min": 0.000694617,
+    "Max": 0.003460938,
+    "Sum": 17.757142536999996,
+    "Avg": 0.0011838095024666664,
+    "StdDev": 0.00023525290877661532,
     "Data": [
       {
-        "Start": 0.000690928,
+        "Start": 0.000694617,
         "End": 0.001,
-        "Percent": 27.9,
-        "Count": 4185
+        "Percent": 21.706666666666667,
+        "Count": 3256
       },
       {
         "Start": 0.001,
         "End": 0.002,
-        "Percent": 99.50666666666666,
-        "Count": 10741
+        "Percent": 99.56,
+        "Count": 11678
       },
       {
         "Start": 0.002,
-        "End": 0.00294762,
+        "End": 0.003,
+        "Percent": 99.98,
+        "Count": 63
+      },
+      {
+        "Start": 0.003,
+        "End": 0.003460938,
         "Percent": 100,
-        "Count": 74
+        "Count": 3
       }
     ],
     "Percentiles": [
       {
         "Percentile": 50,
-        "Value": 0.0013086304813332093
+        "Value": 0.0013634183935605413
       },
       {
         "Percentile": 75,
-        "Value": 0.001657759985103808
+        "Value": 0.0016845350231203973
       },
       {
         "Percentile": 90,
-        "Value": 0.0018672376873661671
+        "Value": 0.001877205000856311
       },
       {
         "Percentile": 99,
-        "Value": 0.0019929243087235824
+        "Value": 0.0019928069874978593
       },
       {
         "Percentile": 99.9,
-        "Value": 0.002755534864864878
+        "Value": 0.0028095238095238143
       }
     ]
   },
@@ -120,7 +129,7 @@ All done 15000 calls (plus 5 warmup) 1.153 ms avg, 500.0 qps
   "NoCatchUp": false,
   "RunID": 0,
   "AccessLoggerInfo": "",
-  "ID": "2026-07-08-023646_proxy_interlink_churn_q500_c5",
+  "ID": "2026-07-08-040804_proxy_interlink_churn_q500_c5",
   "RetCodes": {
     "200": 15000
   },
@@ -146,7 +155,7 @@ All done 15000 calls (plus 5 warmup) 1.153 ms avg, 500.0 qps
   "HTTPReqTimeOut": 120000000000,
   "UserCredentials": "",
   "ContentType": "",
-  "Payload": "JTTVdzpz+rvVr0gnPykw8zBxEgbIFzxmqo1THcwFAP/wNxZxf9dk6LWyKNOx5GpVcfCdJKE40JfCkse2FdR05cXiydyBkH15mivcJW0WA6pZpBYtZ5RWSEOZ+YK4KYRiXYgWboRWeIu+BLMtiIDBe5al7uDueUpQq/xZqE0KvdUCFh3eVKzjAepWLC3JnfYln29nnjN5pbQ40oOCpeLsYAV5K9ORgOO0fRWG5fr28hXAzvier1cOMbJCFgQa7jxBljTaEQXuqi2vSW7fubUaOAORV2etHvBQ5OLbAXDhzSjI3iE8QPHqKwdiKb95gMCpcMrYQvO5Si0nrUxfOjJ8n7aqZ3kKwLFL0fK1G8eTsT4UZ8Rwfft+OlsPlZKs775oghde14KATMV7bYjXnLFbhEo+8QQGQtCp6UctxlVy5yday57TzbUM3axUeeWG3SXfZVxdHTgaPysshU41tsV07kXHwu7kTvE20m4lpfhRUG3BQ9RdaPhN+3TeZP6oGpGov/G487FngWq+Nl3hpzrsNuvKU7HEs9SgK8ugyYGBX2F/Sn3u6jiPJEq5osy2Fu6AiXa55HDzu2+aDaPKWAsNnxaeXxu92CI7IFHxb2ALTIRqBft/ecjC2+iV1XLj+bqJ0fLAIG4+1gMAUexDBROSlJfly7sdcJX7eWLwSTXOgQ5vr2bWbRRX27XF7bT8J0gg8fazz+Wpd8veMTn6v+tiFrLP8gWlbVcVQot4PFzcEMoVwt3sV1VY6evID7e+maIg4jIPe3vwZdoOGB6A3yeNwM3CGiFmjFt6f+HK8HXXPEhUaoZ6tBr51FrhJnAU1o/0FotqDQBY1HQGYEMjtMZfrhopMAGxuUuF+jwuLk1DALR09npKlTz1O89GsveqmgD1KIAnqpUnfMT6w7dFZPkIqVRRPmKZ8ZLUFC7s33JSyo63XHypHYn0yOvVziHMAUSiczNOoZKXwRraN6fWJU6ZIPxKUjTFSA9Brvo/umYZUPvrxS/kUE+XN+LKT2+OwwkVCMj64Fi3Zbt1Js114xaR/cvtMgE66LbanuapkBBPAUkPN98BnHDKNLpmmLhywywjTsYQJ4AJZ3z5qigLya2ACQIpOvJ72qKKsdE/6M1Tl3xhYyituRS/lP7pPqu29Gz780D0fFzIIxmJLDa/6fLrM+G3mNQ8nvEAhUQmuwSzGkBCrrVQcQREuPTQoQL4umpfBXF38NfG9e/5aA35dquc8YOnoIGDosAH+Zq4VWqpZkzR0Mj6NLuT6e8R9b35d1WfFaf+Tfq4xMllUvVx0MYkNoJSQKYPOGOVGs577EASem31JPou675PFXER1b4AZ6IdL+vtZmeqssPGfaVtpOSVPw==",
+  "Payload": "BaJ6lbO76TbEVuVPvlafiLFiPth+RU5BnXqedFtQZrh0kH66MNXaEaLK4/IfFbSUNV2iCEhRCyio3SK44cnXDRoIJRuLGKbtBCsISsxW71GW0VwumrYnoiXNYjQcwnzo5cAf6AyN9SA5IKD6w9DwmWg6TT/elO7MNvev8IPZEG9nSlmJEFK4bGVs9ofvEBvfXOjtBKtn0nXopxZVzBIdpqMFJtjMnT49vwFpEs6q2xlh9mblP0FgVX3q2ocBYj9UlWsC4hIw/s79V/Pv+CECDOUtodMPAlDWXE9tzoxm8XQe7+HAF8VginttDUHX2OdSqNSiP1E0XyqNINqgXHbzv8IPL5NPzKz4IYyst/4bUD6GYuheqdPmdZFegNSOmF7it86phw9es0ZwLZgxALNwycE2WM5Cqn1/AS03hXGH678IbhLPKtb4qGnGZa0YUlBeinb0tUIUXkcnx+4rmDTe0uGRR1mWjvNr9eaPN02N6JHzjpEWvzLWdp5UNOIukm1tsEDxIIZl99Gd4jPYENZ0qWkvHV3c0X/HFhuvcs7aHoYoUj3fLBp9lE8KIodqVsmDSFK1kgALBRGvQNdxe2BErgvROYed9ZaAd2KszZgcGUzZgJxCYKnexlfhIfPAV79E2iYn4VFyuImlc4M0+q9erah48XkVzaZPAH4Za4BEATtybEWtlJWsmBZUbBpnABnGiRa2BWg4PCdzTnptAVvhTtID8mVBzYGnfjNQ1ZdyxuZhkUVr9TS2/lqNAXzC64p56kvcB9FwXA6ih4OKrEaaeQFo7MU/VD+XvFhwNL4+xZIfKGrGilzWVRIn5KA7qyzuLdzyHBOMuxr3OPWDxgJAStI+WNKX8wG5UY/mJcilu+Kur4aIS7GcWmMYJC9zH7YZXgnZxZJgx60FaaelQ3D/SZIQVCHWy6MUQGaZ8sh7kLGf/S1Bmj9Lg6/yUjmjqG45ph3RiVEhJL4zUQJiwRVe+DZ+Ql93vy/pUiTmXF/Do7v4o3rlHQ0p/sHQX2ncCiEvgYcs4kE8I/80mLl5haF2DS8goB0tTPJ0eMkAbsRjVDl/5srRYvTRGzPx/hkuGtrYtdAyWal/ZZ8br3cAe3FF2JGyBNtYnV8ZtXHmFdqfvOijZCcpLts5EyrCF6tDaeaCVnH61+oeFJhglrXlXEQL7iXlBaXYSMSa/IDAgqki4v8cHeWailbLvREjV/Kg1lGq46qPDcyDLwTs5ReB/ihFK/xhinpRCdFtwe4PNg2M2YCyGe+udg38AYdz6Y4A8oHNjis/0opJXAG6SxycfOOTl1dzK1iH2iH+RNaCSNJIzepc96J/kwb/uTeob0C5FXNhg3wVIq/XQDwry3zAWblxTg==",
   "MethodOverride": "",
   "LogErrors": true,
   "SequentialWarmup": false,
@@ -199,54 +208,59 @@ All done 15000 calls (plus 5 warmup) 1.153 ms avg, 500.0 qps
   "SocketCount": 15005,
   "ConnectionStats": {
     "Count": 15005,
-    "Min": 0.000354269,
-    "Max": 0.002249652,
-    "Sum": 10.339902538999999,
-    "Avg": 0.000689097136887704,
-    "StdDev": 0.00020757329236002363,
+    "Min": 0.000357469,
+    "Max": 0.003156329,
+    "Sum": 10.540962493999999,
+    "Avg": 0.0007024966673775408,
+    "StdDev": 0.00019991259867052427,
     "Data": [
       {
-        "Start": 0.000354269,
+        "Start": 0.000357469,
         "End": 0.001,
-        "Percent": 91.1896034655115,
-        "Count": 13683
+        "Percent": 91.28290569810063,
+        "Count": 13697
       },
       {
         "Start": 0.001,
         "End": 0.002,
-        "Percent": 99.96001332889037,
-        "Count": 1316
+        "Percent": 99.97334221926025,
+        "Count": 1304
       },
       {
         "Start": 0.002,
-        "End": 0.002249652,
+        "End": 0.003,
+        "Percent": 99.99333555481506,
+        "Count": 3
+      },
+      {
+        "Start": 0.003,
+        "End": 0.003156329,
         "Percent": 100,
-        "Count": 6
+        "Count": 1
       }
     ],
     "Percentiles": [
       {
         "Percentile": 50,
-        "Value": 0.0007083072324587049
+        "Value": 0.0007093926489851051
       },
       {
         "Percentile": 75,
-        "Value": 0.0008853499465173221
+        "Value": 0.0008853779303628796
       },
       {
         "Percentile": 90,
-        "Value": 0.0009915755749524923
+        "Value": 0.0009909690991895443
       },
       {
         "Percentile": 99,
-        "Value": 0.0018905395136778118
+        "Value": 0.0018879984662576689
       },
       {
         "Percentile": 99.9,
-        "Value": 0.001993157294832827
+        "Value": 0.0019915605828220865
       }
     ]
   },
   "AbortOn": 0
 }
-Successfully wrote 5390 bytes of Json data to /dev/stdout

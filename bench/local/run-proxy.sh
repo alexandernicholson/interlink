@@ -143,6 +143,35 @@ aggregate_metrics() {
     awk -F, 'NR>1 {sum_cpu+=$2; sum_mem+=$3; if($2>max_cpu) max_cpu=$2; if($3>max_mem) max_mem=$3; n++} END {if(n>0) printf "avg_cpu_percent=%.2f peak_cpu_percent=%.2f avg_memory_rss_kb=%.1f peak_memory_rss_kb=%.1f\n", sum_cpu/n, max_cpu, sum_mem/n, max_mem}' "${input}"
 }
 
+# Prometheus endpoint for the interlinkd metrics server.
+METRICS_URL="${METRICS_URL:-http://127.0.0.1:4190}"
+
+scrape_interlink_metrics() {
+    local label="$1"
+    local output="$2"
+    log "scraping handshake metrics for ${label} from ${METRICS_URL}"
+    local data
+    data=$(curl -s --max-time 2 "${METRICS_URL}/metrics" 2>/dev/null || true)
+    if [[ -z "${data}" ]]; then
+        log "WARNING: could not scrape metrics from ${METRICS_URL} (proxy may not be running)"
+        return
+    fi
+    local handshake_data
+    handshake_data=$(echo "${data}" | grep -E "interlink_handshake_full_total|interlink_handshake_resumed_total|interlink_handshakes_total" || true)
+    if [[ -z "${handshake_data}" ]]; then
+        log "WARNING: no handshake metrics found in Prometheus output"
+        return
+    fi
+    log "handshake metrics captured"
+    {
+        echo ""
+        echo "## Handshake metrics (${label})"
+        echo '```'
+        echo "${handshake_data}"
+        echo '```'
+    } >> "${output}"
+}
+
 run_profile() {
     local qps="$1"
     local conns="$2"
@@ -199,6 +228,8 @@ fi
 
 echo "# interlink proxy benchmark summary" > "${RESULTS}/proxy-summary.md"
 echo "" >> "${RESULTS}/proxy-summary.md"
+echo "Generated: $(date -Iseconds)" >> "${RESULTS}/proxy-summary.md"
+echo "Git SHA: $(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')" >> "${RESULTS}/proxy-summary.md"
 echo "Server: Go echo-server (plain HTTP, ${PROFILE_DELAY:-200ms} delay)" >> "${RESULTS}/proxy-summary.md"
 echo "Proxy: interlinkd (inbound mTLS → plain TCP)" >> "${RESULTS}/proxy-summary.md"
 echo "Load: Fortio HTTPS + mTLS" >> "${RESULTS}/proxy-summary.md"
@@ -230,5 +261,8 @@ if [[ "${BULK:-0}" == "1" ]]; then
     run_profile 100 2 "-payload-size 65536" "proxy-interlink-bulk-64kb"
     run_profile 50 2 "-payload-size 262144" "proxy-interlink-bulk-256kb"
 fi
+
+# Scrape handshake metrics from the Prometheus endpoint.
+scrape_interlink_metrics "final" "${RESULTS}/proxy-summary.md"
 
 log "proxy benchmark complete. Results in ${RESULTS}/proxy-summary.md"
