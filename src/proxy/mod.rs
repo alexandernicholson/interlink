@@ -17,8 +17,11 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
-/// Buffer size for bidirectional data copy (64 KiB vs tokio's 8 KiB default).
-pub(crate) const COPY_BUF_SIZE: usize = 65536;
+/// Buffer size for bidirectional data copy (8 KiB, matching tokio default).
+/// 64 KiB was tested but caused heavy-profile p99 regression (84 vs 44 ms)
+/// at 6400 connections, likely from cache pressure. Revisit with a proper
+/// benchmark-driven tuning pass.
+pub(crate) const COPY_BUF_SIZE: usize = 8192;
 
 /// Bidirectional copy with 64 KiB buffers.
 ///
