@@ -1,6 +1,6 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -29,6 +29,8 @@ pub struct TcpProxy {
     policy: Arc<PolicyEngine>,
     discovery: Option<Arc<ServiceDiscovery>>,
     shutdown: Option<watch::Receiver<bool>>,
+    /// Shared shutdown flag for multi-acceptor — cloned before spawning tasks.
+    shutdown_flag: Arc<AtomicBool>,
     active_connections: Arc<AtomicUsize>,
     local_id: SpiffeId,
 }
@@ -85,6 +87,7 @@ impl TcpProxy {
             policy,
             discovery,
             shutdown: None,
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
             active_connections: Arc::new(AtomicUsize::new(0)),
             local_id,
         }
@@ -97,6 +100,12 @@ impl TcpProxy {
 
     pub fn with_shutdown(mut self, shutdown: watch::Receiver<bool>) -> Self {
         self.shutdown = Some(shutdown);
+        self
+    }
+
+    /// Install the shared shutdown flag alongside the watch receiver.
+    pub fn with_shutdown_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.shutdown_flag = flag;
         self
     }
 
@@ -129,15 +138,59 @@ impl TcpProxy {
     }
 
     pub async fn run(self: Arc<Self>) {
-        let addr = format!("0.0.0.0:{}", self.listen_port);
-        let listener = match TcpListener::bind(&addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                error!("failed to bind {}: {}", addr, e);
-                return;
-            }
-        };
-        info!("interlink proxy listening on {}", addr);
+        let addr: std::net::SocketAddr = ([0, 0, 0, 0], self.listen_port).into();
+
+        // Spawn N acceptor tasks, each with its own SO_REUSEPORT socket,
+        // so accept + handshake setup scales across cores at high conn rates.
+        let num_acceptors = std::cmp::min(
+            std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2),
+            4,
+        ).max(2);
+        info!(
+            "interlink proxy listening on {} with {} acceptors",
+            addr, num_acceptors
+        );
+
+        let shutdown_flag = self.shutdown_flag.clone();
+        let acceptors: Vec<_> = (0..num_acceptors)
+            .map(|i| create_acceptor(addr, i, self.clone(), shutdown_flag.clone()))
+            .collect();
+
+        for h in acceptors {
+            let _ = h.await;
+        }
+
+        self.wait_for_graceful_shutdown().await;
+    }
+}
+
+/// Create a SO_REUSEPORT socket, bind, listen, and spawn an acceptor task.
+#[cfg_attr(not(test), allow(clippy::expect_used))]
+fn create_acceptor(
+    addr: std::net::SocketAddr,
+    id: usize,
+    proxy: Arc<TcpProxy>,
+    shutdown_flag: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<()> {
+    let domain = if addr.is_ipv6() {
+        socket2::Domain::IPV6
+    } else {
+        socket2::Domain::IPV4
+    };
+    tokio::spawn(async move {
+        let sock = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))
+            .expect("create socket");
+        sock.set_reuse_address(true).ok();
+        #[cfg(target_os = "linux")]
+        sock.set_reuse_port(true).ok();
+        sock.set_nonblocking(true).ok();
+        sock.bind(&socket2::SockAddr::from(addr))
+            .unwrap_or_else(|e| panic!("bind acceptor {}: {}", id, e));
+        sock.listen(1024)
+            .unwrap_or_else(|e| panic!("listen acceptor {}: {}", id, e));
+        let std_listener: std::net::TcpListener = sock.into();
+        let listener = TcpListener::from_std(std_listener)
+            .unwrap_or_else(|e| panic!("tokio listener acceptor {}: {}", id, e));
 
         loop {
             tokio::select! {
@@ -145,32 +198,24 @@ impl TcpProxy {
                     let (stream, peer_addr) = match accept_result {
                         Ok(s) => s,
                         Err(e) => {
-                            error!("accept error: {}", e);
+                            error!("acceptor {} accept error: {}", id, e);
                             continue;
                         }
                     };
-                    self.handle_accept(stream, peer_addr).await;
+                    proxy.handle_accept(stream, peer_addr).await;
                 }
-                _ = Self::wait_shutdown(self.shutdown.as_ref()) => {
-                    info!("inbound proxy received shutdown signal");
+                _ = async { while !shutdown_flag.load(Ordering::Acquire) {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                } } => {
+                    info!("acceptor {} received shutdown signal", id);
                     break;
                 }
             }
         }
+    })
+}
 
-        self.wait_for_graceful_shutdown().await;
-    }
-
-    async fn wait_shutdown(shutdown: Option<&watch::Receiver<bool>>) {
-        match shutdown {
-            Some(rx) => {
-                let mut rx = rx.clone();
-                let _ = rx.changed().await;
-            }
-            None => std::future::pending().await,
-        }
-    }
-
+impl TcpProxy {
     async fn handle_accept(self: &Arc<Self>, stream: TcpStream, peer_addr: std::net::SocketAddr) {
         if let Err(e) = configure_socket(&stream) {
             warn!("failed to configure accepted socket {}: {}", peer_addr, e);

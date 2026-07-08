@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[global_allocator]
@@ -96,6 +97,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (shutdown_tx, inbound_shutdown) = tokio::sync::watch::channel(false);
     let outbound_shutdown = shutdown_tx.subscribe();
     let admin_shutdown = shutdown_tx.subscribe();
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    let inbound_flag = shutdown_flag.clone();
 
     // 9. Build and start the admin server.
     let admin = Arc::new(AdminServer::new().with_shutdown(admin_shutdown));
@@ -108,17 +111,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.proxy_inbound_port,
         tls_server,
         policy.clone(),
-        // Skip service discovery when a static default_upstream is configured.
         if config.default_upstream.is_some() {
             None
         } else {
             Some(discovery.clone())
         },
     )
-    .with_shutdown(inbound_shutdown);
+    .with_shutdown(inbound_shutdown)
+    .with_shutdown_flag(inbound_flag.clone());
     let inbound_handle = Arc::new(inbound_proxy).spawn();
 
-    // 10. Build and start the outbound TCP proxy.
+    // 11. Build and start the outbound TCP proxy.
     let outbound_config = config.to_proxy_config();
     let outbound_proxy = OutboundProxy::new_with_discovery(
         outbound_config,
@@ -127,7 +130,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         policy,
         Some(discovery),
     )
-    .with_shutdown(outbound_shutdown);
+    .with_shutdown(outbound_shutdown)
+    .with_shutdown_flag(shutdown_flag.clone());
     let outbound_handle = Arc::new(outbound_proxy).spawn();
 
     info!("interlinkd ready");
@@ -139,6 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Signal proxies and admin server to stop accepting.
+    shutdown_flag.store(true, Ordering::Release);
     let _ = shutdown_tx.send(true);
     let _ = inbound_handle.await;
     let _ = outbound_handle.await;
