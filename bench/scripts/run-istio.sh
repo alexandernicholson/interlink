@@ -38,7 +38,7 @@ run_profile() {
 
     local metrics_out="${RESULTS}/metrics-${label}.csv"
     # ztunnel runs in istio-system as a daemonset.
-    sample_metrics istio-system "app=ztunnel" "${metrics_out}" "${BENCH_DURATION:-300}" &
+    sample_metrics istio-system "app=ztunnel" "${metrics_out}" "${BENCH_DURATION:-60}" &
     local sampler_pid=$!
 
     kubectl delete job fortio-load -n bench --ignore-not-found=true
@@ -65,7 +65,7 @@ IFS=',' read -ra _PROFILES <<< "${PROFILES_SPEC}"
 for _p in "${_PROFILES[@]}"; do
     QPS="${_p%%:*}"
     CONNECTIONS="${_p##*:}"
-    DURATION="${BENCH_DURATION:-300}"
+    DURATION="${BENCH_DURATION:-60}"
     PAYLOAD_SIZE=1024
     FORTIO_TIMEOUT=120
     LABEL="istio-ambient-q${QPS}-c${CONNECTIONS}"

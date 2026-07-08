@@ -20,6 +20,16 @@ log() {
     echo "[$(date -Iseconds)] $*" >&2
 }
 
+# Hard cap on per-profile duration (seconds). Benchmarks are short by design:
+# metrics-server scrapes ~every 15s, so 60s gives enough CPU/mem samples while
+# keeping a full 3-mesh x 3-profile comparison to a few minutes.
+BENCH_MAX_DURATION=60
+if [[ "${BENCH_DURATION:-60}" -gt "${BENCH_MAX_DURATION}" ]]; then
+    echo "[bench] clamping BENCH_DURATION ${BENCH_DURATION} -> ${BENCH_MAX_DURATION}s" >&2
+    BENCH_DURATION="${BENCH_MAX_DURATION}"
+    export BENCH_DURATION
+fi
+
 require() {
     if ! command -v "$1" >/dev/null 2>&1; then
         log "ERROR: required command '$1' not found in PATH"

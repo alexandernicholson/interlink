@@ -90,6 +90,25 @@ finding 1's fix introduced a new P0 (see third round):
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
 
+## Fifteenth round (2026-07-08): mux concurrency ceiling fixed; benchmark capped at 60 s
+
+**Mux tunnel pool (`src/proxy/mux.rs`).** The K8s benchmark exposed interlink dropping
+connections at moderate concurrency with the host idle (round 14). Root cause reproduced
+locally: one yamux session per peer has a hard `max_num_streams = 512` cap, so a
+single-tunnel-per-peer design is a concurrency ceiling and a single point of failure — a
+new test driving 700 concurrent held-open streams failed **512/700** on the old design.
+Fix: `MuxPool` now keeps a *pool* of tunnels per peer. `open_stream` reserves a live-slot
+(released by a drop guard on the returned stream), the router picks the least-loaded
+tunnel under a 200-stream soft cap, and grows the pool (under the existing single-flight
+creation lock) up to 16 tunnels/peer — 3200 live streams before back-pressure, well above
+the heavy profile's 2560. The open-request channel widened 64→256. All 7 mux tests pass,
+including the 700-stream reproducer (0 failures) and the unchanged handshake-avoidance
+assertions (N low-concurrency connections still share 1 handshake). Preflight green.
+
+**Benchmark capped at 60 s/profile.** Default `BENCH_DURATION` is now 60 and `common.sh`
+clamps any larger override down to 60 (metrics-server scrapes ~every 15 s, so 60 s still
+yields enough CPU/mem samples). A full 3-mesh × 3-profile comparison is now a few minutes.
+
 ## Fourteenth round (2026-07-08): unified K8s benchmark harness + a real concurrency finding
 
 The comparison harness was made apples-to-apples: all meshes now run on one shared

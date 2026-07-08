@@ -42,19 +42,18 @@ silently publish contention-dominated or error-ridden numbers.
 p50 2.8 ms, p99 13.5 ms (+13.5 ms over the 200 ms base), **0 errors**, ~99 m proxy CPU,
 host 43 %. ✅ valid.
 
-**interlink drops connections at moderate concurrency — a real robustness issue, not
-host contention.** At 800 rps / 200 conns it returned **74 connection errors** (of
-~96 k requests) with p99 1.76 s, and at 1600 rps / 400 conns **105 errors** with p99
-1.83 s — while the host sat at only **29 % / 52 %** CPU. Because the box had ample
-headroom, this is interlink itself failing above ~200 concurrent connections, not the
-machine. Prime suspect: the mux single-tunnel design (all connections between a node
-pair funnel through one yamux session), consistent with the round-13 "high concurrency
-funnels through one session" trade-off. **This is the next thing to investigate** — cap
-streams per tunnel / open N tunnels per peer / fall back to 1:1 above a concurrency
-threshold — and it should be reproduced with `INTERLINK_MUX=false` to confirm mux is the
-cause. A published cross-mesh comparison table is deferred until this is resolved, since
-interlink's moderate-load numbers would otherwise reflect a fixable bug rather than the
-design's real ceiling.
+**Mux concurrency ceiling — found and fixed.** The earlier run showed interlink
+dropping connections at moderate concurrency (74 errors @ 800 rps/200 conns, 105 @
+1600/400) with the host only 29–52 % utilized. Root cause, reproduced locally: a single
+yamux session per peer caps at `max_num_streams = 512`, so all connections between a
+node pair funneled through one session and were dropped past that ceiling (a
+700-concurrent-held-stream test failed 512/700 on the old design). Fixed by pooling
+tunnels per peer (`src/proxy/mux.rs`): streams are spread load-aware across up to 16
+tunnels, each soft-capped at 200 live streams (3200/peer before back-pressure), and the
+stream-open channel was widened. The reproducer test (`tests/mux_tunnel.rs::
+test_mux_beyond_single_session_cap`, 700 concurrent held streams) now passes with zero
+failures, as do the 300-concurrent and handshake-avoidance tests. See
+`docs/performance-plan.md` for the round writeup.
 
 **Linkerd/Istio numbers not yet captured on the new topology:** the Linkerd run in this
 session produced empty Fortio output because of the meshed-load-generator bug above (now

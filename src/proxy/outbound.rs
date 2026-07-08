@@ -342,27 +342,48 @@ impl OutboundProxy {
             return self.establish(upstream).await;
         }
 
-        // Fast path: existing tunnel, no lock, no handshake.
-        if let Some(tunnel) = self.mux_pool.get(&upstream) {
-            if let Some(route) = self.try_tunnel_stream(&tunnel, upstream).await {
+        // Up to a few attempts: dead tunnels are evicted and retried.
+        for _ in 0..4 {
+            // Fast path: an existing tunnel with spare capacity, no lock.
+            if let Some(tunnel) = self.mux_pool.pick_under_cap(&upstream) {
+                match self.try_tunnel_stream(&tunnel, upstream).await {
+                    Some(route) => return route,
+                    None => continue, // dead → evicted; retry
+                }
+            }
+
+            // No tunnel has spare capacity. Grow the pool under the per-peer
+            // creation lock (single-flight — concurrent first connections to a
+            // new peer share one handshake instead of each opening a tunnel).
+            let lock = self.mux_pool.creation_lock(upstream);
+            let guard = lock.lock().await;
+
+            // A concurrent task may have grown it while we waited.
+            if let Some(tunnel) = self.mux_pool.pick_under_cap(&upstream) {
+                drop(guard);
+                match self.try_tunnel_stream(&tunnel, upstream).await {
+                    Some(route) => return route,
+                    None => continue,
+                }
+            }
+
+            if self.mux_pool.can_grow(&upstream) {
+                let route = self.establish(upstream).await;
+                drop(guard);
                 return route;
             }
-            // Tunnel dead → evicted; fall through to (re)establish.
-        }
+            drop(guard);
 
-        // Single-flight establishment per address (the DNS-stampede lesson):
-        // concurrent first connections to a new peer share one handshake.
-        let lock = self.mux_pool.creation_lock(upstream);
-        let _guard = lock.lock().await;
-
-        // A concurrent creator may have won while we waited.
-        if let Some(tunnel) = self.mux_pool.get(&upstream) {
-            if let Some(route) = self.try_tunnel_stream(&tunnel, upstream).await {
-                return route;
+            // Pool is at MAX_TUNNELS_PER_PEER and all are at the soft cap: use
+            // the least-loaded tunnel anyway (still under yamux's hard 512 cap).
+            if let Some(tunnel) = self.mux_pool.pick_any(&upstream) {
+                match self.try_tunnel_stream(&tunnel, upstream).await {
+                    Some(route) => return route,
+                    None => continue,
+                }
             }
         }
-
-        self.establish(upstream).await
+        Route::Failed
     }
 
     /// Try to authorize and open a stream on an existing tunnel.

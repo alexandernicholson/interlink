@@ -87,7 +87,7 @@ run_profile() {
     log "running profile ${label}"
 
     local metrics_out="${RESULTS}/metrics-${label}.csv"
-    sample_metrics bench "app=interlink" "${metrics_out}" "${BENCH_DURATION:-300}" &
+    sample_metrics bench "app=interlink" "${metrics_out}" "${BENCH_DURATION:-60}" &
     local sampler_pid=$!
 
     kubectl delete job fortio-load -n bench --ignore-not-found=true
@@ -114,7 +114,7 @@ IFS=',' read -ra _PROFILES <<< "${PROFILES_SPEC}"
 for _p in "${_PROFILES[@]}"; do
     QPS="${_p%%:*}"
     CONNECTIONS="${_p##*:}"
-    DURATION="${BENCH_DURATION:-300}"
+    DURATION="${BENCH_DURATION:-60}"
     PAYLOAD_SIZE=1024
     FORTIO_TIMEOUT=120
     LABEL="${VARIANT}-q${QPS}-c${CONNECTIONS}"

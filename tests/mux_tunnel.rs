@@ -64,6 +64,23 @@ fn pick_port() -> u16 {
     l.local_addr().unwrap().port()
 }
 
+/// Echo backend that sleeps `hold` before replying, so many streams stay
+/// concurrently in-flight (to exercise per-session stream caps).
+async fn echo_held(listener: TcpListener, hold: Duration) {
+    loop {
+        let Ok((mut s, _)) = listener.accept().await else { return; };
+        tokio::spawn(async move {
+            let mut data = Vec::new();
+            if s.read_to_end(&mut data).await.is_ok() {
+                tokio::time::sleep(hold).await;
+                let _ = s.write_all(b"echo:").await;
+                let _ = s.write_all(&data).await;
+            }
+            let _ = s.shutdown().await;
+        });
+    }
+}
+
 /// Echo server that reads to EOF, then writes everything back prefixed with
 /// "echo:" — deliberately half-close-dependent (C7).
 async fn echo_to_eof(listener: TcpListener) {
@@ -85,6 +102,10 @@ async fn echo_to_eof(listener: TcpListener) {
 /// Build the two-proxy mesh. `inbound_mux` = false models a pre-mux peer;
 /// `outbound_mux` = false models INTERLINK_MUX=false (legacy ALPN offer).
 async fn start_mesh_full(td_name: &str, inbound_mux: bool, outbound_mux: bool) -> Mesh {
+    start_mesh_cfg(td_name, inbound_mux, outbound_mux, Duration::ZERO).await
+}
+
+async fn start_mesh_cfg(td_name: &str, inbound_mux: bool, outbound_mux: bool, echo_hold: Duration) -> Mesh {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -106,7 +127,11 @@ async fn start_mesh_full(td_name: &str, inbound_mux: bool, outbound_mux: bool) -
     // Echo backend.
     let echo_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let echo_addr = echo_listener.local_addr().unwrap();
-    tokio::spawn(echo_to_eof(echo_listener));
+    if echo_hold.is_zero() {
+        tokio::spawn(echo_to_eof(echo_listener));
+    } else {
+        tokio::spawn(echo_held(echo_listener, echo_hold));
+    }
 
     // Inbound proxy.
     let inbound_port = pick_port();
@@ -143,7 +168,7 @@ async fn start_mesh_full(td_name: &str, inbound_mux: bool, outbound_mux: bool) -
         trust_domain: td_name.into(),
         identity: Some(server_id.to_uri()),
         default_upstream: Some(echo_addr.to_string()),
-        max_connections: Some(64),
+        max_connections: Some(10000),
         mux: true,
     };
     let inbound = TcpProxy::new_with_port(
@@ -185,7 +210,7 @@ async fn start_mesh_full(td_name: &str, inbound_mux: bool, outbound_mux: bool) -
         trust_domain: td_name.into(),
         identity: Some(client_id.to_uri()),
         default_upstream: Some(format!("127.0.0.1:{}", inbound_port)),
-        max_connections: Some(64),
+        max_connections: Some(10000),
         mux: true,
     };
     let outbound =
@@ -311,4 +336,78 @@ async fn test_mux_disabled_client_offers_legacy() {
         3,
         "mux disabled: each connection needs its own handshake"
     );
+}
+
+/// Reproducer for the K8s finding: many *concurrent* connections through the
+/// mux path must all succeed. The single-tunnel design dropped connections at
+/// ~200 concurrent in the K8s benchmark (host had headroom), so this drives
+/// 300 concurrent roundtrips and asserts zero failures.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_mux_high_concurrency() {
+    let mesh = start_mesh("mux-conc-hi.local", true).await;
+    let n = 300;
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let port = mesh.outbound_port;
+        let b = barrier.clone();
+        handles.push(tokio::spawn(async move {
+            b.wait().await; // release all at once → genuine concurrency
+            let payload = format!("c{}", i);
+            let mut c = TcpStream::connect(("127.0.0.1", port)).await.map_err(|e| format!("connect: {e}"))?;
+            c.write_all(payload.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
+            c.shutdown().await.map_err(|e| format!("shutdown: {e}"))?;
+            let mut resp = Vec::new();
+            tokio::time::timeout(Duration::from_secs(20), c.read_to_end(&mut resp))
+                .await.map_err(|_| "timeout".to_string())
+                .and_then(|r| r.map_err(|e| format!("read: {e}")))?;
+            if resp != format!("echo:{}", payload).into_bytes() {
+                return Err(format!("bad resp len {}", resp.len()));
+            }
+            Ok::<(), String>(())
+        }));
+    }
+    let mut errs = 0;
+    for h in handles {
+        if let Err(e) = h.await.unwrap() {
+            errs += 1;
+            if errs <= 5 { eprintln!("conn error: {e}"); }
+        }
+    }
+    assert_eq!(errs, 0, "{errs}/{n} concurrent connections failed through the mux tunnel");
+}
+
+
+/// >512 concurrent streams: a single yamux session caps at max_num_streams=512,
+/// so a single-tunnel-per-peer design fails opens beyond that. This drives 700
+/// concurrent connections through a briefly-held backend to force many streams
+/// live at once, exercising the tunnel pool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_mux_beyond_single_session_cap() {
+    let mesh = start_mesh_cfg("mux-cap.local", true, true, Duration::from_millis(600)).await;
+    let n = 700;
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for i in 0..n {
+        let port = mesh.outbound_port;
+        let b = barrier.clone();
+        handles.push(tokio::spawn(async move {
+            b.wait().await;
+            let payload = format!("cap{}", i);
+            let mut c = TcpStream::connect(("127.0.0.1", port)).await.map_err(|e| format!("connect: {e}"))?;
+            c.write_all(payload.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
+            c.shutdown().await.map_err(|e| format!("shutdown: {e}"))?;
+            let mut resp = Vec::new();
+            tokio::time::timeout(Duration::from_secs(30), c.read_to_end(&mut resp))
+                .await.map_err(|_| "timeout".to_string())
+                .and_then(|r| r.map_err(|e| format!("read: {e}")))?;
+            if resp != format!("echo:{}", payload).into_bytes() {
+                return Err(format!("bad resp len {}", resp.len()));
+            }
+            Ok::<(), String>(())
+        }));
+    }
+    let mut errs = 0;
+    for h in handles { if h.await.unwrap().is_err() { errs += 1; } }
+    assert_eq!(errs, 0, "{errs}/{n} connections failed (single-session cap?)");
 }
