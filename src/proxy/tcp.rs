@@ -343,7 +343,7 @@ impl TcpProxy {
         }
 
         let copy_result =
-            tokio::io::copy_bidirectional(&mut tls_reader, &mut upstream_stream).await;
+            crate::proxy::copy_bidirectional(&mut tls_reader, &mut upstream_stream).await;
         let (bytes_up, bytes_down) = match copy_result {
             Ok((up, down)) => (up, down),
             Err(e) => {

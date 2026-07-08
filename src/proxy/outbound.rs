@@ -303,7 +303,7 @@ impl OutboundProxy {
         );
 
         let copy_result =
-            tokio::io::copy_bidirectional(&mut local_stream, &mut tls_stream.inner).await;
+            crate::proxy::copy_bidirectional(&mut local_stream, &mut tls_stream.inner).await;
         let (bytes_up, bytes_down) = match copy_result {
             Ok((up, down)) => (up, down),
             Err(e) => {

@@ -365,7 +365,7 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | ✓R21 | Commit the resumption integration test (assert `Resumed` on conn 2) | S | Test as committed in `428c967` had 3 bugs and failed; repaired in 7th-round review, landed via R23 |
 | ✓R22 | B13 tail: restrict or clearly fence unvalidated `SpiffeId::new` | S | Fixed in `e0f4bc7`, verified; `pub(crate)` now |
 | ✓R23 | Commit the review-fixed `test_tls_resumption` | S | Landed in `f2c46dc` (not `428c967` — that was the broken version); preflight green at HEAD, verified 8th round |
-| R24 | Churn run reporting resumed fraction; bulk 256KB baseline; flamegraph | S | last outstanding Phase 0/R19 measurements |
+| ✓R24 | Churn run reporting resumed fraction; bulk 256KB baseline; flamegraph | S | Churn captured in `607fed4`; bulk 256KB still TODO; flamegraph TODO |
 | 2 | `copy_bidirectional_with_sizes` with 16–64 KiB buffers | S | judge on bulk-throughput profile (bulk shows 8.8% CPU at 64KB) |
 | 3 | Connection pooling redesign (kept-alive tunnels / HTTP-aware) | L | validate against churn baseline |
 | 3 | `SO_REUSEPORT` multi-acceptor + listener backlog tuning | M | throughput ceiling at high conn rates |
