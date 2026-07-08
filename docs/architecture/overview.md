@@ -15,9 +15,8 @@ flowchart LR
         end
     end
 
-    C1 -.->|plaintext TCP| P1
-    P1 -->|inbound mTLS :4143| P2
-    P1 -->|outbound mTLS :4140| P2
+    C1 -.->|plaintext TCP to outbound :4140| P1
+    P1 -->|mTLS, ALPN il/mux/1, to inbound :4143| P2
     P2 -.->|plaintext TCP| C2
 
     style P1 fill:#4a9eff
@@ -30,14 +29,17 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    ACC[TCP Accept :4143] --> SO[SO_ORIGINAL_DST<br/>recover upstream]
-    SO --> SEM[Semaphore acquire<br/>max_connections]
+    ACC[TCP Accept :4143] --> UP[Resolve upstream:<br/>default_upstream, else SO_ORIGINAL_DST<br/>with self-connect guard]
+    UP --> SEM[Semaphore try_acquire<br/>max_connections]
     SEM --> TLS[TLS 1.3 Handshake<br/>mandatory client cert]
-    TLS --> ID[Extract SPIFFE ID<br/>from cert SAN]
+    TLS --> ALPN{ALPN negotiated<br/>il/mux/1?}
+    ALPN -->|yes| MUXS[Serve yamux tunnel:<br/>each stream policy-checked,<br/>forwarded independently]
+    ALPN -->|no| ID[Extract SPIFFE ID<br/>from cert SAN]
     ID --> POL[Policy Evaluation<br/>default-deny]
     POL -->|allow| PROTO[Protocol Detection<br/>HTTP/1.1 / HTTP/2 / TCP]
     POL -->|deny| CLOSE[Close connection]
     PROTO --> FWD[Forward to upstream<br/>+ bidirectional copy]
+    MUXS --> FWD
     FWD --> DONE[Done]
 ```
 
@@ -45,12 +47,18 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    ACC[TCP Accept :4140] --> SO[SO_ORIGINAL_DST<br/>recover real destination]
-    SO --> SEM[Semaphore acquire<br/>max_connections]
-    SEM --> DISC[ServiceDiscovery<br/>resolve upstream]
-    DISC --> TLS[TLS 1.3 Handshake<br/>with client cert]
-    TLS --> POL[Policy Evaluation<br/>default-deny]
-    POL -->|allow| FWD[Forward to upstream<br/>+ bidirectional copy]
+    ACC[TCP Accept :4140] --> SO[SO_ORIGINAL_DST<br/>self-connect guarded,<br/>else default_upstream]
+    SO --> SEM[Semaphore try_acquire<br/>max_connections]
+    SEM --> DISC[ServiceDiscovery<br/>resolve host, then port]
+    DISC --> ROUTE{Tunnel to peer<br/>in mux pool?}
+    ROUTE -->|yes, under cap| STREAM[Open yamux stream<br/>no TLS handshake]
+    ROUTE -->|no / at cap| TLS[TLS 1.3 Handshake<br/>SPIFFE server verification,<br/>ALPN offers il/mux/1]
+    TLS -->|il/mux/1 negotiated| REG[Register tunnel in pool<br/>≤16 tunnels/peer, ~200 streams each]
+    REG --> STREAM
+    TLS -->|legacy peer| RELAY[1:1 relay]
+    STREAM --> POL[Policy Evaluation<br/>default-deny]
+    RELAY --> POL
+    POL -->|allow| FWD[Bidirectional copy]
     POL -->|deny| CLOSE[Close connection]
     FWD --> DONE[Done]
 ```

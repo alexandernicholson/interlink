@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Rust 1.75+ (edition 2021)
-- Linux (for SO_ORIGINAL_DST and iptables support)
+- Linux (only for the optional `SO_ORIGINAL_DST` transparent-interception mode; the standard sidecar deployment needs no iptables and no special privileges)
 - `cargo` installed
 
 ## Installation
@@ -16,15 +16,15 @@ cargo build --release
 
 ## Running the Daemon
 
-The `interlinkd` binary is a fully functional transparent mTLS proxy. It listens for inbound application traffic (port 4143 by default), transparently intercepts outbound traffic (port 4140), and exposes an admin server (port 4192).
+The `interlinkd` binary is a per-pod sidecar mTLS proxy. It terminates inbound mTLS from peer proxies (port 4143 by default) and forwards plaintext to the local app; applications send outbound traffic to port 4140, which it carries to the peer's sidecar over mTLS (multiplexed tunnels when the peer supports ALPN `il/mux/1`). An admin server runs on port 4192. Where the destination isn't configured via `INTERLINK_DEFAULT_UPSTREAM`, the outbound listener can recover it transparently via `SO_ORIGINAL_DST`.
 
 ```bash
-# Run with defaults; optionally create /etc/interlink/interlink.json first
+# Run with defaults; optionally create /etc/interlink/config.json first
 cargo run --bin interlinkd
 
-# With explicit settings
-cargo run --bin interlinkd -- \
-  --config /etc/interlink/interlink.json
+# With an explicit config file (there are no CLI flags; configuration is
+# env vars plus an optional JSON file)
+INTERLINK_CONFIG_FILE=/etc/interlink/config.json cargo run --bin interlinkd
 ```
 
 Admin endpoints:

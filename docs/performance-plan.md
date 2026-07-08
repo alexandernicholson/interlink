@@ -90,6 +90,35 @@ finding 1's fix introduced a new P0 (see third round):
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
 
+## Eighteenth round (2026-07-08): benchmark memory root-caused — churn-ratcheted copy buffers
+
+The one number where interlink trails in the published comparison — 94 MB avg proxy
+memory at 1600 rps vs Istio's 18.7 MB — was investigated with a local two-sidecar
+replica of the k8s path. Verified result (numbers in `lore/benchmark-status.md`):
+**it is an allocator high-water mark, not live state.** 400 fresh held connections cost
+~29 MB total across both sidecars and sustained load holds ~31 MB flat; connection
+*churn* (fortio's discarded warm-up + per-profile reconnects) ratchets RSS
+15 → 35 → 69 MB per proxy per close-all/reopen generation (126 MB total after three,
+matching the k8s end-of-run 131 MB), because recycled `vec![0; 65536]` copy buffers are
+memset in full on reuse and mimalloc retains the freed pages. Attribution confirmed by
+A/B: `INTERLINK_COPY_BUF_SIZE=8192` caps the same churn at 44 MB total. No code change;
+remediation options ranked in the lore doc (buffer pooling > mimalloc purge tuning >
+the existing size knob; shrinking the 64 KiB default would regress the R30 bulk win).
+
+## Seventeenth round (2026-07-08): sidecar deployment — 9/9-valid comparison published
+
+The round-14 iptables/hostNetwork DaemonSet was the wrong deployment model (interlink
+is a per-pod sidecar) and the source of every remaining interception failure. Replaced
+with explicit sidecar manifests (`bench/manifests/interlink/echo-with-sidecar.yaml`,
+`fortio-client.yaml`): app on localhost, Service targets the sidecar's inbound port —
+no iptables, no NET_ADMIN, no hostNetwork. The load generator became a long-lived
+meshed Deployment driven by `kubectl exec fortio load` (clean JSON, no Job-completion
+problem under Linkerd). Result: the first publishable comparison — **9/9 profiles
+valid, zero errors**, p50 ≈ 202–205 ms confirming traffic genuinely traverses the mesh
+(200 ms echo delay + overhead). interlink shows the lowest p99 overhead
+(+4.0/+7.3/+9.9 ms) and lowest CPU (47.7 m at 1600 rps vs Linkerd 121.8 m / Istio
+92.4 m). Published in `bench/results/comparison.md` and the README.
+
 ## Sixteenth round (2026-07-08): SPIFFE server verification — mesh mTLS to ephemeral IPs
 
 Attempting the on-host comparison exposed that outbound mTLS did RFC 6125 server-**name**
@@ -718,6 +747,7 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | ✓R29 | Controlled before/after for SO_REUSEPORT; keep or revert on numbers | S | **Resolved 11th round: no regression — noise.** Interleaved A/B flat on heavy and churn; keep implementation; `INTERLINK_ACCEPTORS` knob added |
 | ✓R30 | Copy-buffer size decision on the *bulk* profile (≥3 interleaved runs/arm) | S | Closed 12th round: 64 KiB default (bulk p50 −15%, CPU −22%; no small-payload penalty); `INTERLINK_COPY_BUF_SIZE` knob |
 | 4 | Crypto provider bake-off (`aws-lc-rs` vs `ring`), `worker_threads` config | M | measure to confirm |
+| 5 | Memory: copy-buffer pooling (or mimalloc purge tuning) | M | Root-caused 18th round (churn ratchet, not live state); pooling needs a custom copy loop — B14-sensitive, must pin half-close; purge tuning needs a CHURN=1 A/B |
 
 (**All regressions R1–R23 are closed and verified as of the eighth round.** Preflight
 is green at HEAD, enforced by the pre-commit hook, and resumption is empirically

@@ -1,27 +1,29 @@
 # Benchmark Results
 
-Platform: Apple M3 Pro, 12 cores, 36 GB RAM  
-Rust: 1.85+  
-Build: `cargo bench`
+Platform: Linux x86_64, 16 cores (measured 2026-07-08)  
+Build: `cargo bench --bench proxy` / `cargo bench --bench crypto`
 
 <hr />
 
 ## Protocol Detection
 
-| Case | Time | Throughput |
-|------|------|------------|
-| HTTP/1.1 (GET) | 12.5 ns | 80M detections/sec |
-| HTTP/2 preface | 4.2 ns | 238M detections/sec |
-| Raw TCP (fallback) | 5.9 ns | 169M detections/sec |
+| Case | Time |
+|------|------|
+| HTTP/1.1 (GET) | 0.84 ns |
+| HTTP/2 preface | 1.79 ns |
+| Raw TCP (fallback) | 1.62 ns |
 
 <hr />
 
 ## SPIFFE ID
 
-| Operation | Time | Throughput |
-|-----------|------|------------|
-| Parse URI | 48.9 ns | 20M parses/sec |
-| Format URI | 42.1 ns | 24M formats/sec |
+| Operation | Time |
+|-----------|------|
+| Parse URI (validated, `SpiffeId::try_new` path) | 174 ns |
+| Format URI | 60.3 ns |
+
+Parse includes full component validation — this is the B13 validated constructor, the
+only way to build a `SpiffeId`; there is no cheaper unvalidated parse to benchmark.
 
 <hr />
 
@@ -29,7 +31,7 @@ Build: `cargo bench`
 
 | Size | Time | Throughput |
 |------|------|------------|
-| 16 KB buffer | 183 ns | 87 GB/s |
+| 16 KB buffer | 134 ns | ~122 GB/s |
 
 <hr />
 
@@ -37,8 +39,8 @@ Build: `cargo bench`
 
 | Operation | Time | Throughput |
 |-----------|------|------------|
-| Sign | 12.4 µs | 80K signs/sec |
-| Verify | 28.1 µs | 35K verifies/sec |
+| Sign | 13.7 µs | ~73K signs/sec |
+| Verify | 25.8 µs | ~39K verifies/sec |
 
 <hr />
 
@@ -46,7 +48,7 @@ Build: `cargo bench`
 
 | Operation | Time | Throughput |
 |-----------|------|------------|
-| Key generation | 15.2 µs | 65K keys/sec |
+| Key generation | 13.2 µs | ~76K keys/sec |
 
 <hr />
 
@@ -54,34 +56,41 @@ Build: `cargo bench`
 
 | Test | Time |
 |------|------|
-| 100 rules, 10K evaluations | 8.2 µs per evaluation (avg) |
+| `policy_engine/evaluate` (compiled patterns) | 40.6 ns |
+| `pattern_match/compiled` | 25.4 ns |
+| `pattern_match/string` (uncompiled fallback) | 216 ns |
+| `segment_glob/match` | 19.3 ns |
+
+The original string-matched engine evaluated at 8.2 µs per decision with 100 rules;
+compiled patterns replaced it (~200× faster on the hot path).
 
 <hr />
 
 ## Service Mesh Comparison
 
-A reproducible multi-mesh benchmark harness lives in [`bench/`](../../bench/). All three meshes were measured on identical workloads (Go echo server, 200 ms fixed delay, 1 KB payload, Fortio load generator). Linkerd and Istio ambient on dedicated kind clusters; interlink locally. Full details in [`bench/results/comparison.md`](../../bench/results/comparison.md).
+A reproducible multi-mesh benchmark harness lives in [`bench/`](../../bench/). The
+published, validity-gated apples-to-apples comparison (all three meshes deployed the
+same way on the same 3-node kind topology, interlink as a per-pod sidecar) is
+[`bench/results/comparison.md`](../../bench/results/comparison.md); methodology and
+history in [`lore/benchmark-status.md`](../../lore/benchmark-status.md).
 
-| Mesh | Profile | Actual RPS | p50 ms | p90 ms | p99 ms | Proxy CPU (avg) | Proxy memory (avg) |
-|------|---------|-----------|--------|--------|--------|-----------------|-------------------|
-| **interlink** | light 320 | 318.9 | 201.6 | 202.7 | 202.9 | 0.7 %\* | 11.6 MB |
-| **interlink** | medium 3,200 | 3,188.9 | 204.7 | 208.4 | 209.2 | 1.6 %\* | 42.2 MB |
-| **interlink** | heavy 12,800 | 12,749.0 | 212.8 | 222.8 | 225.1 | 5.0 %\* | 149.8 MB |
-| **Linkerd** | light 320 | 319.8 | 207.2 | 212.4 | 213.5 | 38.3 m | 35.5 MB |
-| **Linkerd** | medium 3,200 | 3,196.7 | 259.4 | 291.9 | 299.2 | 352.0 m | 237.2 MB |
-| **Linkerd** | heavy 12,800 | 11,868.6 | 550.7 | 652.0 | 695.5 | 1,373.5 m | 887.5 MB |
-| **Istio ambient** | light 320 | 319.8 | 204.9 | 208.3 | 209.1 | 16.3 m | 12.0 MB |
-| **Istio ambient** | medium 3,200 | 3,197.5 | 225.3 | 245.2 | 249.7 | 127.9 m | 81.0 MB |
-| **Istio ambient** | heavy 12,800 | 12,786.6 | 265.4 | 319.4 | 347.2 | 487.9 m | 235.6 MB |
+Measured 2026-07-08 (60 s/profile, 9/9 profiles valid, zero errors):
 
-\* interlink CPU is % of one core on host; Linkerd and Istio CPU in millicores in Kubernetes.
+| Mesh | Profile | p50 ms | p99 ms | Proxy CPU (avg m) | Proxy memory (avg MB) |
+|------|---------|--------|--------|-------------------|-----------------------|
+| **interlink** | 320 rps | 202.30 | 204.03 | 15.4 | 21.3 |
+| **interlink** | 800 rps | 203.97 | 207.34 | 31.8 | 43.7 |
+| **interlink** | 1600 rps | 205.15 | 209.87 | 47.7 | 94.1 |
+| **Linkerd** | 320 rps | 204.96 | 208.61 | 25.3 | 13.9 |
+| **Linkerd** | 800 rps | 209.72 | 218.05 | 67.7 | 26.3 |
+| **Linkerd** | 1600 rps | 213.60 | 225.81 | 121.8 | 42.0 |
+| **Istio ambient** | 320 rps | 207.37 | 214.04 | 28.1 | 8.3 |
+| **Istio ambient** | 800 rps | 204.79 | 209.12 | 56.4 | 11.8 |
+| **Istio ambient** | 1600 rps | 207.26 | 213.89 | 92.4 | 18.7 |
 
-Proxy overhead (latency above 200 ms base):
-
-| Mesh | Light overhead | Medium overhead | Heavy overhead |
-|------|---------------|----------------|----------------|
-| interlink | +2.9 ms | +9.2 ms | +25.1 ms |
-| Linkerd | +13.5 ms | +99.2 ms | +495.5 ms |
-| Istio ambient | +9.1 ms | +49.7 ms | +147.2 ms |
-
-Interlink adds the least latency overhead and consumes the fewest resources. Istio ambient (ztunnel) is roughly 3× more efficient than Linkerd. Linkerd struggles at high connection counts (12,800 RPS / 6,400 conns), losing 7 % throughput.
+interlink adds the least latency overhead (+4.0/+7.3/+9.9 ms p99 above the 200 ms base)
+and the least CPU; its higher memory is an allocator high-water effect of 64 KiB relay
+buffers under connection churn, not live state (root cause in
+`lore/benchmark-status.md`). An earlier table on this page compared interlink measured
+*locally* against in-cluster Linkerd/Istio; it was not apples-to-apples and has been
+replaced by the gated in-cluster comparison above.

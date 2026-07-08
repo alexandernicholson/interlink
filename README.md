@@ -65,7 +65,7 @@ For a step-by-step walkthrough, see the [Quickstart Guide](docs/examples/quickst
 
 `interlinkd` loads configuration from two sources, in order of increasing precedence:
 
-1. A JSON config file (default: `/etc/interlink/interlink.json`)
+1. A JSON config file (default: `/etc/interlink/config.json`)
 2. Environment variables prefixed with `INTERLINK_`
 
 Example config file:
@@ -114,9 +114,11 @@ flowchart TB
     subgraph Proxy["interlink Proxy (per-pod sidecar)"]
         direction TB
         subgraph Inbound["Inbound (port 4143)"]
-            L[TCP Listener] --> A[iptables REDIRECT]
-            A --> H[TLS 1.3 Handshake<br/>RFC 8446]
-            H --> I[Identity Extraction<br/>RFC 5280 SAN]
+            L[TCP Listener] --> H[TLS 1.3 Handshake<br/>RFC 8446]
+            H --> M{ALPN<br/>il/mux/1?}
+            M -- yes --> Y[Serve yamux streams<br/>one tunnel, many conns]
+            M -- no --> I
+            Y --> I[Identity Extraction<br/>RFC 5280 SAN]
             I --> P[Policy Engine<br/>default-deny]
             P --> D[Protocol Detection<br/>HTTP/1.1 / HTTP/2 / TCP]
             D --> F[Forward to Upstream]
@@ -133,10 +135,10 @@ flowchart TB
             AD[HTTP Server] --> AH["/healthz /readyz /reload"]
         end
     end
-    Client[Application<br/>Container] --> L
-    Client --> O
-    F --> Upstream[Upstream<br/>Service]
-    OF --> Upstream
+    Peer[Peer interlink<br/>proxy] -- mTLS --> L
+    Client[Application<br/>Container] -- plaintext --> O
+    F --> App[Local App<br/>Container]
+    OF -- mTLS --> RemotePeer[Peer interlink<br/>proxy]
     style Proxy fill:#1a1a2e,stroke:#4a9eff
 ```
 
@@ -148,7 +150,7 @@ sequenceDiagram
     participant P as interlink Proxy
     participant U as Upstream Service
 
-    Note over C,P: TCP connection (iptables redirect)
+    Note over C,P: TCP connection (app → sidecar port)
     C->>+P: TCP SYN
     P-->>-C: SYN-ACK
 
@@ -222,8 +224,9 @@ interlink/
 │   │   ├── handshake.rs    # TlsHandshake trait, TlsClient, TlsServer
 │   │   ├── tcp.rs          # Inbound TcpProxy (accept, mTLS, forward, copy)
 │   │   ├── outbound.rs     # Outbound proxy: mux tunnel pool + 1:1 fallback
-│   │   ├── mux.rs          # Multiplexed mTLS tunnels (yamux over ALPN il/mux/1)
-│   │   ├── original_dst.rs # SO_ORIGINAL_DST helper for transparent redirect
+│   │   ├── mux.rs          # Multiplexed mTLS tunnels (yamux over ALPN il/mux/1), per-peer tunnel pool
+│   │   ├── verify.rs       # SpiffeServerVerifier: RFC 5280 chain + SPIFFE identity (no RFC 6125 name match)
+│   │   ├── original_dst.rs # SO_ORIGINAL_DST helper (optional transparent mode, self-connect guarded)
 │   │   └── config.rs       # ProxyConfig
 │   ├── admin/mod.rs        # Admin HTTP server (/healthz, /readyz, /reload)
 │   ├── protocol/mod.rs     # ProtocolDetector (H1, H2, TCP)
@@ -239,7 +242,8 @@ interlink/
 ├── tests/
 │   ├── e2e_proxy_test.rs        # Full mTLS handshake + echo through proxy
 │   ├── mtls_handshake.rs        # SPIFFE, policy, TLS-resumption tests
-│   ├── mux_tunnel.rs            # Mux tunnels: 1 handshake for N conns, fallback
+│   ├── mux_tunnel.rs            # Mux tunnels: 1 handshake for N conns, pool past 512 streams, fallback
+│   ├── spiffe_verify.rs         # SPIFFE server verification: identity accept, untrusted-CA/wrong-domain reject
 │   ├── halfclose_propagation.rs # FIN/close_notify propagation through the relay
 │   └── proxy_shutdown.rs        # Accept-loop shutdown + bind-failure handling
 └── benches/
@@ -253,15 +257,15 @@ interlink/
 
 ```bash
 ./scripts/preflight.sh        # clippy -D warnings + full test suite (pre-commit gate)
-cargo test                    # 81 tests across unit + integration suites
+cargo test                    # 85 tests across unit + integration suites
 cargo bench                   # Micro-benchmarks
 bash scripts/demo.sh          # End-to-end mTLS demo
 ```
 
 | Suite | What it covers |
 |-------|----------------|
-| Unit (56) | SpiffeId, compiled policy patterns, CA, DNS single-flight (gated-fake concurrency), metrics, config |
-| E2E (25) | mTLS handshake + echo through the proxy, TLS 1.3 resumption (`Full`→`Resumed`), mux tunnels (1 handshake for N connections, concurrent streams, legacy-peer fallback), half-close propagation, shutdown + bind-failure handling |
+| Unit (54) | SpiffeId, compiled policy patterns, CA, DNS single-flight (gated-fake concurrency), metrics, config |
+| E2E (31) | mTLS handshake + echo through the proxy, TLS 1.3 resumption (`Full`→`Resumed`), mux tunnels (1 handshake for N connections, 700 concurrent streams across the tunnel pool, legacy-peer fallback), SPIFFE server verification (accepts peer dialed by non-SAN address; rejects untrusted CA and wrong trust domain), half-close propagation, shutdown + bind-failure handling |
 
 <hr />
 
@@ -272,10 +276,10 @@ bash scripts/demo.sh          # End-to-end mTLS demo
 See [`docs/benchmarks/results.md`](docs/benchmarks/results.md) for methodology.
 
 ```
-policy_engine/evaluate       time:   [40.5 ns]   (compiled patterns; was 8.2 µs string-matched)
-pattern_match/compiled       time:   [25.9 ns]
-protocol_detection/http1.1   time:   [~12 ns]
-spiffe_id/parse              time:   [~49 ns]
+policy_engine/evaluate       time:   [40.6 ns]   (compiled patterns; was 8.2 µs string-matched)
+pattern_match/compiled       time:   [25.4 ns]
+protocol_detection/http1.1   time:   [0.84 ns]
+spiffe_id/parse              time:   [174 ns]    (validated try_new — the only constructor)
 ```
 
 Hot-path numbers that matter more than microbenches: TLS 1.3 session resumption is
@@ -314,10 +318,11 @@ Measured 2026-07-08 (60 s/profile, 3-node kind on a 16-core host):
 
 **Takeaways.** interlink adds the least latency overhead and uses the least CPU
 (~2.5× less than Linkerd, ~2× less than Istio ambient at 1600 rps) — the multiplexed
-mTLS tunnels amortize the handshake. The trade-off is memory: interlink holds more
-per-connection/tunnel state (94 MB vs Istio's 19 MB at 1600 rps), the clearest target
-for future work. Full table and methodology: [`bench/results/comparison.md`](bench/results/comparison.md),
-[`lore/benchmark-status.md`](lore/benchmark-status.md).
+mTLS tunnels amortize the handshake. The trade-off is memory (94 MB vs Istio's 19 MB at
+1600 rps): a verified allocator high-water effect of the 64 KiB relay buffers under
+connection churn, not live state — root cause, reproduction, and options in
+[`lore/benchmark-status.md`](lore/benchmark-status.md). Full table and methodology:
+[`bench/results/comparison.md`](bench/results/comparison.md).
 
 Reproduce:
 

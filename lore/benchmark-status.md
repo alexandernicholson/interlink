@@ -2,28 +2,30 @@
 
 ## Topology (apples-to-apples)
 
-All meshes run on one shared 3-node kind cluster (`bench/manifests/kind-3node.yaml`):
-the Fortio load generator and the Go echo server are pinned to separate worker nodes
-(`bench-role=client` / `bench-role=server`), so mesh traffic always crosses the node
-boundary. Identical workload (Go echo server, 200 ms fixed delay, 1 KB payload), and
-CPU/memory sampled the same way. The load generator itself is **unmeshed** in every
-mesh (it only generates load; the mesh under test is the echo-side proxy / node daemon) —
-meshing it broke the Linkerd run, since the injected sidecar keeps the Fortio Job pod
-alive forever so the Job never completes and its logs are never collected.
+All meshes run on the same 3-node kind topology (`bench/manifests/kind-3node.yaml`,
+one dedicated cluster per mesh): the Fortio load generator and the Go echo server are
+pinned to separate worker nodes (`bench-role=client` / `bench-role=server`), so mesh
+traffic always crosses the node boundary. Identical workload (Go echo server, 200 ms
+fixed delay, 1 KB payload), and CPU/memory sampled the same way (`kubectl top pod
+--containers`, summed across all proxy containers).
 
-interlink runs in-cluster as a node-level transparent daemon
-(`bench/manifests/interlink/daemonset.yaml`), the same class of deployment as Istio's
-ztunnel — previously it was measured out-of-cluster via `bench/local/`, which was not
-comparable.
+interlink runs as a **per-pod sidecar** (`bench/manifests/interlink/
+echo-with-sidecar.yaml`, `fortio-client.yaml`) — no iptables, no NET_ADMIN, no
+hostNetwork; the Service targets the sidecar's inbound port and the app dials the
+sidecar's outbound port. The load-generator pod is **meshed in every mesh** (interlink
+sidecar / Linkerd injection / Istio ambient) and runs as a long-lived Deployment driven
+by `kubectl exec fortio load` — the earlier Fortio Job model broke under Linkerd
+because the injected sidecar kept the Job pod alive forever. See the RESOLVED section
+at the bottom for the deployment-model history (the original iptables DaemonSet was
+wrong for interlink and unmeasurable).
 
 ```bash
 cd bench
 ./setup.sh
-# Default profiles (320/3200/12800 rps) target a dedicated host. On a modest/shared
-# host, use a sustainable set so the validity gate yields usable points:
-BENCH_PROFILES="320:80,800:200,1600:400" BENCH_DURATION=120 ./scripts/run-interlink.sh
-BENCH_PROFILES="320:80,800:200,1600:400" BENCH_DURATION=120 ./scripts/run-linkerd.sh
-BENCH_PROFILES="320:80,800:200,1600:400" BENCH_DURATION=120 ./scripts/run-istio.sh
+# Profiles are qps:conns pairs; durations are clamped to 60 s per profile.
+BENCH_PROFILES="320:80,800:200,1600:400" ./scripts/run-interlink.sh
+BENCH_PROFILES="320:80,800:200,1600:400" ./scripts/run-linkerd.sh
+BENCH_PROFILES="320:80,800:200,1600:400" ./scripts/run-istio.sh
 python3 scripts/aggregate.py           # regenerates results/comparison.md, gated
 ```
 
@@ -116,7 +118,41 @@ Linkerd/Istio use the same meshed client Deployment.
 
 Result: a clean **9/9-valid, zero-error** comparison (see `bench/results/comparison.md`
 and the README). interlink has the lowest latency overhead and CPU of the three, at the
-cost of the highest memory (per-connection/tunnel state) — the next optimization target.
+cost of the highest memory (root-caused below — allocator high-water, not live state).
 All three prior blockers are fixed: the CIDR-gated interception is gone (no interception
 at all now), and the SPIFFE server verifier (round 16) makes identity-based mTLS work
 regardless of dial address.
+
+## Memory root cause (2026-07-08): churn-ratcheted copy buffers, not live state
+
+The published 94 MB avg at 1600 rps (vs Istio's 18.7 MB) was investigated with a local
+two-sidecar replica of the k8s path (client → outbound proxy → mTLS/mux → inbound proxy
+→ echo). Findings, all measured:
+
+- The k8s samples ratchet monotonically across profiles — 7 MB fresh → 36 MB after the
+  320 rps run → 48 after 800 → 131 MB by the end of 1600 — and never drop, even with
+  all connections closed between profiles.
+- 400 *fresh* held connections cost only ~29 MB total across both sidecars; sustained
+  1600 rps-equivalent load holds it flat at ~31 MB. Live memory is small.
+- Connection **churn** is the trigger: closing all 400 and reopening (exactly what
+  fortio's discarded 10 s warm-up plus per-profile reconnects do) ratchets RSS
+  15 → 35 → 69 MB per proxy per generation — 126 MB total after three generations,
+  matching the k8s end-of-run 131 MB.
+- With `INTERLINK_COPY_BUF_SIZE=8192` the same churn caps at 44 MB total → the two
+  eager 64 KiB zeroed copy buffers per connection per sidecar dominate.
+
+Mechanism: fresh `vec![0; 65536]` buffers are lazy zero-pages (only the ~1 KB actually
+written ever faults in), but once freed and reused for a later zeroed allocation,
+mimalloc must memset the recycled dirty block — faulting the full 64 KiB — and mimalloc
+retains freed pages rather than returning them to the OS. RSS therefore converges on
+the high-water mark of touched buffer memory (~128 KiB per connection per sidecar), not
+on live usage. The same 64 KiB size is a deliberate R30 trade (p50 −15 %, CPU −22 % on
+256 KB bulk payloads vs 8 KiB).
+
+Options if memory becomes a requirement, in order of preference: pool copy buffers
+across connections (removes the ratchet, keeps 64 KiB, small churn win — but requires a
+custom bidirectional copy loop, a B14-sensitive change that must pin half-close
+propagation); tune mimalloc page purging (cheap, decays RSS after churn, needs a
+CHURN=1 A/B); the `INTERLINK_COPY_BUF_SIZE` knob already exists for memory-tight,
+small-payload deployments. Lowering the 64 KiB default would regress bulk throughput
+(R30) and is not recommended. No code change made yet.
