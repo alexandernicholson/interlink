@@ -1,0 +1,9 @@
+profile=istio-ambient-q320-c80
+p50_ms=207.37 p90_ms=212.81 p99_ms=214.04 actual_qps=318.9 errors=0
+avg_cpu_millicores=28.1 peak_cpu_millicores=43.0 avg_memory_rss_kb=8533.3 peak_memory_rss_kb=9216.0
+profile=istio-ambient-q800-c200
+p50_ms=204.79 p90_ms=208.32 p99_ms=209.12 actual_qps=797.3 errors=0
+avg_cpu_millicores=56.4 peak_cpu_millicores=74.0 avg_memory_rss_kb=12117.3 peak_memory_rss_kb=15360.0
+profile=istio-ambient-q1600-c400
+p50_ms=207.26 p90_ms=212.67 p99_ms=213.89 actual_qps=1594.5 errors=0
+avg_cpu_millicores=92.4 peak_cpu_millicores=121.0 avg_memory_rss_kb=19148.8 peak_memory_rss_kb=27648.0

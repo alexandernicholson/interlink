@@ -103,3 +103,20 @@ interlink at all:
 trustworthy run needs either a CNI-integrated deployment (interlink as a real sidecar/
 ambient dataplane) or a corrected interception model — not more runs of the current one.
 The validity gate correctly refuses every affected profile.
+
+## RESOLVED (2026-07-08): sidecar model, published numbers
+
+The iptables/hostNetwork DaemonSet was the wrong deployment model for interlink (a
+per-pod sidecar) and the source of the interception failures above. Replaced with the
+intended **sidecar** deployment — app on localhost, interlinkd sidecar terminates/
+originates mTLS, Service targets the sidecar's inbound port; **no iptables, no
+NET_ADMIN, no hostNetwork**. The load generator is a long-lived Deployment driven by
+`kubectl exec fortio load` (clean JSON on stdout, no Job+sidecar completion problem);
+Linkerd/Istio use the same meshed client Deployment.
+
+Result: a clean **9/9-valid, zero-error** comparison (see `bench/results/comparison.md`
+and the README). interlink has the lowest latency overhead and CPU of the three, at the
+cost of the highest memory (per-connection/tunnel state) — the next optimization target.
+All three prior blockers are fixed: the CIDR-gated interception is gone (no interception
+at all now), and the SPIFFE server verifier (round 16) makes identity-based mTLS work
+regardless of dial address.

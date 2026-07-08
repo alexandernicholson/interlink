@@ -39,7 +39,7 @@ run_profile() {
     local label="istio-ambient-q${qps}-c${conns}"
     log "running profile ${label}"
     local metrics_out="${RESULTS}/metrics-${label}.csv"
-    sample_container_metrics istio-system ztunnel "${metrics_out}" "${BENCH_DURATION:-60}" &
+    sample_container_metrics istio-system istio-proxy "${metrics_out}" "${BENCH_DURATION:-60}" &
     local sampler_pid=$!
     exec_fortio_profile "http://echo-server:8080/echo" "${qps}" "${conns}" \
         "${BENCH_DURATION:-60}" "${RESULTS}/fortio-${label}.json"

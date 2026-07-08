@@ -116,7 +116,7 @@ def main() -> None:
             if m:
                 found.append((int(m.group("qps")), int(m.group("conns"))))
         for qps, conns in sorted(set(found)):
-            profile = {320: "light", 800: "small", 1600: "medium-", 3200: "medium", 12800: "heavy"}.get(qps, f"q{qps}")
+            profile = f"{qps} rps"
             label = f"{mesh}-q{qps}-c{conns}"
             fortio_path = mesh_dir / f"fortio-{label}.json"
             metrics_path = mesh_dir / f"metrics-{label}.csv"
@@ -175,7 +175,12 @@ def main() -> None:
         valid_rows = [r for r in rows if r["valid"]]
         f.write("\n## Proxy latency overhead (p99 above the 200 ms workload delay)\n\n")
         f.write("_Valid profiles only._\n\n")
-        f.write("| Mesh | light | medium | heavy |\n|------|-------|--------|-------|\n")
+        profs = []
+        for r in valid_rows:
+            if r["profile"] not in profs:
+                profs.append(r["profile"])
+        f.write("| Mesh | " + " | ".join(profs) + " |\n")
+        f.write("|------|" + "|".join("-------" for _ in profs) + "|\n")
         by = {}
         for r in valid_rows:
             try:
@@ -185,8 +190,7 @@ def main() -> None:
         for mesh in MESHES:
             if mesh in by:
                 b = by[mesh]
-                order = sorted(b.keys(), key=lambda k: list(b.keys()).index(k))
-                cells = " | ".join(f"{p}: +{b[p]:.1f} ms" for p in b)
+                cells = " | ".join(f"+{b[p]:.1f} ms" if p in b else "—" for p in profs)
                 f.write(f"| {mesh} | {cells} |\n")
         f.write("\n")
         invalid = [r for r in rows if not r["valid"]]
