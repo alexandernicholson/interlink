@@ -69,8 +69,19 @@ impl TlsClient {
                 .map_err(InterlinkError::Tls)?;
         }
 
+        // SPIFFE peer verification: full RFC 5280 path validation retained;
+        // RFC 6125 name matching replaced by SPIFFE X.509-SVID trust-domain
+        // authentication (mesh peers are dialed by ephemeral pod/Service IPs
+        // that cannot appear in workload certs). rustls names the injection
+        // point "dangerous" because a bad verifier can skip validation — this
+        // one validates the same chain properties as WebPKI (see verify.rs).
+        let verifier = Arc::new(crate::proxy::verify::SpiffeServerVerifier::new(
+            root_store,
+            provider.get_trust_domain().name.clone(),
+        ));
         let mut config = ClientConfig::builder()
-            .with_root_certificates(root_store)
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
             .with_no_client_auth();
         config.alpn_protocols = alpn_protocols();
 
@@ -104,8 +115,15 @@ impl TlsClient {
                 .map_err(InterlinkError::Tls)?;
         }
 
+        // See TlsClient::new — SPIFFE verifier keeps RFC 5280 path validation
+        // and replaces inapplicable RFC 6125 name matching (verify.rs).
+        let verifier = Arc::new(crate::proxy::verify::SpiffeServerVerifier::new(
+            root_store,
+            provider.get_trust_domain().name.clone(),
+        ));
         let mut config = ClientConfig::builder()
-            .with_root_certificates(root_store)
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
             .with_client_auth_cert(vec![cert], key)
             .map_err(InterlinkError::Tls)?;
         config.alpn_protocols = alpn;
@@ -294,40 +312,36 @@ pub(crate) fn extract_identity_from_tls_stream(
         return Ok(cached);
     }
 
-    // Slow path: parse X.509 and extract SPIFFE URI from SAN.
+    let id = spiffe_id_from_cert_der(leaf_der)?;
+    IDENTITY_CACHE.insert(leaf_der.to_vec(), id.clone());
+    Ok(id)
+}
+
+/// Extract the SPIFFE identity from a leaf certificate's SAN URI
+/// (RFC 5280 §4.2.1.6; SPIFFE X.509-SVID: the identity is the URI SAN).
+/// Shared by post-handshake identity extraction and the handshake-time
+/// SPIFFE server verifier. Uncached — callers cache as appropriate.
+pub(crate) fn spiffe_id_from_cert_der(leaf_der: &[u8]) -> Result<SpiffeId, InterlinkError> {
     let leaf = x509_parser::parse_x509_certificate(leaf_der)
         .map_err(|e| InterlinkError::Identity(format!("cert parse: {}", e)))?
         .1;
 
-    let mut identity: Option<SpiffeId> = None;
     for ext in leaf.extensions().iter() {
         if ext.oid == *SAN_OID {
-            let parsed = ext.parsed_extension();
-            if let ParsedExtension::SubjectAlternativeName(san) = parsed {
+            if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
                 for gn in san.general_names.iter() {
                     if let GeneralName::URI(uri) = gn {
                         if let Ok(id) = SpiffeId::from_uri(uri) {
-                            identity = Some(id);
-                            break;
+                            return Ok(id);
                         }
                     }
                 }
             }
         }
-        if identity.is_some() {
-            break;
-        }
     }
-
-    match identity {
-        Some(id) => {
-            IDENTITY_CACHE.insert(leaf_der.to_vec(), id.clone());
-            Ok(id)
-        }
-        None => Err(InterlinkError::Identity(
-            "no SPIFFE URI in SAN extension".to_string(),
-        )),
-    }
+    Err(InterlinkError::Identity(
+        "no SPIFFE URI in SAN extension".to_string(),
+    ))
 }
 
 #[cfg(test)]

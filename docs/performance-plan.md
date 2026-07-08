@@ -90,6 +90,33 @@ finding 1's fix introduced a new P0 (see third round):
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
 
+## Sixteenth round (2026-07-08): SPIFFE server verification — mesh mTLS to ephemeral IPs
+
+Attempting the on-host comparison exposed that outbound mTLS did RFC 6125 server-**name**
+validation: peers dialed by pod/Service IPs (recovered from `SO_ORIGINAL_DST`) failed with
+`certificate not valid for name`, because a workload cert cannot carry every ClusterIP it
+is reached by. This silently meant earlier benchmarks measured *un-meshed* traffic.
+
+Fix (`src/proxy/verify.rs`): a `SpiffeServerVerifier` for the outbound `TlsClient`. It
+keeps **full RFC 5280 path validation** (rustls's own
+`verify_server_cert_signed_by_trust_anchor` against the trust-domain roots, plus TLS 1.2/
+1.3 handshake-signature verification via the crypto provider) and *replaces* name matching
+with **SPIFFE X.509-SVID authentication**: the leaf must carry a SPIFFE URI SAN whose trust
+domain is ours, else the handshake fails closed (B5). This matches the inbound direction,
+which already does chain-only client-cert validation and defers identity to the policy
+engine, and it does not weaken the security posture — tests
+(`tests/spiffe_verify.rs`) prove it still rejects an untrusted CA and a valid cert from the
+wrong trust domain, while accepting a valid peer dialed by an address absent from its SAN
+(the case stock WebPKI rejected). RFC alignment: RFC 5280 §4.2.1.6 (URI SAN), RFC 8446
+(handshake signatures) — both preserved; only RFC 6125 name matching, which SPIFFE
+replaces by design, is dropped.
+
+Result: the mesh data path now genuinely carries traffic (mux active, expected 200 ms-base
+latency observed). Remaining errors under load are a benchmark transparent-proxy
+interception limitation (ClusterIP + cross-node + hostNetwork), documented in
+`lore/benchmark-status.md`; a publishable cross-mesh table still needs a CNI-integrated
+deployment rather than the simplified iptables DaemonSet.
+
 ## Fifteenth round (2026-07-08): mux concurrency ceiling fixed; benchmark capped at 60 s
 
 **Mux tunnel pool (`src/proxy/mux.rs`).** The K8s benchmark exposed interlink dropping

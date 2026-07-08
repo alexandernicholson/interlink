@@ -1,9 +1,0 @@
-profile=interlink-q320-c80
-p50_ms=2.76 p90_ms=10.58 p99_ms=13.50 actual_qps=320.0 errors=0
-avg_cpu_millicores=99.2 peak_cpu_millicores=354.0 avg_memory_rss_kb=18397.3 peak_memory_rss_kb=23552.0
-profile=interlink-q800-c200
-p50_ms=18.71 p90_ms=40.07 p99_ms=1762.34 actual_qps=799.6 errors=74
-avg_cpu_millicores=1035.9 peak_cpu_millicores=1648.0 avg_memory_rss_kb=27110.0 peak_memory_rss_kb=32768.0
-profile=interlink-q1600-c400
-p50_ms=48.00 p90_ms=89.57 p99_ms=1834.64 actual_qps=1598.8 errors=105
-avg_cpu_millicores=3235.7 peak_cpu_millicores=4083.0 avg_memory_rss_kb=33948.2 peak_memory_rss_kb=36864.0

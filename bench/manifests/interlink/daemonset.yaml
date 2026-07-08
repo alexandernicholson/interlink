@@ -51,9 +51,16 @@ spec:
               APP_PORT="8080"
               iptables -t nat -N INTERLINK 2>/dev/null || true
               iptables -t nat -F INTERLINK
-              # Pod egress (local pod veth) -> outbound proxy.
-              iptables -t nat -A INTERLINK -i veth+ -p tcp -d "${POD_CIDR}" --dport "${APP_PORT}" -j REDIRECT --to-ports 4140
-              # Cross-node mesh traffic (node uplink) -> inbound proxy.
+              # Pod egress (local pod veth) -> outbound proxy. NOT gated on
+              # destination CIDR: apps connect to the Service ClusterIP
+              # (10.96.0.0/12), which is not in the pod CIDR — gating on pod
+              # CIDR silently missed all Service traffic, leaking plaintext to
+              # the peer's inbound TLS listener. The outbound proxy recovers the
+              # real destination via SO_ORIGINAL_DST (post kube-proxy DNAT).
+              iptables -t nat -A INTERLINK -i veth+ -p tcp --dport "${APP_PORT}" -j REDIRECT --to-ports 4140
+              # Cross-node mesh traffic (node uplink) -> inbound proxy. This is
+              # always addressed to a pod IP (post-DNAT), so keep the CIDR match
+              # to avoid grabbing unrelated host traffic.
               iptables -t nat -A INTERLINK -i eth0 -p tcp -d "${POD_CIDR}" --dport "${APP_PORT}" -j REDIRECT --to-ports 4143
               iptables -t nat -D PREROUTING -j INTERLINK 2>/dev/null || true
               iptables -t nat -A PREROUTING -j INTERLINK

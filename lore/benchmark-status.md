@@ -59,3 +59,47 @@ failures, as do the 300-concurrent and handshake-avoidance tests. See
 session produced empty Fortio output because of the meshed-load-generator bug above (now
 fixed); Istio ambient was not completed. Rerun with the fixed harness for the comparison.
 The earlier single-node figures were removed rather than mixed with the new topology.
+
+
+## Root-cause chain from the on-host comparison attempt (2026-07-08)
+
+Running the comparison on the shared host surfaced a chain of real defects. Fixing each
+exposed the next — the earlier "good" interlink numbers turned out not to be measuring
+interlink at all:
+
+1. **Harness: Service traffic bypassed the mesh.** The egress iptables rule gated on the
+   pod CIDR (`-d 10.244.0.0/16`), but apps dial the echo **Service ClusterIP**
+   (`10.96.0.0/12`) — so the client-side outbound redirect matched **0 packets** and
+   fortio's plaintext went straight to the echo pod. The "interlink light: 2 ms, 0 errors"
+   figures were direct, un-meshed HTTP. Fixed: egress intercepts the app port regardless
+   of destination (`bench/manifests/interlink/daemonset.yaml`); the proxy recovers the
+   real dst via `SO_ORIGINAL_DST`.
+
+2. **Product: outbound mTLS did RFC 6125 name validation.** Once traffic was actually
+   intercepted, every handshake failed — `certificate not valid for name "10.96.6.223"`.
+   A SPIFFE mesh dials by ephemeral pod/Service IPs and must authenticate by the **SPIFFE
+   URI SAN**, not by matching the dial address. Fixed with a custom
+   `SpiffeServerVerifier` (`src/proxy/verify.rs`) that keeps full RFC 5280 path validation
+   (chain to the trust-domain CA, signatures, expiry — verified by tests that still reject
+   an untrusted CA and a wrong trust domain) and replaces name matching with SPIFFE
+   trust-domain authentication. This is the same chain-only posture the inbound direction
+   already used for client certs.
+
+   With (1) and (2) fixed the mesh genuinely carries traffic: q800 shows the expected
+   ~210 ms (200 ms echo delay + proxy overhead) and mux is active (50k+ streams), where
+   before it was 0.
+
+3. **Still open — harness transparent-proxy interception is not production-grade.** Under
+   real cross-node load the benchmark manifest still produces `Connection refused`
+   (host-network proxy dialing a ClusterIP that kube-proxy doesn't DNAT on that path) and
+   residual plaintext leaks (`InvalidContentType`) — dozens at q800, tens of thousands at
+   q1600/400. Correctly intercepting the ClusterIP + cross-node + hostNetwork matrix is
+   exactly what CNI-integrated meshes engineer carefully; this simplified iptables
+   DaemonSet does not. **This is a benchmark-harness limitation, not an interlink proxy
+   defect** (the proxy's SPIFFE mTLS + mux path is verified working by the unit/integration
+   suites and carried 50k streams here).
+
+**Consequently, a cross-mesh comparison is still not publishable from this harness.** A
+trustworthy run needs either a CNI-integrated deployment (interlink as a real sidecar/
+ambient dataplane) or a corrected interception model — not more runs of the current one.
+The validity gate correctly refuses every affected profile.

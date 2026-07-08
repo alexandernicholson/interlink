@@ -5,6 +5,7 @@
 pub mod config;
 pub mod handshake;
 pub(crate) mod mux;
+pub(crate) mod verify;
 pub(crate) mod original_dst;
 pub mod outbound;
 pub mod tcp;
