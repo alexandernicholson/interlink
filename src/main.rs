@@ -71,17 +71,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // 6. Build the TLS server (inbound mTLS) and client (outbound mTLS).
-    let tls_server = Arc::new(TlsServer::new(
-        provider.clone(),
-        proxy_cert.clone(),
-        proxy_key.clone_key(),
-    )?);
-
-    let tls_client = Arc::new(TlsClient::with_client_auth(
-        provider.clone(),
-        proxy_cert,
-        proxy_key,
-    )?);
+    // INTERLINK_MUX=false removes il/mux/1 from the ALPN offer on both
+    // sides — the offer *is* the feature flag; once negotiated, mux is
+    // always spoken (the wire protocol is committed at the handshake).
+    let (tls_server, tls_client): (Arc<TlsServer>, Arc<TlsClient>) = if config.mux {
+        (
+            Arc::new(TlsServer::new(
+                provider.clone(),
+                proxy_cert.clone(),
+                proxy_key.clone_key(),
+            )?),
+            Arc::new(TlsClient::with_client_auth(
+                provider.clone(),
+                proxy_cert,
+                proxy_key,
+            )?),
+        )
+    } else {
+        (
+            Arc::new(TlsServer::new_with_alpn(
+                provider.clone(),
+                proxy_cert.clone(),
+                proxy_key.clone_key(),
+                interlink::proxy::handshake::legacy_alpn_protocols(),
+            )?),
+            Arc::new(TlsClient::with_client_auth_alpn(
+                provider.clone(),
+                proxy_cert,
+                proxy_key,
+                interlink::proxy::handshake::legacy_alpn_protocols(),
+            )?),
+        )
+    };
 
     // 7. Build policy engine and service discovery.
     let mut policy_engine = PolicyEngine::new();

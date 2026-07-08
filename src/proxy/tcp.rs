@@ -327,6 +327,24 @@ impl TcpProxy {
             }
         }
 
+        // Mux tunnel path (ALPN-negotiated): the whole connection is a yamux
+        // session; every stream relays to this connection's upstream. The
+        // pre-connected upstream socket belongs to the 1:1 model — release it
+        // and let each stream dial its own.
+        if crate::proxy::mux::negotiated_alpn(&tls_stream.inner).as_deref()
+            == Some(crate::proxy::mux::ALPN_MUX)
+        {
+            let peer = tls_stream.peer_identity.clone();
+            let _ = upstream_stream
+                .into_std()
+                .map(|s| s.shutdown(std::net::Shutdown::Both));
+            // The tunnel holds this accepted connection's active slot for its
+            // lifetime; streams are the accounted connections (serve_tunnel).
+            crate::proxy::mux::serve_tunnel(tls_stream.inner, upstream, peer).await;
+            metrics::record_tunnel_closed();
+            return;
+        }
+
         let mut detect_buf = [0u8; buffers::PROTOCOL_DETECT];
         let mut tls_reader = tls_stream.inner;
         let detect_len = match tls_reader.read(&mut detect_buf).await {

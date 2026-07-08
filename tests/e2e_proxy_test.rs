@@ -115,6 +115,7 @@ impl MtlsTestHarness {
             identity: Some(server_id.to_uri()),
             default_upstream: Some(format!("127.0.0.1:{}", upstream_port)),
             max_connections: Some(10),
+            mux: true,
         };
         let proxy = TcpProxy::new_with_port(config, proxy_port, tls_server, policy.clone());
         let proxy_handle = Arc::new(proxy).spawn();

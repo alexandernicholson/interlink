@@ -21,6 +21,8 @@ pub struct InterlinkMetrics {
     pub saturation_rejections_total: Counter,
     pub handshake_full_total: Counter,
     pub handshake_resumed_total: Counter,
+    pub mux_tunnels_opened_total: Counter,
+    pub mux_streams_total: Counter,
 }
 
 impl Default for InterlinkMetrics {
@@ -43,6 +45,8 @@ impl InterlinkMetrics {
             saturation_rejections_total: counter!("interlink_saturation_rejections_total"),
             handshake_full_total: counter!("interlink_handshake_full_total"),
             handshake_resumed_total: counter!("interlink_handshake_resumed_total"),
+            mux_tunnels_opened_total: counter!("interlink_mux_tunnels_opened_total"),
+            mux_streams_total: counter!("interlink_mux_streams_total"),
         }
     }
 }
@@ -96,6 +100,24 @@ pub fn record_handshake_kind(resumed: bool) {
     } else {
         m.handshake_full_total.increment(1);
     }
+}
+
+/// Release a mux tunnel's active-connection slot. The tunnel was counted
+/// active by `record_connection_start` at accept; it is transport, not a
+/// connection — its streams carry the byte/duration accounting — so it never
+/// increments `connections_total` or the duration histogram (C1/C2).
+pub fn record_tunnel_closed() {
+    INTERLINK_METRICS.connections_active.decrement(1);
+}
+
+/// Record establishment of a client-side mux tunnel.
+pub fn record_mux_tunnel_opened() {
+    INTERLINK_METRICS.mux_tunnels_opened_total.increment(1);
+}
+
+/// Record a stream carried over a mux tunnel.
+pub fn record_mux_stream() {
+    INTERLINK_METRICS.mux_streams_total.increment(1);
 }
 
 /// Record a connection rejected due to the saturation limit.

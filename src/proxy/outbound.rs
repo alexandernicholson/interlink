@@ -30,6 +30,9 @@ use crate::proxy::handshake::TlsHandshake;
 ///   6. Bidirectional data copy
 pub struct OutboundProxy {
     connection_semaphore: Arc<Semaphore>,
+    default_upstream: Option<String>,
+    mux_enabled: bool,
+    mux_pool: Arc<crate::proxy::mux::MuxPool>,
     listen_port: u16,
     tls_client: Arc<dyn TlsHandshake>,
     policy: Arc<PolicyEngine>,
@@ -78,6 +81,9 @@ impl OutboundProxy {
             });
         Self {
             connection_semaphore: Arc::new(Semaphore::new(max_conn)),
+            default_upstream: config.default_upstream.clone(),
+            mux_enabled: config.mux,
+            mux_pool: crate::proxy::mux::MuxPool::new(),
             listen_port: port,
             tls_client,
             policy,
@@ -205,9 +211,16 @@ impl OutboundProxy {
             warn!("failed to configure accepted socket {}: {}", peer_addr, e);
         }
 
-        // Recover original destination from iptables REDIRECT/DNAT.
+        // Recover original destination from iptables REDIRECT/DNAT. Without a
+        // redirect, SO_ORIGINAL_DST returns the connection's *actual*
+        // destination — i.e. this proxy's own listen address (conntrack has an
+        // entry for every connection, redirected or not). An original dst on
+        // our own port therefore means "not redirected": fall back to the
+        // configured default upstream instead of connecting to ourselves.
         let upstream = get_original_dst(&stream)
+            .filter(|sa| sa.port() != self.listen_port)
             .map(|sa| sa.to_string())
+            .or_else(|| self.default_upstream.clone())
             .unwrap_or_else(|| {
                 warn!(
                     "no upstream for outbound connection from {}, dropping",
@@ -287,9 +300,104 @@ impl OutboundProxy {
             peer_addr, upstream
         );
 
+        // Route the connection: over a shared mux tunnel stream when the peer
+        // supports it, else a dedicated (legacy) TLS connection. The tunnel
+        // creation lock is held only while establishing, never across relays.
+        match self.route(upstream).await {
+            Route::MuxStream(mut stream) => {
+                metrics::record_mux_stream();
+                match crate::proxy::copy_bidirectional(&mut local_stream, &mut stream).await {
+                    Ok((up, down)) => metrics::record_connection(up, down, start.elapsed()),
+                    Err(e) => {
+                        debug!("mux stream relay error → {}: {}", upstream, e);
+                        metrics::record_connection_failed();
+                    }
+                }
+            }
+            Route::Legacy(mut tls) => {
+                let copy_result =
+                    crate::proxy::copy_bidirectional(&mut local_stream, tls.as_mut()).await;
+                let (bytes_up, bytes_down) = match copy_result {
+                    Ok((up, down)) => (up, down),
+                    Err(e) => {
+                        warn!(
+                            "bidirectional copy error for {} → {}: {}",
+                            self.local_id, upstream, e
+                        );
+                        (0, 0)
+                    }
+                };
+                metrics::record_connection(bytes_up, bytes_down, start.elapsed());
+            }
+            Route::Denied | Route::Failed => {
+                metrics::record_connection_failed();
+            }
+        }
+        debug!("done outbound {} → {}", self.local_id, upstream);
+    }
+
+    /// Decide how this connection reaches `upstream`.
+    async fn route(&self, upstream: std::net::SocketAddr) -> Route {
+        if !self.mux_enabled {
+            return self.establish(upstream).await;
+        }
+
+        // Fast path: existing tunnel, no lock, no handshake.
+        if let Some(tunnel) = self.mux_pool.get(&upstream) {
+            if let Some(route) = self.try_tunnel_stream(&tunnel, upstream).await {
+                return route;
+            }
+            // Tunnel dead → evicted; fall through to (re)establish.
+        }
+
+        // Single-flight establishment per address (the DNS-stampede lesson):
+        // concurrent first connections to a new peer share one handshake.
+        let lock = self.mux_pool.creation_lock(upstream);
+        let _guard = lock.lock().await;
+
+        // A concurrent creator may have won while we waited.
+        if let Some(tunnel) = self.mux_pool.get(&upstream) {
+            if let Some(route) = self.try_tunnel_stream(&tunnel, upstream).await {
+                return route;
+            }
+        }
+
+        self.establish(upstream).await
+    }
+
+    /// Try to authorize and open a stream on an existing tunnel.
+    /// `None` means the tunnel was dead (now evicted) — caller re-establishes.
+    async fn try_tunnel_stream(
+        &self,
+        tunnel: &crate::proxy::mux::Tunnel,
+        upstream: std::net::SocketAddr,
+    ) -> Option<Route> {
+        // Every stream is authorized against the tunnel's peer identity,
+        // exactly as a dedicated connection would be.
+        let decision = self.policy.evaluate(&self.local_id, &tunnel.peer_identity);
+        metrics::record_policy(&decision);
+        if let Decision::Deny(reason) = decision {
+            warn!(
+                "policy denied {} → {}: {}",
+                self.local_id, tunnel.peer_identity, reason
+            );
+            return Some(Route::Denied);
+        }
+        match tunnel.open_stream().await {
+            Ok(s) => Some(Route::MuxStream(s)),
+            Err(e) => {
+                debug!("mux tunnel to {} unusable ({}); evicting", upstream, e);
+                self.mux_pool.evict(&upstream, tunnel);
+                None
+            }
+        }
+    }
+
+    /// Establish a fresh TLS connection: policy-check the peer, then either
+    /// promote it to a shared tunnel (peer negotiated mux) or use it 1:1.
+    async fn establish(&self, upstream: std::net::SocketAddr) -> Route {
         let handshake_start = Instant::now();
-        let upstream_str = upstream.to_string();
-        let mut tls_stream = match self.tls_client.connect(&upstream_str).await {
+        let tls_stream = match self.tls_client.connect(&upstream.to_string()).await {
             Ok(s) => {
                 metrics::record_handshake(handshake_start.elapsed());
                 s
@@ -297,51 +405,56 @@ impl OutboundProxy {
             Err(e) => {
                 warn!("outbound mTLS handshake failed to {}: {}", upstream, e);
                 metrics::record_handshake_error();
-                metrics::record_connection_failed();
-                return;
+                return Route::Failed;
             }
         };
 
-        let upstream_id = &tls_stream.peer_identity;
+        let upstream_id = tls_stream.peer_identity.clone();
         debug!(
             "outbound mTLS connection to {} identity={}",
             upstream, upstream_id
         );
 
-        let decision = self.policy.evaluate(&self.local_id, upstream_id);
+        let decision = self.policy.evaluate(&self.local_id, &upstream_id);
         metrics::record_policy(&decision);
-        match decision {
-            Decision::Allow => {}
-            Decision::Deny(reason) => {
-                warn!(
-                    "policy denied {} → {}: {}",
-                    self.local_id, upstream_id, reason
-                );
-                metrics::record_connection_failed();
-                return;
-            }
+        if let Decision::Deny(reason) = decision {
+            warn!(
+                "policy denied {} → {}: {}",
+                self.local_id, upstream_id, reason
+            );
+            return Route::Denied;
         }
 
-        let el = start.elapsed();
-        debug!(
-            "outbound connection: {} → {} handshake={:?}",
-            self.local_id, upstream, el
-        );
+        // ALPN commits the wire protocol: if the handshake negotiated mux we
+        // MUST speak mux, whatever the local flag says (the flag controls what
+        // the TlsClient offers — wired in main.rs — not what was agreed).
+        if crate::proxy::mux::negotiated_alpn(&tls_stream.inner).as_deref()
+            == Some(crate::proxy::mux::ALPN_MUX)
+        {
+            let tunnel = self
+                .mux_pool
+                .register(upstream, tls_stream.inner, upstream_id);
+            return match tunnel.open_stream().await {
+                Ok(s) => Route::MuxStream(s),
+                Err(e) => {
+                    warn!("freshly registered tunnel to {} unusable: {}", upstream, e);
+                    self.mux_pool.evict(&upstream, &tunnel);
+                    Route::Failed
+                }
+            };
+        }
 
-        let copy_result =
-            crate::proxy::copy_bidirectional(&mut local_stream, &mut tls_stream.inner).await;
-        let (bytes_up, bytes_down) = match copy_result {
-            Ok((up, down)) => (up, down),
-            Err(e) => {
-                warn!(
-                    "bidirectional copy error for {} → {}: {}",
-                    self.local_id, upstream, e
-                );
-                (0, 0)
-            }
-        };
-
-        metrics::record_connection(bytes_up, bytes_down, start.elapsed());
-        debug!("done outbound {} → {}", self.local_id, upstream);
+        Route::Legacy(Box::new(tls_stream.inner))
     }
+}
+
+/// How an outbound connection reaches its upstream.
+enum Route {
+    /// A stream over a shared mux tunnel (no per-connection handshake).
+    MuxStream(crate::proxy::mux::MuxStream),
+    /// A dedicated 1:1 TLS connection (legacy peers / mux disabled).
+    /// Boxed: a rustls stream is ~1.2 KB vs ~72 B for the other variants.
+    Legacy(Box<tokio_rustls::TlsStream<TcpStream>>),
+    Denied,
+    Failed,
 }

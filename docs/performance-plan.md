@@ -90,6 +90,64 @@ finding 1's fix introduced a new P0 (see third round):
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
 
+## Thirteenth round (2026-07-08): handshake avoidance implemented — mux tunnels
+
+**✓ ALPN-negotiated multiplexed mTLS tunnels** (`src/proxy/mux.rs`, ALPN `il/mux/1`),
+the architectural item open since round one. One mTLS connection per upstream peer
+carries all application connections as yamux streams; peers that don't offer the ALPN
+fall back to the legacy 1:1 relay, so mixed versions interoperate. `INTERLINK_MUX=false`
+removes the ALPN offer (the offer *is* the feature flag; once negotiated, the wire
+protocol is committed — a disabled-but-negotiated mismatch was caught in the A/B and is
+pinned by a test).
+
+**Measured (interleaved two-proxy churn A/B, 500 conn/s, plain-HTTP app side, 2 rounds
+per arm, reproducible to ±0.3 %):**
+
+| arm | p50 | p99 | combined proxy CPU | handshakes for ~19,016 conns |
+|---|---|---|---|---|
+| mux on | 0.72 ms | 1.9 ms | **10.0 %** | **1 full** (1 tunnel, 19,016 streams) |
+| mux off | 1.33 ms | 2.0 ms | 26.8 % | 19,016 (8 full + 19,008 resumed) |
+
+**−63 % proxy CPU and −46 % p50 latency** under connection churn — against a baseline
+where TLS resumption is already working. Which is the round's second result:
+**proxy→proxy resumption is now production-confirmed** — the mux-off control arm's
+counters show 99.96 % resumed handshakes on the mesh path (Fortio's 0 % applies only to
+its own client leg). The old R19/R24 "resumed fraction" question is closed with a
+number.
+
+Implementation notes:
+- Multiplexer: libp2p-maintained `yamux` crate. `tokio-yamux` was tried first and
+  **rejected by a size-sweep probe**: it deadlocks stream flow control at exactly
+  >256 KiB even with an actively reading peer (B14's "test the documented semantics"
+  applied to a dependency; the probe swept 64→512 KiB and failed at 257).
+- Outbound: per-address tunnel pool, single-flight establishment (per-address async
+  mutex — the DNS lesson), compare-and-remove eviction by tunnel id (a dying driver
+  must not evict its replacement), policy evaluated per stream against the tunnel's
+  peer identity. Legacy `Route` boxed (clippy `large_enum_variant`).
+- Inbound: ALPN check after policy; every stream relays to the tunnel connection's
+  recovered upstream (no per-stream address header needed — the tunnel key is the
+  original destination, same as a legacy connection). Tunnel holds the accept slot;
+  streams carry the byte/duration metrics (`record_tunnel_closed` releases the gauge
+  without polluting `connections_total`/histograms).
+- Fixed on the way: `SO_ORIGINAL_DST` returns the proxy's *own* address for
+  non-redirected connections (conntrack has an entry either way) — the outbound proxy
+  self-looped in no-iptables topologies; original dst on our own listen port now falls
+  back to `default_upstream`. And `issue_leaf_with_key` gained IP SANs (C8: mesh peers
+  dial by ip:port; DNS-only SANs made the outbound path unverifiable — it had never
+  been TLS-tested end-to-end before these tests).
+- Tests (`tests/mux_tunnel.rs`, two-proxy mesh with a handshake-counting TlsClient
+  wrapper): 5 sequential conns → exactly 1 handshake; 10 concurrent streams with
+  distinct payloads → 1 handshake, no cross-stream corruption (A2); legacy peer →
+  3 conns / 3 handshakes (fallback, and the falsifiability proof for the counter);
+  mux-disabled client offers legacy ALPN (pins the protocol-mismatch bug); 512 KiB
+  half-close roundtrip (C7, and the test that catches the tokio-yamux class of bug).
+- New metrics: `interlink_mux_tunnels_opened_total`, `interlink_mux_streams_total`.
+
+Remaining backlog after this: crypto-provider bake-off, `worker_threads` config — both
+now lower-value, since the dominant cost the flamegraph identified (full-handshake
+crypto) is amortized away for mesh traffic. Tunnel idle-reaping and per-tunnel stream
+caps are noted as future hardening (tunnels currently live until either side closes).
+
 ## Twelfth round (2026-07-08): R28 and R30 closed (by reviewer, at user's request)
 
 **✓ R30 — copy-buffer default is 64 KiB, decided on data.** Interleaved same-binary A/B

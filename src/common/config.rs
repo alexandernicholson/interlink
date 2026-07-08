@@ -21,6 +21,9 @@ pub struct Config {
     pub key_path: Option<String>,
     /// Default upstream address for when SO_ORIGINAL_DST is unavailable.
     pub default_upstream: Option<String>,
+    /// Multiplex proxy-to-proxy connections over shared mTLS tunnels.
+    #[serde(default = "crate::proxy::config::default_mux_true")]
+    pub mux: bool,
 }
 
 impl Default for Config {
@@ -37,6 +40,7 @@ impl Default for Config {
             cert_path: None,
             key_path: None,
             default_upstream: None,
+            mux: true,
         }
     }
 }
@@ -137,6 +141,9 @@ impl Config {
         if let Ok(v) = std::env::var("INTERLINK_DEFAULT_UPSTREAM") {
             self.default_upstream = Some(v);
         }
+        if let Ok(v) = std::env::var("INTERLINK_MUX") {
+            self.mux = v != "false" && v != "0";
+        }
         Ok(self)
     }
 
@@ -147,6 +154,7 @@ impl Config {
             identity: self.identity.clone(),
             default_upstream: self.default_upstream.clone(),
             max_connections: Some(self.max_connections),
+            mux: self.mux,
         }
     }
 

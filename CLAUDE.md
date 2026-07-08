@@ -42,6 +42,18 @@ touches as performance- and security-sensitive.
 
 ## Verified protocol facts (don't re-derive, don't contradict without a new probe)
 
+- **Mux tunnels (ALPN `il/mux/1`) amortize handshakes**: 19k churn connections over 1
+  handshake, −63 % proxy CPU vs 1:1 relays. `INTERLINK_MUX=false` removes the ALPN
+  offer; a negotiated protocol is always spoken (offer = flag, negotiation = contract).
+- **Proxy→proxy TLS resumption is production-confirmed**: 99.96 % resumed in the
+  mux-off control arm. (Fortio's 0 % resumed applies to its own client leg only.)
+- **`tokio-yamux` 0.3.18 deadlocks flow control at exactly >256 KiB per stream** even
+  with an actively reading peer (size-sweep probe, fails at 257 KiB). Use the
+  libp2p-maintained `yamux` crate; bridge with `tokio_util::compat`.
+- **`SO_ORIGINAL_DST` succeeds for non-redirected connections too** (conntrack has an
+  entry for every connection) and returns the proxy's own listen address — always
+  guard against self-connect before dialing it.
+
 - **TLS 1.3 resumption works on the mesh path** (interlink `TlsClient` ↔ `TlsServer`,
   rustls defaults): connection 1 is `Full`, subsequent connections are `Resumed`.
   Observable via `interlink_handshake_full_total` / `interlink_handshake_resumed_total`.

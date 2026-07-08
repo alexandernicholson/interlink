@@ -16,8 +16,22 @@ use crate::common::error::InterlinkError;
 use crate::common::identity::{IdentityProvider, SpiffeId};
 use crate::proxy::configure_socket;
 
-/// Supported ALPN protocols for negotiated HTTP/1.1 and HTTP/2 forwarding.
+/// Supported ALPN protocols, most-preferred first: multiplexed proxy-to-proxy
+/// tunnels (`il/mux/1`), then HTTP/2 and HTTP/1.1 forwarding. rustls picks the
+/// first server-preferred protocol the client offers, so non-interlink clients
+/// (which never offer `il/mux/1`) negotiate h2/http1.1 and take the legacy
+/// relay path — mixed versions interoperate.
 fn alpn_protocols() -> Vec<Vec<u8>> {
+    vec![
+        crate::proxy::mux::ALPN_MUX.to_vec(),
+        b"h2".to_vec(),
+        b"http/1.1".to_vec(),
+    ]
+}
+
+/// Legacy ALPN list without mux — used to model pre-mux peers in tests and to
+/// disable tunneling operationally.
+pub fn legacy_alpn_protocols() -> Vec<Vec<u8>> {
     vec![b"h2".to_vec(), b"http/1.1".to_vec()]
 }
 
@@ -72,6 +86,17 @@ impl TlsClient {
         cert: CertificateDer<'static>,
         key: PrivateKeyDer<'static>,
     ) -> Result<Self, InterlinkError> {
+        Self::with_client_auth_alpn(provider, cert, key, alpn_protocols())
+    }
+
+    /// As `with_client_auth`, but with an explicit ALPN list (e.g.
+    /// `legacy_alpn_protocols()` to disable mux negotiation).
+    pub fn with_client_auth_alpn(
+        provider: Arc<dyn IdentityProvider>,
+        cert: CertificateDer<'static>,
+        key: PrivateKeyDer<'static>,
+        alpn: Vec<Vec<u8>>,
+    ) -> Result<Self, InterlinkError> {
         let mut root_store = rustls::RootCertStore::empty();
         for ca in &provider.get_trust_domain().ca_certs {
             root_store
@@ -83,7 +108,7 @@ impl TlsClient {
             .with_root_certificates(root_store)
             .with_client_auth_cert(vec![cert], key)
             .map_err(InterlinkError::Tls)?;
-        config.alpn_protocols = alpn_protocols();
+        config.alpn_protocols = alpn;
 
         Ok(Self {
             connector: TlsConnector::from(Arc::new(config)),
@@ -157,6 +182,17 @@ impl TlsServer {
         server_cert: CertificateDer<'static>,
         server_key: PrivateKeyDer<'static>,
     ) -> Result<Self, InterlinkError> {
+        Self::new_with_alpn(provider, server_cert, server_key, alpn_protocols())
+    }
+
+    /// As `new`, but with an explicit ALPN list (e.g. `legacy_alpn_protocols()`
+    /// to model a pre-mux peer or disable tunneling).
+    pub fn new_with_alpn(
+        provider: Arc<dyn IdentityProvider>,
+        server_cert: CertificateDer<'static>,
+        server_key: PrivateKeyDer<'static>,
+        alpn: Vec<Vec<u8>>,
+    ) -> Result<Self, InterlinkError> {
         let mut root_store = rustls::RootCertStore::empty();
         for ca in &provider.get_trust_domain().ca_certs {
             root_store
@@ -174,7 +210,7 @@ impl TlsServer {
             )
             .with_single_cert(vec![server_cert], server_key)
             .map_err(InterlinkError::Tls)?;
-        config.alpn_protocols = alpn_protocols();
+        config.alpn_protocols = alpn;
 
         Ok(Self {
             acceptor: tokio_rustls::TlsAcceptor::from(Arc::new(config)),

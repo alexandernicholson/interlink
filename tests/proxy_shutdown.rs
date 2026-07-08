@@ -47,6 +47,7 @@ fn make_proxy(port: u16) -> TcpProxy {
         identity: Some(id.to_uri()),
         default_upstream: Some("127.0.0.1:9".into()),
         max_connections: Some(4),
+        mux: true,
     };
     TcpProxy::new_with_port(config, port, tls_server, Arc::new(PolicyEngine::new()))
 }

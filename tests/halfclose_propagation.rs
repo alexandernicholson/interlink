@@ -64,6 +64,7 @@ async fn proxy_propagates_half_close() {
         identity: Some(server_id.to_uri()),
         default_upstream: Some(format!("127.0.0.1:{}", backend_addr.port())),
         max_connections: Some(10),
+        mux: true,
     };
     let proxy = TcpProxy::new_with_port(config, proxy_port, tls_server, policy);
     let _h = Arc::new(proxy).spawn();

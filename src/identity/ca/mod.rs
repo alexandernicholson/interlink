@@ -102,8 +102,13 @@ impl CertificateAuthority {
         Ok(CertificateDer::from(cert.der().to_vec()))
     }
 
-    /// Issue a leaf certificate with SPIFFE ID and optional DNS names,
+    /// Issue a leaf certificate with SPIFFE ID and optional subject names,
     /// returning both the DER cert and the PKCS#8 private key.
+    ///
+    /// Entries in `dns_names` that parse as IP addresses become IP SANs
+    /// (C8: an IP `ServerName` never matches a DNS SAN, and mesh peers dial
+    /// each other by `ip:port` recovered from SO_ORIGINAL_DST — proxy leaf
+    /// certs therefore need IP SANs for the addresses they serve on).
     pub fn issue_leaf_with_key(
         &self,
         identity: &SpiffeId,
@@ -111,11 +116,21 @@ impl CertificateAuthority {
     ) -> Result<(CertificateDer<'static>, Vec<u8>), InterlinkError> {
         let mut params = CertificateParams::new(Vec::<String>::new())
             .map_err(|e| InterlinkError::Identity(format!("params: {}", e)))?;
-        let uri_str: rcgen::Ia5String = identity.to_uri().as_str().try_into().unwrap();
+        let uri_str: rcgen::Ia5String = identity
+            .to_uri()
+            .as_str()
+            .try_into()
+            .map_err(|e| InterlinkError::Identity(format!("SPIFFE URI SAN: {:?}", e)))?;
         let mut sans: Vec<SanType> = vec![SanType::URI(uri_str)];
-        for dns in dns_names {
-            let dns_str: rcgen::Ia5String = (*dns).try_into().unwrap();
-            sans.push(SanType::DnsName(dns_str));
+        for name in dns_names {
+            if let Ok(ip) = name.parse::<std::net::IpAddr>() {
+                sans.push(SanType::IpAddress(ip));
+            } else {
+                let dns_str: rcgen::Ia5String = (*name)
+                    .try_into()
+                    .map_err(|e| InterlinkError::Identity(format!("DNS SAN: {:?}", e)))?;
+                sans.push(SanType::DnsName(dns_str));
+            }
         }
         params.subject_alt_names = sans;
         params.distinguished_name = DistinguishedName::new();

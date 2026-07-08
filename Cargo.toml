@@ -43,6 +43,8 @@ tower = { version = "0.5", features = ["util"] }
 async-trait = "0.1"
 moka = { version = "0.12", features = ["sync"] }
 mimalloc = { version = "0.1", default-features = false }
+yamux = "0.13"
+tokio-util = { version = "0.7.18", features = ["compat"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio"] }
