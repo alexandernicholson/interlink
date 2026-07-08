@@ -332,7 +332,9 @@ Acceptance: every later phase must show its effect on at least one of these prof
    must be validated on the churn profile.
 2. **✓ Fix accept-loop head-of-line blocking**: `try_acquire_owned()` on both proxies,
    `interlink_saturation_rejections_total` counter wired to both (fixed in `e225998`).
-3. **Multiple acceptors with `SO_REUSEPORT`** — still TODO.
+3. **✓ Multiple acceptors with `SO_REUSEPORT`** — implemented in `0111a48`. Both
+   proxies spawn N = min(available_parallelism, 4) ≥ 2 acceptor tasks, each with
+   its own SO_REUSEPORT socket. Kernel distributes connections across listeners.
 4. **✓ DNS discovery hardening**: deadlock fixed, 30 s TTL, single-flight verified by a
    counting-fake test (exactly 1 lookup per N concurrent callers), expired entries
    re-resolve, no panic paths (empirically re-verified). Remaining nits: the waiter
@@ -368,7 +370,7 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | ✓R24 | Churn run reporting resumed fraction; bulk 256KB baseline; flamegraph | S | Churn captured in `607fed4`; bulk 256KB still TODO; flamegraph TODO |
 | ✓2 | `copy_bidirectional_with_sizes` with 16–64 KiB buffers | S | Implemented in `4925b72` (64 KiB); judge on bulk-throughput profile |
 | 3 | Connection pooling redesign (kept-alive tunnels / HTTP-aware) | L | validate against churn baseline |
-| 3 | `SO_REUSEPORT` multi-acceptor + listener backlog tuning | M | throughput ceiling at high conn rates |
+| ✓3 | `SO_REUSEPORT` multi-acceptor + listener backlog tuning | M | Implemented in `0111a48`; 2-4 acceptors per proxy |
 | 4 | Crypto provider bake-off (`aws-lc-rs` vs `ring`), `worker_threads` config | M | measure to confirm |
 
 (**All regressions R1–R23 are closed and verified as of the eighth round.** Preflight
