@@ -62,9 +62,25 @@ sample_metrics() {
     local duration="$4"
     log "sampling metrics for -l ${selector} (summed) for ${duration}s -> ${output}"
     echo "timestamp,cpu_millicores,memory_rss_kb" > "${output}"
+    local host_out="${output%.csv}.host.csv"
+    echo "timestamp,host_util_percent" > "${host_out}"
+    # Prime the /proc/stat delta.
+    local prev
+    prev=$(awk '/^cpu / {for(i=2;i<=NF;i++)t+=$i; print t" "$5}' /proc/stat)
     local end
     end=$(($(date +%s) + duration))
     while [[ $(date +%s) -lt ${end} ]]; do
+        # Host CPU utilization over the last interval (100 - idle%), the true
+        # "did the box have headroom" signal — kind runs every node on this one
+        # host, so per-node kubectl top can't see host saturation.
+        local cur
+        cur=$(awk '/^cpu / {for(i=2;i<=NF;i++)t+=$i; print t" "$5}' /proc/stat)
+        awk -v p="${prev}" -v c="${cur}" -v ts="$(date +%s)" 'BEGIN {
+            split(p,a," "); split(c,b," ");
+            dt=b[1]-a[1]; di=b[2]-a[2];
+            if (dt>0) printf "%d,%.1f\n", ts, 100*(dt-di)/dt;
+        }' >> "${host_out}"
+        prev="${cur}"
         # Sum CPU/mem across every pod matching the selector — the mesh's total
         # proxy footprint (interlink runs one daemon per node; sum both).
         local metrics

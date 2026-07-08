@@ -107,12 +107,13 @@ run_profile() {
 }
 
 export QPS CONNECTIONS DURATION PAYLOAD_SIZE LABEL FORTIO_TIMEOUT
-for QPS in 320 3200 12800; do
-    case "${QPS}" in
-        320) CONNECTIONS=160 ;;
-        3200) CONNECTIONS=1600 ;;
-        12800) CONNECTIONS=6400 ;;
-    esac
+# BENCH_PROFILES="qps:conns,..." overrides the default set. Default targets a
+# dedicated host; connections are Little's-law sized (rps x 0.2s delay x1.25).
+PROFILES_SPEC="${BENCH_PROFILES:-320:80,3200:800,12800:3200}"
+IFS=',' read -ra _PROFILES <<< "${PROFILES_SPEC}"
+for _p in "${_PROFILES[@]}"; do
+    QPS="${_p%%:*}"
+    CONNECTIONS="${_p##*:}"
     DURATION="${BENCH_DURATION:-300}"
     PAYLOAD_SIZE=1024
     FORTIO_TIMEOUT=120
