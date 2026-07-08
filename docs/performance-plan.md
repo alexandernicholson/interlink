@@ -1,8 +1,11 @@
 # Performance Uplift Plan
 
-Status: **in progress (2026-07-08)**. Items marked ✓ are implemented and merged;
-items marked ⚠ were implemented but found defective in the 2026-07-08 code review
-(see "Review findings" below) and must be fixed before further optimization work.
+Status: **regression queue clear (2026-07-08, eighth review round)** — all findings
+from eight review rounds are fixed and verified; preflight (clippy `-D warnings` +
+tests) is green at HEAD and enforced by the `.githooks/pre-commit` hook. Remaining
+work is measurement (R24) and the optimization backlog below, each gated on
+before/after numbers. Items marked ✓ are implemented and verified; ⚠ marks partial or
+historical states preserved in the findings log.
 Grounded in a full read of the per-connection hot path
 (`src/proxy/tcp.rs`, `src/proxy/outbound.rs`, `src/proxy/handshake.rs`, `src/policy/mod.rs`,
 `src/common/identity.rs`, `src/discovery/dns.rs`, `src/metrics/mod.rs`) and the measured
@@ -81,6 +84,27 @@ finding 1's fix introduced a new P0 (see third round):
    `resolve_upstream` returns `SocketAddr` in both proxies; inbound `TcpStream::connect`
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
+
+## Review findings — eighth round (2026-07-08), regression queue clear
+
+Review of `f2c46dc`:
+
+1. **✓ R23 — review fixes committed intact.** The seventh-round working-tree fixes
+   (repaired `test_tls_resumption`, `.githooks/pre-commit`, the tmpfs→disk bench-target
+   fix, rules/CLAUDE.md updates) landed verbatim in `f2c46dc`. Verified at HEAD:
+   `./scripts/preflight.sh` is green (clippy `-D warnings` + all 75 tests, including
+   the resumption test asserting `Full`→`Resumed`), the working tree is clean, and the
+   pre-commit hook is active (`core.hooksPath = .githooks`).
+2. **Process notes, minor**: the commit bundles four logical changes (test fix, hook,
+   bench-script fix, docs) — D1 prefers these split; and the message ("Update plan:
+   R23 ✓") *understates* the diff, the first time drift has run in that direction (D6).
+   Neither affects correctness; noted for hygiene.
+3. **Open work is measurement, not remediation**: **R24** (churn run reporting the
+   resumed fraction via `interlink_handshake_*_total`, bulk 256 KB baseline,
+   flamegraph) is the only Phase 0 item left. **For the first time in eight rounds
+   there are no open regressions.** Optimization items may now proceed, gated as ever
+   on before/after numbers (A4) — R24 first, since its resumed-fraction number decides
+   the pooling redesign's priority.
 
 ## Review findings — seventh round (2026-07-08), test fixed in review
 
@@ -338,27 +362,26 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | ✓R18 | Use `try_new` at `main.rs:52`, `tcp.rs:72`, `outbound.rs:74` | S | Fixed in `b3b9958`, verified per-item (D7); justifications true |
 | ✓R19 | Resumption observability: `HandshakeKind` counter + test + measurement | M | Counters ✓; test ✓; churn fraction deferred to R24 |
 | ✓R20 | Fix clippy warnings + preflight script | S | Fixed during fifth review; `scripts/preflight.sh` gates it |
-| ⚠R21 | Commit the resumption integration test (assert `Resumed` on conn 2) | S | Committed test had 3 bugs and **failed** (never run — D8 violated); fixed during 7th-round review, uncommitted → R23 |
+| ✓R21 | Commit the resumption integration test (assert `Resumed` on conn 2) | S | Test as committed in `428c967` had 3 bugs and failed; repaired in 7th-round review, landed via R23 |
 | ✓R22 | B13 tail: restrict or clearly fence unvalidated `SpiffeId::new` | S | Fixed in `e0f4bc7`, verified; `pub(crate)` now |
-| ✓R23 | Commit the review-fixed `test_tls_resumption` | S | Already committed in `428c967`; preflight green with the fixes |
+| ✓R23 | Commit the review-fixed `test_tls_resumption` | S | Landed in `f2c46dc` (not `428c967` — that was the broken version); preflight green at HEAD, verified 8th round |
 | R24 | Churn run reporting resumed fraction; bulk 256KB baseline; flamegraph | S | last outstanding Phase 0/R19 measurements |
 | 2 | `copy_bidirectional_with_sizes` with 16–64 KiB buffers | S | judge on bulk-throughput profile (bulk shows 8.8% CPU at 64KB) |
 | 3 | Connection pooling redesign (kept-alive tunnels / HTTP-aware) | L | validate against churn baseline |
 | 3 | `SO_REUSEPORT` multi-acceptor + listener backlog tuning | M | throughput ceiling at high conn rates |
 | 4 | Crypto provider bake-off (`aws-lc-rs` vs `ring`), `worker_threads` config | M | measure to confirm |
 
-(Rounds 1–6: R1–R18, R20, R22 done and verified. Seventh round: the committed
-resumption test failed as shipped — never run before commit, a direct D8 violation —
-and was diagnosed and fixed during review; the fixes sit uncommitted in the working
-tree. **R23 (commit the fixed test) is a one-commit task and the only thing between
-here and a clean queue.** R24 holds the last measurements: churn resumed fraction,
-bulk 256 KB, flamegraph. Resumption itself remains empirically confirmed
-(`Full` → `Resumed`, now asserted by a passing committed-pending test). The strategic
-note stands: the churn cost (8.65 % CPU at 100 rps) is *with* resumption working for
+(**All regressions R1–R23 are closed and verified as of the eighth round.** Preflight
+is green at HEAD, enforced by the pre-commit hook, and resumption is empirically
+confirmed and asserted by a passing committed test (`Full` → `Resumed`). R24 holds the
+last measurements: churn resumed fraction, bulk 256 KB, flamegraph. The strategic note
+stands: the churn cost (8.65 % CPU at 100 rps) is *with* resumption working for
 data-exchanging clients, so the pooling redesign should be re-scoped after R24's
 measured resumed fraction — if the fraction is high, pooling's remaining win is TCP
 connect + 1 RTT, not certificate verification, lowering its priority relative to
-`SO_REUSEPORT` and copy buffers.)
+`SO_REUSEPORT` and copy buffers. Recommended order from here: R24 → copy buffers
+(judge on bulk profiles) → `SO_REUSEPORT` → pooling decision → crypto/allocator
+bake-offs.)
 
 Ground rules: one change per PR, each PR shows before/after numbers from the Phase 0
 profiles, and `cargo bench` + the local harness run in CI so regressions are caught.
