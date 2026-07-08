@@ -1,13 +1,15 @@
 # Performance Uplift Plan
 
-Status: **tenth review round (2026-07-08)** — R25 ✓ (half-close fix committed),
-R26/R27 ✓ (acceptor panics and the dead watch-shutdown API, fixed by the reviewer this
-round with A6-verified tests; preflight green). Open queue: **R28** (scrape
-`interlink_handshake_*_total` for the resumed fraction — still never captured — stop
-the summary clobbering; bulk 256 KB; flamegraph) and **R29** (`SO_REUSEPORT` controlled
-before/after — heavy p99 moved 62.7→73.5 ms, unexplained; keep-or-revert on numbers).
-Items marked ✓ are implemented and verified; ⚠ marks partial or historical states in
-the findings log.
+Status: **R29 resolved (2026-07-08, eleventh round)** — the reported `SO_REUSEPORT`
+regression **does not exist**: an interleaved same-binary A/B (3× heavy + 2× churn
+trials per arm via a new `INTERLINK_ACCEPTORS` env knob) shows the arms statistically
+indistinguishable; single-run heavy-profile p99 on this shared machine varies
+44→84 ms across *identical* configs, and every "regression" number cited in rounds
+9–11 sits inside that noise band. See the eleventh-round findings for the data and
+the new measurement rules. Remaining queue: **R28 tail** (bulk 256 KB, flamegraph)
+and **R30** (settle copy-buffer size on the *bulk* profile — the 8 KiB revert made
+the buffer optimization a no-op). Items marked ✓ are implemented and verified;
+⚠ marks partial or historical states in the findings log.
 Grounded in a full read of the per-connection hot path
 (`src/proxy/tcp.rs`, `src/proxy/outbound.rs`, `src/proxy/handshake.rs`, `src/policy/mod.rs`,
 `src/common/identity.rs`, `src/discovery/dns.rs`, `src/metrics/mod.rs`) and the measured
@@ -86,6 +88,52 @@ finding 1's fix introduced a new P0 (see third round):
    `resolve_upstream` returns `SocketAddr` in both proxies; inbound `TcpStream::connect`
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
+
+## Review findings — eleventh round (2026-07-08), the SO_REUSEPORT "regression" is noise
+
+Investigation of the teammate's report that `SO_REUSEPORT` causes a performance
+regression (commits `885dad4..6355caa` + uncommitted reruns):
+
+1. **The regression does not exist. It is run-to-run variance.** Controlled interleaved
+   A/B at HEAD — identical binary, `INTERLINK_ACCEPTORS=4` vs `=1` (new env knob),
+   alternating trials to cancel environmental drift, heavy profile (12,800 qps /
+   6,400 conns / 30 s):
+
+   | trial | 4 acceptors p99 | 1 acceptor p99 | p50 (both arms) |
+   |---|---|---|---|
+   | 1 | 43.9 ms | 44.8 ms | ~22 ms |
+   | 2 | 66.9 ms | 80.8 ms | ~22 ms |
+   | 3 | 69.9 ms | 64.4 ms | ~22 ms |
+
+   The arms are indistinguishable; **within-configuration p99 varies by ±37 ms across
+   trials** while p50 is rock-stable at 21.5–22.2 ms in every run. An accept-heavy A/B
+   (2,000 conns/s, `-keepalive=false`) is equally flat: p99 15.9–17.5 ms both arms.
+   Every number cited in the regression narrative — 44.3 "baseline", 62.7, 72.7, 73.5,
+   84.3 "regression" — sits inside the observed noise band for identical configs. The
+   teammate's own uncommitted rerun of HEAD shows heavy p99 = 48.5 ms, next to the
+   "baseline" the same code was claimed to regress from. The machine is shared (other
+   Docker workloads, agent sessions) and Fortio's 6,400 client threads compete with the
+   proxy for the same 16 cores — tail latency at this concurrency is dominated by
+   environment, not by the proxy change.
+2. **Consequences for earlier conclusions:**
+   - The `6355caa` buffer revert's reasoning ("64 KiB caused 84.3 vs 44.3, cache
+     pressure") compared two points inside the noise band. Also, buffer size *cannot*
+     matter for the heavy profile — 1 KB payloads never fill even an 8 KiB buffer. The
+     right instrument is the bulk profile; that decision is reopened as **R30**. Note
+     the revert leaves `COPY_BUF_SIZE = 8192` = tokio's default, i.e. the Phase 2
+     buffer optimization is currently a no-op.
+   - `SO_REUSEPORT` shows **no benefit** either, at up to 2,000 accepts/s — accept was
+     never the bottleneck (handshake work is already parallel in spawned tasks). Verdict
+     per the keep-or-revert criterion: performance-neutral; keep the (now panic-free,
+     shutdown-correct, knob-controlled) implementation, revisit only if a workload
+     saturates a single accept loop.
+3. **Measurement rule for this machine** (feeds D10): single-run heavy-profile p99 is
+   not a usable signal — the noise floor is ~2× the effect sizes being discussed. Tail
+   comparisons need ≥3 interleaved runs per arm with medians, or an isolated machine.
+   p50 and CPU are stable and remain usable single-run signals.
+4. **R28 partial credit**: `885dad4` added handshake-metrics scraping and the run
+   header (Generated/Git SHA) to the harness — good. Resumed-fraction output should now
+   appear in summaries; bulk 256 KB and the flamegraph remain open.
 
 ## Review findings — tenth round (2026-07-08), R25 landed; R26–R29 untouched
 
@@ -471,8 +519,9 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | ✓R25 | Commit the review fixes: tokio-delegating copy + `tests/halfclose_propagation.rs` | S | Landed in `08ff63e` (note: commit message describes something else — D6), verified 10th round |
 | ✓R26 | Acceptor bind/listen failure: log+return instead of panic; error if zero acceptors bind | S | Fixed in 10th round (reviewer): fallible `bind_reuseport()`, zero-bind → error return |
 | ✓R27 | Restore watch-channel shutdown for acceptors | S | Fixed in 10th round (reviewer): per-acceptor watch clone; flag API deleted; A6-verified test |
-| R28 | Harness scrapes `interlink_handshake_*_total` for resumed fraction; stop clobbering summary sections; bulk 256KB; flamegraph | M | P2 — completes R24 (findings 4, 5) |
-| R29 | Controlled before/after for SO_REUSEPORT (heavy + churn); keep or revert on numbers | S | P3 — A4 (finding 6) |
+| ⚠R28 | Harness scrapes handshake counters; summary header; bulk 256KB; flamegraph | M | Scraping + header landed (`885dad4`); bulk 256KB + flamegraph open |
+| ✓R29 | Controlled before/after for SO_REUSEPORT; keep or revert on numbers | S | **Resolved 11th round: no regression — noise.** Interleaved A/B flat on heavy and churn; keep implementation; `INTERLINK_ACCEPTORS` knob added |
+| R30 | Copy-buffer size decision on the *bulk* profile (≥3 interleaved runs/arm) | S | 8 KiB revert made the buffer optimization a no-op; heavy-profile reasoning was invalid (1 KB payloads) |
 | 4 | Crypto provider bake-off (`aws-lc-rs` vs `ring`), `worker_threads` config | M | measure to confirm |
 
 (**All regressions R1–R23 are closed and verified as of the eighth round.** Preflight

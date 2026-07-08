@@ -23,7 +23,7 @@ use tokio::net::TcpStream;
 /// benchmark-driven tuning pass.
 pub(crate) const COPY_BUF_SIZE: usize = 8192;
 
-/// Bidirectional copy with 64 KiB buffers.
+/// Bidirectional copy with `COPY_BUF_SIZE` buffers.
 ///
 /// Delegates to tokio's `copy_bidirectional_with_sizes`, which propagates
 /// half-close: when one side reaches EOF, the other side is shut down
@@ -59,7 +59,16 @@ pub(crate) fn bind_reuseport(addr: std::net::SocketAddr) -> std::io::Result<toki
 }
 
 /// Number of SO_REUSEPORT acceptor tasks per proxy listener.
+///
+/// Overridable via `INTERLINK_ACCEPTORS` (clamped to 1..=16) so deployments —
+/// and A/B benchmarks — can tune or disable multi-acceptor without a rebuild.
 pub(crate) fn num_acceptors() -> usize {
+    if let Some(n) = std::env::var("INTERLINK_ACCEPTORS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        return n.clamp(1, 16);
+    }
     std::cmp::min(
         std::thread::available_parallelism()
             .map(|n| n.get())
