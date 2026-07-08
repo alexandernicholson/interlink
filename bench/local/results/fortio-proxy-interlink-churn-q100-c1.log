@@ -1,0 +1,39 @@
+{"ts":1783489565.374448,"level":"info","r":1,"file":"scli.go","line":125,"msg":"Starting","command":"Φορτίο","version":"1.66.0 h1:9F/200qIu136z847bxs/NeAoYdJaQlVofYlppi3qwcw= go1.22.5 amd64 linux","go-max-procs":16}
+Fortio 1.66.0 running at 100 queries per second, 16->16 procs, for 30s: https://localhost:14443/echo
+{"ts":1783489565.374810,"level":"info","r":1,"file":"httprunner.go","line":121,"msg":"Starting http test","run":0,"url":"https://localhost:14443/echo","threads":1,"qps":"100.0","warmup":"parallel","conn-reuse":""}
+Starting at 100 qps with 1 thread(s) [gomax 16] for 30s : 3000 calls each (total 3000)
+{"ts":1783489595.378443,"level":"info","r":1,"file":"periodic.go","line":851,"msg":"T000 ended after 30.001449672s : 3000 calls. qps=99.99516799349415"}
+Ended after 30.001487782s : 3000 calls. qps=99.995
+{"ts":1783489595.378502,"level":"info","r":1,"file":"periodic.go","line":581,"msg":"Run ended","run":0,"elapsed":30001487782,"calls":3000,"qps":99.99504097259839}
+Sleep times : count 2999 avg 0.0085470411 +/- 0.0003331 min 0.007334291 max 0.009280455 sum 25.6325761
+Aggregated Function Time : count 3000 avg 0.00087978843 +/- 0.000154 min 0.000643548 max 0.002076683 sum 2.63936529
+# range, mid point, percentile, count
+>= 0.000643548 <= 0.001 , 0.000821774 , 81.80, 2454
+> 0.001 <= 0.002 , 0.0015 , 99.97, 545
+> 0.002 <= 0.00207668 , 0.00203834 , 100.00, 1
+# target 50% 0.000861372
+# target 75% 0.000970356
+# target 90% 0.00145138
+# target 99% 0.00194679
+# target 99.9% 0.00199633
+Error cases : no data
+# Socket and IP used for each connection:
+[0] 3001 socket used, resolved to 127.0.0.1:14443, connection timing : count 3001 avg 0.0005037169 +/- 0.0001167 min 0.000361889 max 0.001549085 sum 1.51165443
+Connection time histogram (s) : count 3001 avg 0.0005037169 +/- 0.0001167 min 0.000361889 max 0.001549085 sum 1.51165443
+# range, mid point, percentile, count
+>= 0.000361889 <= 0.001 , 0.000680945 , 99.27, 2979
+> 0.001 <= 0.00154908 , 0.00127454 , 100.00, 22
+# target 50% 0.000683194
+# target 75% 0.000843954
+# target 90% 0.00094041
+# target 99% 0.000998284
+# target 99.9% 0.00147418
+Sockets used: 3001 (for perfect keepalive, would be 1)
+Uniform: false, Jitter: false, Catchup allowed: true
+IP addresses distribution:
+127.0.0.1:14443: 3001
+Code 200 : 3000 (100.0 %)
+Response Header Sizes : count 3000 avg 137 +/- 0 min 137 max 137 sum 411000
+Response Body/Total Sizes : count 3000 avg 1161 +/- 0 min 1161 max 1161 sum 3483000
+All done 3000 calls (plus 1 warmup) 0.880 ms avg, 100.0 qps
+Successfully wrote 5214 bytes of Json data to /results/fortio-proxy-interlink-churn-q100-c1.json

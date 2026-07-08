@@ -73,5 +73,10 @@ touches as performance- and security-sensitive.
 - Build/test: `cargo build`, `cargo test` (must be warning-clean; clippy too)
 - Microbenchmarks: `cargo bench --bench proxy`
 - End-to-end benchmarks: `bench/local/run.sh` and `bench/local/run-proxy.sh`
-  (env: `PROFILE_DELAY`, `CHURN=1`, `BULK=1`); results are committed under
-  `bench/results/`
+  (env: `PROFILE_DELAY`, `CHURN=1`, `BULK=1`, `SKIP_STANDARD=1` for targeted reruns);
+  results are committed under `bench/local/results/` as per-profile section files
+- Runtime tuning knobs: `INTERLINK_ACCEPTORS` (1..=16), `INTERLINK_COPY_BUF_SIZE`
+  (4 KiB..=1 MiB, default 64 KiB per the R30 A/B)
+- Profiling: `cargo build --profile profiling` (symbols kept), then
+  `perf record --call-graph dwarf -p $(pgrep -x interlinkd)`; note `pgrep -f` can
+  match the wrapper shell — use `-x`

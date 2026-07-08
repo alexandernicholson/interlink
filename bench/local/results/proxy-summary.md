@@ -1,29 +1,41 @@
 # interlink proxy benchmark summary
 
-Generated: 2026-07-08T13:34:40+09:00
-Git SHA: 6355caa
+Last run: 2026-07-08T14:45:34+09:00 @ bbba8c8
 Server: Go echo-server (plain HTTP, 0 delay)
 Proxy: interlinkd (inbound mTLS → plain TCP)
 Load: Fortio HTTPS + mTLS
-Profiles: 60s each
 
-## proxy-interlink-q320-c160
+## proxy-interlink-bulk-256kb
 
-p50_ms=1.492 p90_ms=2.956 p99_ms=3.917 avg_ms=1.626 actual_qps=320.0 errors=0
-avg_cpu_percent=0.83 peak_cpu_percent=1.70 avg_memory_rss_kb=14690.9 peak_memory_rss_kb=15200.0
-
-## proxy-interlink-q3200-c1600
-
-p50_ms=7.652 p90_ms=12.450 p99_ms=20.316 avg_ms=7.942 actual_qps=3198.6 errors=0
-avg_cpu_percent=1.81 peak_cpu_percent=2.40 avg_memory_rss_kb=51049.9 peak_memory_rss_kb=55852.0
-
-## proxy-interlink-q12800-c6400
-
-p50_ms=21.808 p90_ms=32.602 p99_ms=48.472 avg_ms=22.101 actual_qps=12776.3 errors=0
-avg_cpu_percent=5.64 peak_cpu_percent=7.20 avg_memory_rss_kb=182101.3 peak_memory_rss_kb=214584.0
+Captured: 2026-07-08T14:49:37+09:00 @ bbba8c8
+p50_ms=1.316 p90_ms=1.872 p99_ms=1.997 avg_ms=1.185 actual_qps=50.0 errors=0
+avg_cpu_percent=6.11 peak_cpu_percent=6.50 avg_memory_rss_kb=14589.1 peak_memory_rss_kb=14808.0
 
 ## proxy-interlink-bulk-64kb
 
-p50_ms=0.691 p90_ms=1.237 p99_ms=1.926 avg_ms=0.652 actual_qps=100.0 errors=0
-avg_cpu_percent=7.78 peak_cpu_percent=8.30 avg_memory_rss_kb=83867.7 peak_memory_rss_kb=197116.0
+Captured: 2026-07-08T14:48:36+09:00 @ bbba8c8
+p50_ms=0.629 p90_ms=0.954 p99_ms=1.649 avg_ms=0.552 actual_qps=100.0 errors=0
+avg_cpu_percent=8.22 peak_cpu_percent=9.00 avg_memory_rss_kb=15454.4 peak_memory_rss_kb=15960.0
 
+## proxy-interlink-churn-q100-c1
+
+Captured: 2026-07-08T14:46:35+09:00 @ bbba8c8
+p50_ms=0.861 p90_ms=1.451 p99_ms=1.947 avg_ms=0.880 actual_qps=100.0 errors=0
+avg_cpu_percent=2.23 peak_cpu_percent=2.70 avg_memory_rss_kb=9722.1 peak_memory_rss_kb=9940.0
+
+## proxy-interlink-churn-q500-c5
+
+Captured: 2026-07-08T14:47:36+09:00 @ bbba8c8
+p50_ms=1.089 p90_ms=1.819 p99_ms=1.984 avg_ms=1.052 actual_qps=500.0 errors=0
+avg_cpu_percent=4.89 peak_cpu_percent=6.70 avg_memory_rss_kb=14143.5 peak_memory_rss_kb=15308.0
+
+
+## Handshake metrics (final)
+```
+# TYPE interlink_handshakes_total counter
+interlink_handshakes_total 36020
+# TYPE interlink_handshake_resumed_total counter
+interlink_handshake_resumed_total 0
+# TYPE interlink_handshake_full_total counter
+interlink_handshake_full_total 36020
+```

@@ -17,13 +17,26 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
-/// Buffer size for bidirectional data copy (8 KiB, matching tokio default).
-/// 64 KiB was tested but caused heavy-profile p99 regression (84 vs 44 ms)
-/// at 6400 connections, likely from cache pressure. Revisit with a proper
-/// benchmark-driven tuning pass.
-pub(crate) const COPY_BUF_SIZE: usize = 8192;
+/// Buffer size for bidirectional data copy.
+///
+/// Default 64 KiB, decided by the R30 interleaved bulk-profile A/B
+/// (256 KB payloads: p50 −15 %, proxy CPU −22 % vs 8 KiB; no measurable
+/// effect on 1 KB-payload workloads, whose requests never fill either
+/// buffer). Overridable via `INTERLINK_COPY_BUF_SIZE` (4 KiB..=1 MiB).
+pub(crate) fn copy_buf_size() -> usize {
+    static SIZE: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        std::env::var("INTERLINK_COPY_BUF_SIZE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_COPY_BUF_SIZE)
+            .clamp(4096, 1 << 20)
+    });
+    *SIZE
+}
 
-/// Bidirectional copy with `COPY_BUF_SIZE` buffers.
+pub(crate) const DEFAULT_COPY_BUF_SIZE: usize = 65536;
+
+/// Bidirectional copy with `copy_buf_size()` buffers.
 ///
 /// Delegates to tokio's `copy_bidirectional_with_sizes`, which propagates
 /// half-close: when one side reaches EOF, the other side is shut down
@@ -33,7 +46,8 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
-    tokio::io::copy_bidirectional_with_sizes(a, b, COPY_BUF_SIZE, COPY_BUF_SIZE).await
+    let n = copy_buf_size();
+    tokio::io::copy_bidirectional_with_sizes(a, b, n, n).await
 }
 
 /// Bind a SO_REUSEPORT listener for one acceptor task.

@@ -195,26 +195,34 @@ run_profile() {
             "https://localhost:${INBOUND_PORT}/echo" >/dev/null 2>&1 || true
 
     # Measured run (Fortio defaults to HTTP/1.1 — proxy doesn't do h2→h1 conversion).
+    # JSON goes to its own file via the mounted results dir: mixing
+    # -json /dev/stdout with 2>&1 interleaves stderr log lines inside large
+    # JSON payloads and corrupts them (broke the bulk-256kb parse).
     docker run --rm --network host \
         -v "${CERT_DIR}:/certs:ro" \
+        -v "${RESULTS}:/results" \
         "${FORTIO_IMAGE}" load \
             -timeout 120s \
             -qps "${qps}" -c "${conns}" -t "${duration}s" -payload-size 1024 \
             ${extra_flags} \
             -cacert /certs/ca.pem -cert /certs/client.pem -key /certs/client-key.pem \
-            -json /dev/stdout \
+            -json "/results/fortio-${label}.json" \
             -labels "${label}" \
-            "https://localhost:${INBOUND_PORT}/echo" > "${RESULTS}/fortio-${label}.json" 2>&1
+            "https://localhost:${INBOUND_PORT}/echo" > "${RESULTS}/fortio-${label}.log" 2>&1
 
     kill "${sampler_pid}" 2>/dev/null || true
 
+    # Each profile writes its own section file; the summary is assembled from
+    # all section files at the end, so a targeted rerun updates only its own
+    # sections instead of clobbering the rest.
     {
         echo "## ${label}"
         echo ""
+        echo "Captured: $(date -Iseconds) @ $(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
         parse_fortio_json "${RESULTS}/fortio-${label}.json"
         aggregate_metrics "${metrics_out}"
         echo ""
-    } >> "${RESULTS}/proxy-summary.md"
+    } > "${RESULTS}/section-${label}.md"
 }
 
 # --------------- quick / full ---------------
@@ -226,16 +234,18 @@ else
     log "FULL mode — ${QUICK_DURATION}s profiles"
 fi
 
-echo "# interlink proxy benchmark summary" > "${RESULTS}/proxy-summary.md"
-echo "" >> "${RESULTS}/proxy-summary.md"
-echo "Generated: $(date -Iseconds)" >> "${RESULTS}/proxy-summary.md"
-echo "Git SHA: $(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')" >> "${RESULTS}/proxy-summary.md"
-echo "Server: Go echo-server (plain HTTP, ${PROFILE_DELAY:-200ms} delay)" >> "${RESULTS}/proxy-summary.md"
-echo "Proxy: interlinkd (inbound mTLS → plain TCP)" >> "${RESULTS}/proxy-summary.md"
-echo "Load: Fortio HTTPS + mTLS" >> "${RESULTS}/proxy-summary.md"
-echo "Profiles: ${QUICK_DURATION}s each" >> "${RESULTS}/proxy-summary.md"
-echo "" >> "${RESULTS}/proxy-summary.md"
+HEADER="${RESULTS}/section-00-header.md"
+{
+    echo "# interlink proxy benchmark summary"
+    echo ""
+    echo "Last run: $(date -Iseconds) @ $(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+    echo "Server: Go echo-server (plain HTTP, ${PROFILE_DELAY:-200ms} delay)"
+    echo "Proxy: interlinkd (inbound mTLS → plain TCP)"
+    echo "Load: Fortio HTTPS + mTLS"
+    echo ""
+} > "${HEADER}"
 
+if [[ "${SKIP_STANDARD:-0}" != "1" ]]; then
 for qps in 320 3200 12800; do
     case "${qps}" in
         320) conns=160 ;;
@@ -244,6 +254,7 @@ for qps in 320 3200 12800; do
     esac
     run_profile "${qps}" "${conns}"
 done
+fi
 
 # Connection-churn profile: no keepalive → new TCP connection per request.
 # This stresses handshake throughput (TLS 1.3 resumption, identity extraction).
@@ -258,11 +269,16 @@ fi
 # Bulk-throughput profile: large payloads to expose copy-buffer costs.
 if [[ "${BULK:-0}" == "1" ]]; then
     log "bulk-throughput profile"
-    run_profile 100 2 "-payload-size 65536" "proxy-interlink-bulk-64kb"
-    run_profile 50 2 "-payload-size 262144" "proxy-interlink-bulk-256kb"
+    run_profile 100 2 "-payload-size 65536 -httpbufferkb 512" "proxy-interlink-bulk-64kb"
+    # -httpbufferkb: fortio default 128KB buffer cannot hold 256KB responses
+    run_profile 50 2 "-payload-size 262144 -httpbufferkb 512" "proxy-interlink-bulk-256kb"
 fi
 
-# Scrape handshake metrics from the Prometheus endpoint.
-scrape_interlink_metrics "final" "${RESULTS}/proxy-summary.md"
+# Scrape handshake metrics from the Prometheus endpoint into its own section.
+rm -f "${RESULTS}/section-zz-handshake.md"
+scrape_interlink_metrics "final" "${RESULTS}/section-zz-handshake.md"
+
+# Assemble the summary from all section files (persisted across runs).
+cat "${RESULTS}"/section-*.md > "${RESULTS}/proxy-summary.md"
 
 log "proxy benchmark complete. Results in ${RESULTS}/proxy-summary.md"

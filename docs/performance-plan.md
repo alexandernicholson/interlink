@@ -6,9 +6,10 @@ trials per arm via a new `INTERLINK_ACCEPTORS` env knob) shows the arms statisti
 indistinguishable; single-run heavy-profile p99 on this shared machine varies
 44→84 ms across *identical* configs, and every "regression" number cited in rounds
 9–11 sits inside that noise band. See the eleventh-round findings for the data and
-the new measurement rules. Remaining queue: **R28 tail** (bulk 256 KB, flamegraph)
-and **R30** (settle copy-buffer size on the *bulk* profile — the 8 KiB revert made
-the buffer optimization a no-op). Items marked ✓ are implemented and verified;
+the new measurement rules. **R28 and R30 closed in the twelfth
+round** — regression and measurement queues are both empty; see the twelfth-round
+section for the copy-buffer decision (64 KiB), the bulk-256 KB baseline, and the
+flamegraph, which points remaining optimization work at handshake avoidance. Items marked ✓ are implemented and verified;
 ⚠ marks partial or historical states in the findings log.
 Grounded in a full read of the per-connection hot path
 (`src/proxy/tcp.rs`, `src/proxy/outbound.rs`, `src/proxy/handshake.rs`, `src/policy/mod.rs`,
@@ -88,6 +89,54 @@ finding 1's fix introduced a new P0 (see third round):
    `resolve_upstream` returns `SocketAddr` in both proxies; inbound `TcpStream::connect`
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
+
+## Twelfth round (2026-07-08): R28 and R30 closed (by reviewer, at user's request)
+
+**✓ R30 — copy-buffer default is 64 KiB, decided on data.** Interleaved same-binary A/B
+(new `INTERLINK_COPY_BUF_SIZE` env knob; 3 trials/arm, bulk profile, 256 KB payloads):
+
+| arm | p50 (3 trials) | proxy CPU |
+|---|---|---|
+| 8 KiB | 1.34 / 1.33 / 1.32 ms | 1.7–1.8 % |
+| 64 KiB | 1.11 / 1.13 / 1.14 ms | 1.4 % |
+
+64 KiB wins every metric in every trial with zero overlap (p50 −15 %, CPU −22 %).
+Guard check on the heavy 1 KB profile: p50 and CPU identical across arms (21–22 ms /
+~27 %), p99 bounces inside the known noise band in both — no small-payload penalty.
+`DEFAULT_COPY_BUF_SIZE = 65536`; the `6355caa` revert's "cache pressure" concern is
+retired. One real artifact explained on the way: the alarming 891 MB "churn RSS" in the
+full-harness run is **carryover** — one proxy process serves all profiles and mimalloc
+retains memory from the preceding 6,400-connection heavy profile; isolated churn runs
+sit at ~10 MB. (Future harness nicety: fresh proxy per profile.)
+
+**✓ R28 — all four items closed:**
+1. **Bulk 256 KB baseline captured**: p50 1.32 ms, p99 2.0 ms, 0 errors, 6.1 % CPU
+   (50 qps × 256 KB ≈ 13 MB/s through mTLS). Two root causes fixed in the harness:
+   Fortio's default 128 KB client buffer can't hold 256 KB responses
+   (`-httpbufferkb 512` added), and `-json /dev/stdout` merged with `2>&1` let a
+   stderr log line land *inside* the JSON payload, corrupting it — JSON now goes to
+   its own file via the mounted results dir.
+2. **Summary clobbering fixed** (ninth-round finding 5): each profile writes a
+   per-label section file stamped with capture time + git SHA; `proxy-summary.md` is
+   assembled from all section files, so targeted reruns (new `SKIP_STANDARD=1`
+   selector) update only their own sections.
+3. **Resumed fraction: 0 % for the benchmark client, by design.** The harness scrape
+   (landed in `885dad4`) shows 52,340/52,340 handshakes Full: Fortio's Go TLS client
+   does not reuse session tickets, so benchmark churn measures full-handshake cost.
+   Mesh-path resumption remains proven by `test_tls_resumption`. The measured churn
+   CPU is therefore an *upper bound* for proxy→proxy churn.
+4. **Flamegraph captured** (`bench/local/results/flamegraph-mixed-load.svg`; profiling
+   build with symbols via the new `[profile.profiling]`, perf dwarf @ 397 Hz under
+   mixed 3,200 qps keepalive + 300 conn/s churn). Top symbols: **~25 % elliptic-curve
+   handshake crypto** (x25519 scalar mult + ed25519 verify), ~6 % tokio runtime,
+   ~1.9 % SHA-256, ~1.5 % AES-GCM (data path), provider confirmed aws-lc-rs.
+   **Conclusion: full-handshake crypto dominates; the data path is cheap. The
+   highest-value remaining work is handshake avoidance (resumption-capable peers /
+   connection reuse), not byte-shuffling.**
+
+Remaining optimization backlog (all gated on A4/D10 numbers): pooling decision
+informed by the flamegraph, crypto-provider bake-off (aws-lc-rs confirmed in use),
+`worker_threads` config for edge devices.
 
 ## Review findings — eleventh round (2026-07-08), the SO_REUSEPORT "regression" is noise
 
@@ -519,9 +568,9 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | ✓R25 | Commit the review fixes: tokio-delegating copy + `tests/halfclose_propagation.rs` | S | Landed in `08ff63e` (note: commit message describes something else — D6), verified 10th round |
 | ✓R26 | Acceptor bind/listen failure: log+return instead of panic; error if zero acceptors bind | S | Fixed in 10th round (reviewer): fallible `bind_reuseport()`, zero-bind → error return |
 | ✓R27 | Restore watch-channel shutdown for acceptors | S | Fixed in 10th round (reviewer): per-acceptor watch clone; flag API deleted; A6-verified test |
-| ⚠R28 | Harness scrapes handshake counters; summary header; bulk 256KB; flamegraph | M | Scraping + header landed (`885dad4`); bulk 256KB + flamegraph open |
+| ✓R28 | Harness scrapes handshake counters; summary header; bulk 256KB; flamegraph | M | Closed 12th round: 256KB captured (2 harness bugs fixed), flamegraph committed, resumed fraction = 0% (Fortio never resumes; mesh path proven by test) |
 | ✓R29 | Controlled before/after for SO_REUSEPORT; keep or revert on numbers | S | **Resolved 11th round: no regression — noise.** Interleaved A/B flat on heavy and churn; keep implementation; `INTERLINK_ACCEPTORS` knob added |
-| R30 | Copy-buffer size decision on the *bulk* profile (≥3 interleaved runs/arm) | S | 8 KiB revert made the buffer optimization a no-op; heavy-profile reasoning was invalid (1 KB payloads) |
+| ✓R30 | Copy-buffer size decision on the *bulk* profile (≥3 interleaved runs/arm) | S | Closed 12th round: 64 KiB default (bulk p50 −15%, CPU −22%; no small-payload penalty); `INTERLINK_COPY_BUF_SIZE` knob |
 | 4 | Crypto provider bake-off (`aws-lc-rs` vs `ring`), `worker_threads` config | M | measure to confirm |
 
 (**All regressions R1–R23 are closed and verified as of the eighth round.** Preflight
