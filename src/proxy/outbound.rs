@@ -1,10 +1,10 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio::sync::{watch, Semaphore};
 use tracing::{debug, error, info, warn};
 
@@ -35,7 +35,6 @@ pub struct OutboundProxy {
     policy: Arc<PolicyEngine>,
     discovery: Option<Arc<ServiceDiscovery>>,
     shutdown: Option<watch::Receiver<bool>>,
-    shutdown_flag: Arc<AtomicBool>,
     active_connections: Arc<AtomicUsize>,
     local_id: SpiffeId,
 }
@@ -84,7 +83,6 @@ impl OutboundProxy {
             policy,
             discovery,
             shutdown: None,
-            shutdown_flag: Arc::new(AtomicBool::new(false)),
             active_connections: Arc::new(AtomicUsize::new(0)),
             local_id,
         }
@@ -99,12 +97,6 @@ impl OutboundProxy {
     /// Attach a shutdown signal receiver.
     pub fn with_shutdown(mut self, shutdown: watch::Receiver<bool>) -> Self {
         self.shutdown = Some(shutdown);
-        self
-    }
-
-    /// Install the shared shutdown flag for multi-acceptor.
-    pub fn with_shutdown_flag(mut self, flag: Arc<AtomicBool>) -> Self {
-        self.shutdown_flag = flag;
         self
     }
 
@@ -147,18 +139,56 @@ impl OutboundProxy {
             return;
         }
 
-        let num_acceptors = std::cmp::min(
-            std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2),
-            4,
-        ).max(2);
+        // Bind N SO_REUSEPORT listeners up front so bind/listen failures are
+        // handled here (R26): log and skip a failed acceptor, refuse to run
+        // with zero. Panicking in a spawned task would abort the process
+        // under panic = "abort" (B8).
+        let mut listeners = Vec::new();
+        for i in 0..crate::proxy::num_acceptors() {
+            match crate::proxy::bind_reuseport(addr) {
+                Ok(l) => listeners.push(l),
+                Err(e) => error!("failed to bind outbound acceptor {} on {}: {}", i, addr, e),
+            }
+        }
+        if listeners.is_empty() {
+            error!("no acceptors could bind outbound {}; proxy not started", addr);
+            return;
+        }
         info!(
             "interlink outbound proxy listening on {} with {} acceptors",
-            addr, num_acceptors
+            addr,
+            listeners.len()
         );
 
-        let shutdown_flag = self.shutdown_flag.clone();
-        let acceptors: Vec<_> = (0..num_acceptors)
-            .map(|i| create_outbound_acceptor(addr, i, self.clone(), shutdown_flag.clone()))
+        let acceptors: Vec<_> = listeners
+            .into_iter()
+            .enumerate()
+            .map(|(id, listener)| {
+                // Each acceptor selects on its own clone of the watch channel
+                // (R27): with_shutdown() must stop the accept loops.
+                let shutdown = self.shutdown.clone();
+                let proxy = self.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            accept_result = listener.accept() => {
+                                let (stream, peer_addr) = match accept_result {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        error!("outbound acceptor {} accept error: {}", id, e);
+                                        continue;
+                                    }
+                                };
+                                proxy.handle_accept(stream, peer_addr).await;
+                            }
+                            _ = crate::proxy::wait_shutdown(shutdown.clone()) => {
+                                info!("outbound acceptor {} received shutdown signal", id);
+                                break;
+                            }
+                        }
+                    }
+                })
+            })
             .collect();
 
         for h in acceptors {
@@ -167,61 +197,6 @@ impl OutboundProxy {
 
         self.wait_for_graceful_shutdown().await;
     }
-}
-
-/// Create a SO_REUSEPORT socket for the outbound proxy and spawn an acceptor.
-#[cfg_attr(not(test), allow(clippy::expect_used))]
-fn create_outbound_acceptor(
-    addr: std::net::SocketAddr,
-    id: usize,
-    proxy: Arc<OutboundProxy>,
-    shutdown_flag: Arc<AtomicBool>,
-) -> tokio::task::JoinHandle<()> {
-    let domain = if addr.is_ipv6() {
-        socket2::Domain::IPV6
-    } else {
-        socket2::Domain::IPV4
-    };
-    tokio::spawn(async move {
-        let sock = socket2::Socket::new(
-            domain,
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )
-        .expect("create socket");
-        sock.set_reuse_address(true).ok();
-        #[cfg(target_os = "linux")]
-        sock.set_reuse_port(true).ok();
-        sock.set_nonblocking(true).ok();
-        sock.bind(&socket2::SockAddr::from(addr))
-            .unwrap_or_else(|e| panic!("bind outbound acceptor {}: {}", id, e));
-        sock.listen(1024)
-            .unwrap_or_else(|e| panic!("listen outbound acceptor {}: {}", id, e));
-        let std_listener: std::net::TcpListener = sock.into();
-        let listener = TcpListener::from_std(std_listener)
-            .unwrap_or_else(|e| panic!("tokio listener outbound acceptor {}: {}", id, e));
-
-        loop {
-            tokio::select! {
-                accept_result = listener.accept() => {
-                    let (stream, peer_addr) = match accept_result {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!("outbound acceptor {} accept error: {}", id, e);
-                            continue;
-                        }
-                    };
-                    proxy.handle_accept(stream, peer_addr).await;
-                }
-                _ = async { while !shutdown_flag.load(Ordering::Acquire) {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                } } => {
-                    info!("outbound acceptor {} received shutdown signal", id);
-                    break;
-                }
-            }
-        }
-    })
 }
 
 impl OutboundProxy {

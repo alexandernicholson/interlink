@@ -33,6 +33,56 @@ where
     tokio::io::copy_bidirectional_with_sizes(a, b, COPY_BUF_SIZE, COPY_BUF_SIZE).await
 }
 
+/// Bind a SO_REUSEPORT listener for one acceptor task.
+///
+/// Fallible by design (B15): bind and listen fail in ordinary circumstances
+/// (port taken by a non-reuseport socket, permission denied on privileged
+/// ports) — callers log and count failures; they must not panic (B8).
+pub(crate) fn bind_reuseport(addr: std::net::SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+    let domain = if addr.is_ipv6() {
+        socket2::Domain::IPV6
+    } else {
+        socket2::Domain::IPV4
+    };
+    let sock = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+    sock.set_reuse_address(true)?;
+    #[cfg(target_os = "linux")]
+    sock.set_reuse_port(true)?;
+    sock.set_nonblocking(true)?;
+    sock.bind(&socket2::SockAddr::from(addr))?;
+    sock.listen(1024)?;
+    let std_listener: std::net::TcpListener = sock.into();
+    tokio::net::TcpListener::from_std(std_listener)
+}
+
+/// Number of SO_REUSEPORT acceptor tasks per proxy listener.
+pub(crate) fn num_acceptors() -> usize {
+    std::cmp::min(
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2),
+        4,
+    )
+    .max(2)
+}
+
+/// Wait for the shutdown signal on a proxy's watch channel.
+/// `None` (no channel installed) never resolves — the acceptor runs forever.
+pub(crate) async fn wait_shutdown(shutdown: Option<tokio::sync::watch::Receiver<bool>>) {
+    match shutdown {
+        Some(mut rx) => {
+            // Already-signalled channels must resolve immediately.
+            while !*rx.borrow() {
+                if rx.changed().await.is_err() {
+                    // Sender dropped: treat as shutdown.
+                    return;
+                }
+            }
+        }
+        None => std::future::pending().await,
+    }
+}
+
 /// Apply standard TCP tuning to a proxy socket.
 ///
 /// - `TCP_NODELAY` reduces latency for small TLS records.

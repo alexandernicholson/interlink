@@ -1,13 +1,13 @@
 # Performance Uplift Plan
 
-Status: **ninth review round (2026-07-08)** — the first optimization-phase round
-reintroduced a data-plane regression: the custom copy loop dropped half-close
-propagation (fixed during review with tokio's `copy_bidirectional_with_sizes` + a
-regression test, uncommitted → R25). Open queue: R25 (commit review fixes), R26/R27
-(`SO_REUSEPORT` acceptor panics + broken watch shutdown), R28 (resumed-fraction
-measurement, still never captured), R29 (`SO_REUSEPORT` before/after — heavy p99 moved
-62.7→73.5 ms, unexplained). Preflight is green on the working tree. Items marked ✓ are
-implemented and verified; ⚠ marks partial or historical states in the findings log.
+Status: **tenth review round (2026-07-08)** — R25 ✓ (half-close fix committed),
+R26/R27 ✓ (acceptor panics and the dead watch-shutdown API, fixed by the reviewer this
+round with A6-verified tests; preflight green). Open queue: **R28** (scrape
+`interlink_handshake_*_total` for the resumed fraction — still never captured — stop
+the summary clobbering; bulk 256 KB; flamegraph) and **R29** (`SO_REUSEPORT` controlled
+before/after — heavy p99 moved 62.7→73.5 ms, unexplained; keep-or-revert on numbers).
+Items marked ✓ are implemented and verified; ⚠ marks partial or historical states in
+the findings log.
 Grounded in a full read of the per-connection hot path
 (`src/proxy/tcp.rs`, `src/proxy/outbound.rs`, `src/proxy/handshake.rs`, `src/policy/mod.rs`,
 `src/common/identity.rs`, `src/discovery/dns.rs`, `src/metrics/mod.rs`) and the measured
@@ -86,6 +86,40 @@ finding 1's fix introduced a new P0 (see third round):
    `resolve_upstream` returns `SocketAddr` in both proxies; inbound `TcpStream::connect`
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
+
+## Review findings — tenth round (2026-07-08), R25 landed; R26–R29 untouched
+
+Review of `08ff63e`:
+
+1. **✓ R25 — the P0 copy fix and regression test are committed and verified.**
+   `src/proxy/mod.rs` at HEAD delegates to `tokio::io::copy_bidirectional_with_sizes`
+   (64 KiB), `tests/halfclose_propagation.rs` is in the tree, and preflight is green.
+   The data-plane half-close hang is closed.
+2. **D6/D1 note — the commit message misdescribes the commit.** `08ff63e` is titled
+   "C8: fix resumption test — connect by localhost, not IP", but that fix landed in
+   `f2c46dc` two rounds ago; the actual change to `mtls_handshake.rs` here is a
+   cosmetic restructuring of already-correct code. The commit's *real* payload — the
+   P0 half-close fix and its regression test — is not mentioned at all. Anyone
+   bisecting a data-plane behavior change to this commit will be actively misled.
+   No action required on the code; flagged because message-vs-diff drift keeps
+   recurring (D6 exists for this; `git diff --stat` takes seconds).
+3. **✓ R26/R27 — fixed during this round (by the reviewer, at the user's request).**
+   - **R26**: acceptor sockets are now bound *before* spawning via a shared fallible
+     `bind_reuseport()` helper in `proxy/mod.rs` (no panics, no lint `allow`s — B15);
+     a failed bind logs and skips that acceptor, and zero bindable acceptors makes
+     `run()` log an error and return instead of aborting the process.
+   - **R27**: acceptors now select on a per-acceptor clone of the watch channel via a
+     shared `wait_shutdown()` helper (handles the already-signalled case); the
+     redundant `AtomicBool` flag, its 100 ms poll loop, and the `with_shutdown_flag`
+     API are deleted from both proxies and `main.rs` (B14/C9 — one mechanism, the
+     existing primitive, no parallel no-op API).
+   - Tests (`tests/proxy_shutdown.rs`): watch shutdown stops `run()` (verified to
+     **fail against the pre-fix code** — A6 — and pass with the fix), pre-signalled
+     shutdown stops `run()`, and a privileged-port bind failure returns promptly
+     without panicking (root-guarded). Preflight green.
+4. **R28/R29 remain the queue**: resumed-fraction capture + summary clobbering + bulk
+   256 KB + flamegraph (R28), and the `SO_REUSEPORT` before/after (heavy p99
+   62.7 → 73.5 ms still unexplained; keep-or-revert on numbers — R29).
 
 ## Review findings — ninth round (2026-07-08), data-plane regression fixed in review
 
@@ -434,9 +468,9 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | ✓2 | `copy_bidirectional_with_sizes` with 16–64 KiB buffers | S | `4925b72` custom loop broke half-close (9th-round finding 1); replaced in review with the tokio API + regression test → commit via R25 |
 | 3 | Connection pooling redesign (kept-alive tunnels / HTTP-aware) | L | validate against churn baseline |
 | ⚠3 | `SO_REUSEPORT` multi-acceptor + listener backlog tuning | M | Implemented in `0111a48` but: panics on bind (R26), breaks watch shutdown (R27), no before/after and heavy p99 regressed 62.7→73.5 ms (R29) |
-| R25 | Commit the review fixes: tokio-delegating copy + `tests/halfclose_propagation.rs` | S | **P0 fix**, in working tree, preflight green |
-| R26 | Acceptor bind/listen failure: log+return instead of panic; error if zero acceptors bind | S | P1 — process abort in release (finding 2) |
-| R27 | Restore watch-channel shutdown for acceptors (select on rx, drop the poll loop) | S | P1 — public shutdown API silently broken (finding 3) |
+| ✓R25 | Commit the review fixes: tokio-delegating copy + `tests/halfclose_propagation.rs` | S | Landed in `08ff63e` (note: commit message describes something else — D6), verified 10th round |
+| ✓R26 | Acceptor bind/listen failure: log+return instead of panic; error if zero acceptors bind | S | Fixed in 10th round (reviewer): fallible `bind_reuseport()`, zero-bind → error return |
+| ✓R27 | Restore watch-channel shutdown for acceptors | S | Fixed in 10th round (reviewer): per-acceptor watch clone; flag API deleted; A6-verified test |
 | R28 | Harness scrapes `interlink_handshake_*_total` for resumed fraction; stop clobbering summary sections; bulk 256KB; flamegraph | M | P2 — completes R24 (findings 4, 5) |
 | R29 | Controlled before/after for SO_REUSEPORT (heavy + churn); keep or revert on numbers | S | P3 — A4 (finding 6) |
 | 4 | Crypto provider bake-off (`aws-lc-rs` vs `ring`), `worker_threads` config | M | measure to confirm |
