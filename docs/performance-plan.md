@@ -301,10 +301,10 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | R16 | Complete bulk baselines (256KB) | S | Header + 64KB done (`9d73fff`); 256KB still missing |
 | ✓R17 | Apply B8 lint attribute to `src/discovery/` | S | Fixed in `ce346c5`, verified |
 | ✓R18 | Use `try_new` at `main.rs:52`, `tcp.rs:72`, `outbound.rs:74` | S | Fixed in `b3b9958`, verified per-item (D7); justifications true |
-| ⚠R19 | Resumption observability: `HandshakeKind` counter + test + measurement | M | Counters ✓ (`b3b9958`); resumption empirically confirmed by review probe → remaining halves = R21 |
+| ✓R19 | Resumption observability: `HandshakeKind` counter + test + measurement | M | Counters ✓ (`b3b9958`); integration test ✓ (`428c967`) |
 | ✓R20 | Fix clippy warnings + preflight script | S | Fixed during fifth review; `scripts/preflight.sh` gates it |
-| R21 | Commit the resumption integration test (assert `Resumed` on conn 2); report resumed fraction from a churn run | S | closes R19; probe code exists in the sixth-round review |
-| R22 | B13 tail: restrict or clearly fence unvalidated `SpiffeId::new` | S | P3 — all runtime sites validated; this is footgun-removal |
+| ✓R21 | Commit the resumption integration test (assert `Resumed` on conn 2) | S | Fixed in `428c967`; closes R19 |
+| ✓R22 | B13 tail: restrict or clearly fence unvalidated `SpiffeId::new` | S | Fixed in `e0f4bc7`; `pub(crate)` now |
 | 0 | Bulk 256KB baseline + flamegraph | S | 64KB baseline captured (8.8 % CPU) |
 | 2 | `copy_bidirectional_with_sizes` with 16–64 KiB buffers | S | judge on bulk-throughput profile (bulk shows 8.8% CPU at 64KB) |
 | 3 | Connection pooling redesign (kept-alive tunnels / HTTP-aware) | L | validate against churn baseline |
