@@ -67,11 +67,15 @@ impl OutboundProxy {
         discovery: Option<Arc<ServiceDiscovery>>,
     ) -> Self {
         let max_conn = config.max_connections.unwrap_or(1024);
+        #[cfg_attr(not(test), allow(clippy::expect_used))]
         let local_id = config
             .identity
             .as_ref()
             .and_then(|s| SpiffeId::from_uri(s).ok())
-            .unwrap_or_else(|| SpiffeId::new(&config.trust_domain, "default", "proxy"));
+            .unwrap_or_else(|| {
+                SpiffeId::try_new(&config.trust_domain, "default", "proxy")
+                    .expect("trust_domain validated in Config::validate")
+            });
         Self {
             connection_semaphore: Arc::new(Semaphore::new(max_conn)),
             listen_port: port,

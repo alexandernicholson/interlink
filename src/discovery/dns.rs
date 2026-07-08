@@ -327,7 +327,7 @@ mod tests {
     /// the same data as the leader.
     #[tokio::test]
     async fn test_waiter_branch() {
-        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        let (tx, rx) = tokio::sync::watch::channel(false);
         let resolver = Arc::new(GatedResolver {
             gate: Arc::new(tokio::sync::Mutex::new(Some(rx))),
         });

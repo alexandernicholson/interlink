@@ -118,6 +118,11 @@ impl TlsHandshake for TlsClient {
         .map_err(InterlinkError::Io)?
         .into();
 
+        // Record whether this was a full or resumed handshake.
+        let is_resumed =
+            tls_stream.get_ref().1.handshake_kind() == Some(rustls::HandshakeKind::Resumed);
+        crate::metrics::record_handshake_kind(is_resumed);
+
         let peer_identity = extract_identity_from_tls_stream(&tls_stream)?;
 
         Ok(TlsStream {
@@ -197,6 +202,11 @@ impl TlsHandshake for TlsServer {
                 })?
                 .map_err(InterlinkError::Io)?
                 .into();
+
+        // Record whether this was a full or resumed handshake.
+        let is_resumed =
+            tls_stream.get_ref().1.handshake_kind() == Some(rustls::HandshakeKind::Resumed);
+        crate::metrics::record_handshake_kind(is_resumed);
 
         let peer_identity = extract_identity_from_tls_stream(&tls_stream)?;
 

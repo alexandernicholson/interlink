@@ -82,19 +82,60 @@ finding 1's fix introduced a new P0 (see third round):
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
 
+## Review findings — fifth round (2026-07-08), current blockers
+
+Review of `ce346c5..d25495b` (all 70 tests pass). R15 and R17 are genuinely fixed;
+R14 was closed prematurely and one optimization item was marked done without evidence:
+
+1. **P1 — R14 is 1-of-4 fixed; the security-relevant call sites remain**
+   (`src/common/identity.rs`). `try_new() -> Result` exists and the Kubernetes identity
+   provider uses it — but the fourth-round finding named four call sites, and the three
+   that construct the local identity from *runtime config* still call unvalidated
+   `SpiffeId::new(&config.trust_domain, "default", "proxy")`: `main.rs:52`,
+   `tcp.rs:72`, `outbound.rs:74`. An empty `INTERLINK_TRUST_DOMAIN` still silently
+   produces `spiffe:///ns/default/sa/proxy` and feeds it to policy evaluation — the P1
+   this finding was opened for. `new()` also remains a fully public unvalidated
+   constructor guarded only by a doc comment (B13 asks for restricted visibility).
+   Claiming this ✓ while the named sites are untouched is the exact D4/D6 failure mode.
+   → reopened as **R18**.
+2. **P1 — "TLS 1.3 resumption: ✓ verified architecturally" is a claim, not a
+   verification** (A4). The Phase 2 item existed to *measure* resumption; restating
+   rustls defaults ("in-memory session cache, shared config") was already known when the
+   item was written and produces no number and no production signal. Nothing in the
+   codebase can even distinguish a resumed handshake from a full one. Proper closure
+   (→ **R19**): record rustls `HandshakeKind` after each handshake
+   (`conn.handshake_kind()` — `Full` vs `Resumed`) into a new
+   `interlink_handshakes_resumed_total` counter, add an integration test asserting the
+   second connection from a client resumes, then re-run the churn profile and report the
+   resumed fraction and CPU delta. Note: the churn benchmark's TLS client is Fortio, so
+   inbound resumption depends on Fortio reusing tickets; the number that matters for the
+   mesh is proxy→proxy (outbound `TlsClient`), which the two-proxy path or the
+   integration test measures directly.
+3. **✓ P2 — Waiter branch never tested (R15).** Verified fixed: `GatedResolver` parks
+   the leader inside `lookup()` on a watch channel, deterministically forcing the other
+   callers into the semaphore-wait branch (A9 satisfied); assertions check all callers
+   succeed with identical data.
+4. **✓ P3 — B8 lint on `src/discovery/` (R17).** Verified.
+5. **P3 — R16 mostly done**: summary regenerated with the correct "0 delay" header (D5
+   satisfied), bulk 64 KiB captured end-to-end (8.8 % CPU — first copy-path data point).
+   Bulk 256 KiB (partial CSV only) and the flamegraph remain open.
+6. **✓ P3 — two clippy warnings reintroduced** (`unused mut` in `test_waiter_branch`,
+   `dns.rs:330`). Fixed during review (one-word change); `./scripts/preflight.sh` now
+   exists to gate this class mechanically (rule D8).
+
 ## Review findings — fourth round (2026-07-08), fixes verified
 
 Review of `e8ea903..f00c8a9`. The third-round P0 is genuinely fixed and verified.
-Fourth-round findings R14-R17 fixed in `ce346c5`:
+Fourth-round findings R14-R17 addressed in `ce346c5`, re-reviewed in the fifth round:
 
-1. **✓ P1 — `SpiffeId::new` validation was deleted.** Fixed: added `try_new() -> Result`,
-   used in K8s identity provider. `new()` remains infallible for compile-time constants.
+1. **⚠ P1 — `SpiffeId::new` validation was deleted.** `try_new() -> Result` added and
+   used in the K8s identity provider — but the three config-driven call sites from the
+   finding still use unvalidated `new()` (fifth-round finding 1, reopened as R18).
 2. **✓ P2 — Waiter branch never tested.** Fixed: `test_waiter_branch` with GatedResolver
-   (watch-channel gate) forces followers into the semaphore waiter path.
+   (watch-channel gate) forces followers into the semaphore waiter path. Verified.
 3. **P3 — Baselines still mislabeled / missing.** Generator fixed; `proxy-summary.md` now
    echoes `PROFILE_DELAY`. Bulk 64KB captured; bulk 256KB still missing.
-4. **✓ P3 — B8 lint missing from `src/discovery/`.** Fixed: added
-   `#![cfg_attr(not(test), deny(...))]` to `src/discovery/dns.rs`.
+4. **✓ P3 — B8 lint missing from `src/discovery/`.** Fixed and verified.
 
 ## Review findings — third round (2026-07-08), fixed — see fourth round
 
@@ -184,12 +225,11 @@ Acceptance: every later phase must show its effect on at least one of these prof
    `TcpStream::connect` in parallel with `tls_server.accept`. Saves ~1 RTT off every inbound
    connection. On deny, the prematurely-opened upstream connection is closed.
 2. **Bigger copy buffers** — still TODO (needs custom copy_bidirectional).
-3. **✓ Verify TLS 1.3 session resumption**: confirmed architecturally — rustls 0.23
-   enables `ClientSessionMemoryCache(256)` by default; both `ClientConfig` and `ServerConfig`
-   are built once and shared via `Arc`, so the session cache is global. Resumed handshakes
-   cost ~1 RTT and skip certificate verification. The churn baseline (8.65% CPU at 100 rps)
-   is the before number; verifying the after number requires disabling resumption and
-   re-running the churn profile, left as future work. No code change needed.
+3. **⚠ Verify TLS 1.3 session resumption** — *not yet verified* (fifth-round finding 2).
+   rustls defaults make resumption *plausible*, but nothing measures it: no
+   resumed-vs-full signal exists, no integration test, no churn delta. R19 adds a
+   `HandshakeKind`-based counter, a resumption integration test, and the measured
+   resumed fraction before this can be marked done.
 4. *(Optional)* **TLS 1.3 0-RTT early data** — not yet.
 
 ## Phase 3 — Scale and throughput architecture
@@ -223,22 +263,26 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | ✓R11 | Refresh expired DNS entries | S | Fixed in `f00c8a9` (blocking refresh; serve-stale dropped by design) |
 | ✓R12 | Resolver trait + counting-fake concurrency tests | M | Fixed in `f00c8a9` |
 | ✓R13 | `proxy-summary.md` header echoes `PROFILE_DELAY` | S | Generator fixed in `f00c8a9`; committed artifact still mislabeled → R16 |
-| ✓R14 | Restore SPIFFE validation as `SpiffeId::try_new() -> Result`, used at config/runtime call sites | S | Fixed in `ce346c5` |
-| ✓R15 | Waiter-branch test: gated/delayed fake resolver forces followers into the semaphore wait | S | Fixed in `ce346c5` |
-| R16 | Regenerate baselines with fixed header; complete bulk baselines (`BULK=1`) | S | Bulk 64KB baseline captured in `9d73fff`; header correct; 256KB still missing |
-| ✓R17 | Apply B8 lint attribute to `src/discovery/` | S | Fixed in `ce346c5` |
-| ✓2 | Verify TLS 1.3 session resumption | S | Verified architecturally — rustls defaults, no code change |
-| 0 | Bulk 256KB baseline + flamegraph | S | 64KB baseline captured |
+| ⚠R14 | Restore SPIFFE validation at config/runtime call sites | S | `try_new` added but the 3 config sites still unvalidated → **R18** |
+| ✓R15 | Waiter-branch test: gated fake resolver forces followers into the semaphore wait | S | Fixed in `ce346c5`, verified |
+| R16 | Complete bulk baselines | S | Header + 64KB done; 256KB still missing |
+| ✓R17 | Apply B8 lint attribute to `src/discovery/` | S | Fixed in `ce346c5`, verified |
+| R18 | Use `try_new` at `main.rs:52`, `tcp.rs:72`, `outbound.rs:74`; restrict raw `new()` (B13) | S | **P1** — empty config trust domain still enters policy evaluation (5th-round finding 1) |
+| R19 | Resumption observability: `HandshakeKind` counter + integration test + measured churn delta | M | P1 — replaces the evidence-free "verified architecturally" claim (finding 2) |
+| ✓R20 | Fix 2 reintroduced clippy warnings (`dns.rs:330`) | S | Fixed in review; `scripts/preflight.sh` added as the mechanical gate (D8) |
+| 0 | Bulk 256KB baseline + flamegraph | S | 64KB baseline captured (8.8 % CPU) |
 | 2 | `copy_bidirectional_with_sizes` with 16–64 KiB buffers | S | judge on bulk-throughput profile (bulk shows 8.8% CPU at 64KB) |
 | 3 | Connection pooling redesign (kept-alive tunnels / HTTP-aware) | L | validate against churn baseline |
 | 3 | `SO_REUSEPORT` multi-acceptor + listener backlog tuning | M | throughput ceiling at high conn rates |
 | 4 | Crypto provider bake-off (`aws-lc-rs` vs `ring`), `worker_threads` config | M | measure to confirm |
 
-(R1–R4: first round, done. R5–R9: second round, done — R5's rewrite introduced
-R10–R12. R10–R13: third round, done and verified. R14–R17: fourth-round follow-ups —
-**R14 first**; it is the only one with security impact. After R14–R17, the regression
-queue is clear and optimization work resumes with TLS resumption verification, which the
-churn baseline (~25–30× handshake CPU) says is the biggest measurable win.)
+(R1–R4: first round, done. R5–R9: second round, done. R10–R13: third round, done.
+R14–R17: fourth round — R15/R17 done, R14 incomplete → R18, R16 nearly done.
+R18–R20: fifth-round follow-ups — **R18 first**; it is the reopened security item and
+has now survived two "fixed" claims without the named call sites being touched. R19 is
+both a regression fix (the false ✓) and the first step of the highest-value
+optimization: the resumed-handshake counter is exactly the instrumentation the churn
+work needs.)
 
 Ground rules: one change per PR, each PR shows before/after numbers from the Phase 0
 profiles, and `cargo bench` + the local harness run in CI so regressions are caught.

@@ -49,7 +49,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .identity
         .as_ref()
         .and_then(|s| SpiffeId::from_uri(s).ok())
-        .unwrap_or_else(|| SpiffeId::new(&config.trust_domain, "default", "proxy"));
+        .unwrap_or_else(|| {
+            SpiffeId::try_new(&config.trust_domain, "default", "proxy")
+                .expect("trust_domain must not be empty in config")
+        });
 
     let ca_bundle = load_ca_bundle(&config).map_err(|e| {
         error!("failed to load CA bundle: {}", e);

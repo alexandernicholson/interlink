@@ -19,6 +19,8 @@ pub struct InterlinkMetrics {
     pub policy_allowed_total: Counter,
     pub policy_denied_total: Counter,
     pub saturation_rejections_total: Counter,
+    pub handshake_full_total: Counter,
+    pub handshake_resumed_total: Counter,
 }
 
 impl Default for InterlinkMetrics {
@@ -39,6 +41,8 @@ impl InterlinkMetrics {
             policy_allowed_total: counter!("interlink_policy_allowed_total"),
             policy_denied_total: counter!("interlink_policy_denied_total"),
             saturation_rejections_total: counter!("interlink_saturation_rejections_total"),
+            handshake_full_total: counter!("interlink_handshake_full_total"),
+            handshake_resumed_total: counter!("interlink_handshake_resumed_total"),
         }
     }
 }
@@ -82,6 +86,16 @@ pub fn record_handshake(duration: std::time::Duration) {
 /// Record a handshake failure.
 pub fn record_handshake_error() {
     INTERLINK_METRICS.handshakes_total.increment(1);
+}
+
+/// Record whether the handshake was a full TLS handshake or a resumed one.
+pub fn record_handshake_kind(resumed: bool) {
+    let m = &INTERLINK_METRICS;
+    if resumed {
+        m.handshake_resumed_total.increment(1);
+    } else {
+        m.handshake_full_total.increment(1);
+    }
 }
 
 /// Record a connection rejected due to the saturation limit.

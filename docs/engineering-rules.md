@@ -71,6 +71,18 @@ lookups == 1 *while the leader is provably still in flight*), not just that outp
 right. Corollary of A2/A8: coverage of a concurrent function means coverage of its
 *interleavings*, not its lines.
 
+**A10. "Verify X" is closed by an observable signal, never by reasoning about the
+design.**
+"TLS resumption: ✓ verified architecturally — rustls enables it by default" closed a
+measurement task with a restatement of the assumption the task existed to check. The
+tell: nothing in the codebase could distinguish the property holding from it failing —
+no metric, no test, no number. A verification task produces at least one of: a metric
+that separates the two outcomes in production (e.g. resumed-vs-full handshake counts), a
+test that fails if the property is absent, or a measured before/after. If none exists,
+the honest status is "instrumented, not yet measured" or simply "not verified" — and
+"the docs say it's the default" is a reason to *expect* verification to succeed, not a
+substitute for it.
+
 ## B. Rust rules
 
 **B1. RAII guards must be bound to a named variable for their intended scope.**
@@ -231,7 +243,8 @@ exact file paths and honest status (✓ done / ⚠ partial / TODO). The plan is 
 truth for what's proven vs. claimed.
 
 **D3. Pre-merge checklist** (all must hold):
-- [ ] `cargo test` passes; new paths have tests (A1), concurrency has concurrency tests (A2)
+- [ ] `./scripts/preflight.sh` is green (D8 — covers clippy `-D warnings` + tests)
+- [ ] New paths have tests that drive them (A1), concurrency has concurrency tests (A2)
 - [ ] Each new test was made to fail once, asserts its named property, and covers the
       success path (A6, A7, A8); concurrency tests force the contested branch via a
       gated/delayed fake (A9)
@@ -246,6 +259,9 @@ truth for what's proven vs. claimed.
       types still have no unvalidated public constructor (B13)
 - [ ] Changed a generator? Its committed outputs are regenerated in this PR (D5)
 - [ ] Commit message re-read against `git diff --stat` — every claim appears (A5, D6)
+- [ ] Closing a finding? Every enumerated item addressed or explicitly deferred (D7)
+- [ ] "Verify X" items closed with a signal — metric, failing-test, or measurement,
+      not design reasoning (A10)
 
 **D4. A fix to a reviewed defect gets re-reviewed against the *original* failure mode.**
 The single-flight bug was "fixed" twice; each fix satisfied the letter of the cited rule
@@ -270,3 +286,24 @@ and *not* on discovery. Before committing, reread the message against `git diff 
 every claimed location, fix, and scope must appear in the diff. This is A5 applied
 mechanically; it costs thirty seconds and it has caught something in three of four
 review rounds.
+
+**D7. A finding that enumerates N items is closed item-by-item — one-of-N is not
+done.**
+The `SpiffeId` finding named four call sites (`main.rs:52`, `tcp.rs:72`,
+`outbound.rs:74`, `identity/provider/mod.rs:47`); the "fix" converted one, and the item
+was marked ✓ while the three *config-driven* sites — the ones carrying the security risk
+— stayed unvalidated. When closing a review finding, copy its enumerated list into the
+PR and mark each element fixed/deferred-with-reason; grep for the pattern once more to
+catch sites the finding itself missed. If any element is deferred, the finding's status
+is ⚠ partial, never ✓. (This is D4's re-verification requirement made concrete for
+list-shaped findings.)
+
+**D8. Run `./scripts/preflight.sh` before every commit — the mechanical half of D3 is
+not optional and not from memory.**
+Clippy warnings were reintroduced in round five by a commit that fixed other review
+findings — diligence doesn't scale across five rounds, scripts do. Preflight runs
+`cargo clippy --all-targets -- -D warnings` and `cargo test`; it must pass on every
+commit, not just at PR time (a red intermediate commit poisons bisect). Green preflight
+covers B6/B8/A1's mechanical halves only — the judgment items in D3 remain yours. If
+preflight is red on code you didn't touch, fixing it is part of your change, not
+someone else's.

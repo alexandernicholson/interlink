@@ -65,11 +65,18 @@ impl TcpProxy {
         discovery: Option<Arc<ServiceDiscovery>>,
     ) -> Self {
         let max_conn = config.max_connections.unwrap_or(1024);
+        // B8: try_new validates at the identity boundary, even though the
+        // config has already been checked at startup. The unwrap is safe
+        // because Config::validate() enforces non-empty trust_domain.
+        #[cfg_attr(not(test), allow(clippy::expect_used))]
         let local_id = config
             .identity
             .as_ref()
             .and_then(|s| SpiffeId::from_uri(s).ok())
-            .unwrap_or_else(|| SpiffeId::new(&config.trust_domain, "default", "proxy"));
+            .unwrap_or_else(|| {
+                SpiffeId::try_new(&config.trust_domain, "default", "proxy")
+                    .expect("trust_domain validated in Config::validate")
+            });
         Self {
             config,
             connection_semaphore: Arc::new(Semaphore::new(max_conn)),

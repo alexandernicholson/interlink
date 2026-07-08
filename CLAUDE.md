@@ -27,7 +27,10 @@ touches as performance- and security-sensitive.
   in per-connection code (C4); when fixing a review finding, re-verify the original
   property end-to-end, not just the cited clause (D4); regenerating a generator's
   committed outputs ships with the generator fix (D5); re-read the commit message
-  against the diff (D6).
+  against the diff (D6); a finding enumerating N items closes item-by-item — one-of-N
+  is ⚠ partial, never ✓ (D7); "verify X" closes with an observable signal (metric,
+  failing-test, or measurement), never with design reasoning (A10); and run
+  `./scripts/preflight.sh` before **every** commit (D8).
 - **`docs/performance-plan.md`** — the current performance workstream, with verified
   status per item. Update it in the same PR as the work; mark items honestly
   (✓ done / ⚠ partial / TODO) and never claim a result without attached numbers.
