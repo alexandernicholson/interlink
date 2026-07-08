@@ -257,10 +257,10 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | ✓R11 | Refresh expired DNS entries | S | Fixed in `f00c8a9` (blocking refresh; serve-stale dropped by design) |
 | ✓R12 | Resolver trait + counting-fake concurrency tests | M | Fixed in `f00c8a9` |
 | ✓R13 | `proxy-summary.md` header echoes `PROFILE_DELAY` | S | Generator fixed in `f00c8a9`; committed artifact still mislabeled → R16 |
-| R14 | Restore SPIFFE validation as `SpiffeId::try_new() -> Result`, used at config/runtime call sites | S | **P1** — validation was deleted to satisfy the B8 lint; empty trust domain now silently enters policy evaluation (4th-round finding 1) |
-| R15 | Waiter-branch test: gated/delayed fake resolver forces followers into the semaphore wait | S | P2 — the branch that panicked in round 3 still has no test driving it (finding 2) |
-| R16 | Regenerate baselines with fixed header; complete bulk baselines (`BULK=1`) | S | P3 — committed summary mislabeled; bulk has only a partial CSV (finding 3) |
-| R17 | Apply B8 lint attribute to `src/discovery/` | S | P3 — commit message claims it, code lacks it (finding 4) |
+| ✓R14 | Restore SPIFFE validation as `SpiffeId::try_new() -> Result`, used at config/runtime call sites | S | Fixed in `ce346c5` |
+| ✓R15 | Waiter-branch test: gated/delayed fake resolver forces followers into the semaphore wait | S | Fixed in `ce346c5` |
+| R16 | Regenerate baselines with fixed header; complete bulk baselines (`BULK=1`) | S | Generator fixed in `ce346c5`; committed artifact still mislabeled → still TODO |
+| ✓R17 | Apply B8 lint attribute to `src/discovery/` | S | Fixed in `ce346c5` |
 | 0 | Bulk baselines (`BULK=1`) + flamegraph; wire profiles into `run.sh` | S | zero-delay + churn baselines are captured |
 | 2 | Verify TLS 1.3 session resumption on churn profile; optional 0-RTT flag | S | churn baseline says handshakes are ~25–30× steady-state CPU — biggest measurable win |
 | 2 | `copy_bidirectional_with_sizes` with 16–64 KiB buffers | S | judge on bulk-throughput profile |
