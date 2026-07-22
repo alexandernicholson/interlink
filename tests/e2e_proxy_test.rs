@@ -356,7 +356,7 @@ async fn test_mtls_direct_handshake_and_echo() {
         let mut tls = tls_server.accept(stream).await.expect("mTLS accept");
 
         // Verify peer identity
-        assert_eq!(tls.peer_identity, client_id);
+        assert_eq!(*tls.peer_identity, client_id);
 
         // Connect to echo server and proxy
         let mut echo = TcpStream::connect(format!("127.0.0.1:{}", echo_port))

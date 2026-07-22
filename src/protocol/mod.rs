@@ -61,16 +61,16 @@ impl ProtocolDetector {
 /// Validate that an HTTP/1.1 request line is well-formed per RFC 9112 §3.
 pub fn validate_http11_request_line(line: &[u8]) -> Result<(), InterlinkError> {
     // RFC 9112 §3: request-line = method SP request-target SP HTTP-version CRLF
-    let parts: Vec<&[u8]> = line.splitn(3, |&b| b == b' ').collect();
-    if parts.len() != 3 {
-        return Err(InterlinkError::Protocol(
-            "invalid request-line: need 3 parts".into(),
-        ));
-    }
-
-    let method = parts[0];
-    let target = parts[1];
-    let version = parts[2];
+    let mut parts = line.splitn(3, |&b| b == b' ');
+    let Some(method) = parts.next() else {
+        return Err(InterlinkError::Protocol("malformed request line".into()));
+    };
+    let Some(target) = parts.next() else {
+        return Err(InterlinkError::Protocol("malformed request line".into()));
+    };
+    let Some(version) = parts.next() else {
+        return Err(InterlinkError::Protocol("malformed request line".into()));
+    };
 
     // Method must be a token (RFC 9110 §9.1)
     if method.is_empty() || !method.iter().all(|&b| b.is_ascii_uppercase() || b == b'-') {

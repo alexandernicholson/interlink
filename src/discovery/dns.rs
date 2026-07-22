@@ -17,7 +17,7 @@ const DNS_CACHE_TTL: Duration = Duration::from_secs(30);
 /// Cached DNS resolution result.
 #[derive(Debug, Clone)]
 pub struct ResolvedEndpoints {
-    pub addrs: Vec<SocketAddr>,
+    pub addrs: Arc<[SocketAddr]>,
     pub spiffe_id: Option<SpiffeId>,
 }
 
@@ -148,7 +148,7 @@ impl ServiceDiscovery {
     }
 
     async fn resolve_inner(&self, name: &str) -> Result<ResolvedEndpoints, InterlinkError> {
-        let addrs = self.resolver.lookup(name).await?;
+        let addrs: Arc<[SocketAddr]> = self.resolver.lookup(name).await?.into();
         Ok(ResolvedEndpoints {
             addrs,
             spiffe_id: None,

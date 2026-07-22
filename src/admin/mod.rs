@@ -19,6 +19,12 @@ pub struct AdminServer {
     shutdown: Option<watch::Receiver<bool>>,
 }
 
+const HEALTH_RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+const READY_RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nready";
+const NOT_READY_RESPONSE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot ready";
+const RELOAD_RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 19\r\nConnection: close\r\n\r\nreload acknowledged";
+const NOT_FOUND_RESPONSE: &[u8] = b"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found";
+
 impl AdminServer {
     pub fn new() -> Self {
         Self {
@@ -40,7 +46,8 @@ impl AdminServer {
 
     /// Mark the service as ready (or not ready) for traffic.
     pub fn set_ready(&self, ready: bool) {
-        self.ready.store(ready, std::sync::atomic::Ordering::SeqCst);
+        self.ready
+            .store(ready, std::sync::atomic::Ordering::Release);
     }
 
     pub fn spawn(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
@@ -98,38 +105,35 @@ impl AdminServer {
             Ok(n) => n,
         };
 
-        let request = String::from_utf8_lossy(&buf[..n]);
-        let mut lines = request.lines();
-        let first_line = lines.next().unwrap_or("");
-
-        let parts: Vec<&str> = first_line.split_whitespace().collect();
-        let (status, body) = match parts.as_slice() {
-            ["GET", "/healthz", ..] => ("200 OK", "ok"),
-            ["GET", "/readyz", ..] => {
-                if self.ready.load(std::sync::atomic::Ordering::SeqCst) {
-                    ("200 OK", "ready")
+        let first_line = buf[..n]
+            .split(|&byte| byte == b'\n')
+            .next()
+            .unwrap_or_default();
+        let mut parts = first_line
+            .split(|byte| byte.is_ascii_whitespace())
+            .filter(|part| !part.is_empty());
+        let method = parts.next().unwrap_or_default();
+        let path = parts.next().unwrap_or_default();
+        let response = match (method, path) {
+            (b"GET", b"/healthz") => HEALTH_RESPONSE,
+            (b"GET", b"/readyz") => {
+                if self.ready.load(std::sync::atomic::Ordering::Acquire) {
+                    READY_RESPONSE
                 } else {
-                    ("503 Service Unavailable", "not ready")
+                    NOT_READY_RESPONSE
                 }
             }
-            ["POST", "/reload", ..] => {
+            (b"POST", b"/reload") => {
                 warn!(
                     "config reload requested from {} (not yet implemented)",
                     peer_addr
                 );
-                ("200 OK", "reload acknowledged")
+                RELOAD_RESPONSE
             }
-            _ => ("404 Not Found", "not found"),
+            _ => NOT_FOUND_RESPONSE,
         };
 
-        let response = format!(
-            "HTTP/1.1 {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            status,
-            body.len(),
-            body
-        );
-
-        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.write_all(response).await;
         let _ = stream.shutdown().await;
     }
 }

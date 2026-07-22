@@ -16,4 +16,7 @@ cargo clippy --all-targets -- -D warnings
 echo "==> tests"
 cargo test --quiet
 
+echo "==> microbenchmark semantic paths and coverage floors"
+./scripts/verify-microbench-paths.py
+
 echo "==> preflight OK"

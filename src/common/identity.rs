@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
-use url::Url;
 
 use crate::common::error::InterlinkError;
 
@@ -9,44 +8,246 @@ use crate::common::error::InterlinkError;
 /// service account). Eliminates `split('*')` per match evaluation.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct SegmentGlob {
-    parts: Vec<String>,
-    ends_with_wildcard: bool,
+    pattern: Box<str>,
+    kind: SegmentGlobKind,
 }
 
 impl SegmentGlob {
     pub fn new(pattern: &str) -> Self {
-        let parts: Vec<String> = pattern.split('*').map(|s| s.to_string()).collect();
-        let ends_with_wildcard = pattern.ends_with('*');
+        let wildcard_count = pattern.bytes().filter(|&byte| byte == b'*').count();
+        if wildcard_count == 0 {
+            return Self {
+                pattern: pattern.into(),
+                kind: SegmentGlobKind::Exact,
+            };
+        }
+
+        let mut parts = Vec::with_capacity(wildcard_count.saturating_add(1));
+        let mut start = 0;
+        for (index, _) in pattern.match_indices('*') {
+            if start != index {
+                parts.push((start, index));
+            }
+            start = index + 1;
+        }
+        if start != pattern.len() {
+            parts.push((start, pattern.len()));
+        }
+
+        let anchored_start = !pattern.starts_with('*');
+        let anchored_end = !pattern.ends_with('*');
+        let kind = match parts.as_slice() {
+            [] => SegmentGlobKind::Any,
+            &[(_, end)] if anchored_start => SegmentGlobKind::Prefix { end },
+            &[(start, _)] if anchored_end => SegmentGlobKind::Suffix { start },
+            &[(start, end)] => SegmentGlobKind::Contains { start, end },
+            &[(_, prefix_end), (suffix_start, _)] if anchored_start && anchored_end => {
+                SegmentGlobKind::PrefixSuffix {
+                    prefix_end,
+                    suffix_start,
+                }
+            }
+            _ => SegmentGlobKind::Multi {
+                parts: parts.into_boxed_slice(),
+                anchored_start,
+                anchored_end,
+            },
+        };
+
         Self {
-            parts,
-            ends_with_wildcard,
+            pattern: pattern.into(),
+            kind,
         }
     }
 
     pub fn matches(&self, value: &str) -> bool {
-        if self.parts.is_empty() || (self.parts.len() == 1 && self.parts[0].is_empty()) {
-            return true; // bare `*`
-        }
-        let mut rest = value;
-        for (i, part) in self.parts.iter().enumerate() {
-            if part.is_empty() {
-                continue;
+        match &self.kind {
+            SegmentGlobKind::Any => true,
+            SegmentGlobKind::Exact => value == self.pattern.as_ref(),
+            SegmentGlobKind::Prefix { end } => value.starts_with(&self.pattern[..*end]),
+            SegmentGlobKind::Suffix { start } => value.ends_with(&self.pattern[*start..]),
+            SegmentGlobKind::Contains { start, end } => value.contains(&self.pattern[*start..*end]),
+            SegmentGlobKind::PrefixSuffix {
+                prefix_end,
+                suffix_start,
+            } => {
+                let prefix = &self.pattern[..*prefix_end];
+                let suffix = &self.pattern[*suffix_start..];
+                value.len() >= prefix.len() + suffix.len()
+                    && value.starts_with(prefix)
+                    && value.ends_with(suffix)
             }
-            match rest.find(part.as_str()) {
-                Some(idx) => {
-                    if i == 0 && idx != 0 {
-                        return false;
-                    }
-                    rest = &rest[idx + part.len()..];
-                }
-                None => return false,
-            }
+            SegmentGlobKind::Multi {
+                parts,
+                anchored_start,
+                anchored_end,
+            } => self.matches_multi(value, parts, *anchored_start, *anchored_end),
         }
-        if !self.ends_with_wildcard && !rest.is_empty() {
+    }
+
+    fn matches_multi(
+        &self,
+        value: &str,
+        parts: &[(usize, usize)],
+        anchored_start: bool,
+        anchored_end: bool,
+    ) -> bool {
+        let mut first = 0;
+        let mut last = parts.len();
+        let mut search_start = 0;
+        let mut search_end = value.len();
+
+        if anchored_start {
+            let (start, end) = parts[0];
+            let prefix = &self.pattern[start..end];
+            if !value.starts_with(prefix) {
+                return false;
+            }
+            search_start = prefix.len();
+            first += 1;
+        }
+
+        if anchored_end {
+            let (start, end) = parts[last - 1];
+            let suffix = &self.pattern[start..end];
+            if !value.ends_with(suffix) {
+                return false;
+            }
+            search_end = value.len() - suffix.len();
+            last -= 1;
+        }
+
+        if search_start > search_end {
             return false;
+        }
+
+        for &(start, end) in &parts[first..last] {
+            let literal = &self.pattern[start..end];
+            let Some(offset) = value[search_start..search_end].find(literal) else {
+                return false;
+            };
+            search_start += offset + literal.len();
         }
         true
     }
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+enum SegmentGlobKind {
+    Any,
+    Exact,
+    Prefix {
+        end: usize,
+    },
+    Suffix {
+        start: usize,
+    },
+    Contains {
+        start: usize,
+        end: usize,
+    },
+    PrefixSuffix {
+        prefix_end: usize,
+        suffix_start: usize,
+    },
+    Multi {
+        parts: Box<[(usize, usize)]>,
+        anchored_start: bool,
+        anchored_end: bool,
+    },
+}
+
+struct SpiffeUriParts<'a> {
+    trust_domain: &'a str,
+    namespace: &'a str,
+    service_account: &'a str,
+}
+
+fn parse_spiffe_uri<'a>(
+    uri: &'a str,
+    context: &'static str,
+) -> Result<SpiffeUriParts<'a>, InterlinkError> {
+    const PREFIX: &[u8] = b"spiffe://";
+
+    let Some(prefix) = uri.as_bytes().get(..PREFIX.len()) else {
+        return Err(InterlinkError::Identity(format!(
+            "invalid {context}: missing URI scheme separator"
+        )));
+    };
+    if !prefix.eq_ignore_ascii_case(PREFIX) {
+        let scheme = uri.split_once("://").map_or(uri, |(scheme, _)| scheme);
+        return Err(InterlinkError::Identity(format!(
+            "expected spiffe:// scheme, got {scheme}"
+        )));
+    }
+
+    // `PREFIX` is ASCII, so a matching prefix guarantees this byte offset is
+    // also a UTF-8 boundary.
+    let remainder = &uri[PREFIX.len()..];
+    let Some(authority_end) = remainder.as_bytes().iter().position(|&byte| byte == b'/') else {
+        return Err(InterlinkError::Identity(
+            "malformed SPIFFE path: expected /ns/<ns>/sa/<sa>, got empty path".into(),
+        ));
+    };
+    let trust_domain = &remainder[..authority_end];
+    if trust_domain.is_empty() {
+        return Err(InterlinkError::Identity(
+            "missing trust domain in SPIFFE URI".into(),
+        ));
+    }
+    if trust_domain.bytes().any(|byte| {
+        byte.is_ascii_control()
+            || byte.is_ascii_whitespace()
+            || matches!(byte, b'@' | b':' | b'[' | b']' | b'\\' | b'?' | b'#')
+    }) {
+        return Err(InterlinkError::Identity(
+            "SPIFFE URI authority must contain only a trust domain".into(),
+        ));
+    }
+
+    let path = &remainder[authority_end + 1..];
+    let Some(path) = path.strip_prefix("ns/") else {
+        return Err(InterlinkError::Identity(format!(
+            "malformed SPIFFE path: expected /ns/<ns>/sa/<sa>, got /{path}"
+        )));
+    };
+    let Some(namespace_end) = path
+        .as_bytes()
+        .iter()
+        .position(|&byte| matches!(byte, b'/' | b'?' | b'#'))
+    else {
+        return Err(InterlinkError::Identity(format!(
+            "malformed SPIFFE path: expected /ns/<ns>/sa/<sa>, got /ns/{path}"
+        )));
+    };
+    if path.as_bytes()[namespace_end] != b'/' {
+        return Err(InterlinkError::Identity(
+            "SPIFFE URI must not contain a query or fragment".into(),
+        ));
+    }
+
+    let namespace = &path[..namespace_end];
+    let Some(service_account) = path[namespace_end + 1..].strip_prefix("sa/") else {
+        return Err(InterlinkError::Identity(format!(
+            "malformed SPIFFE path: expected /ns/<ns>/sa/<sa>, got /ns/{path}"
+        )));
+    };
+    if namespace.is_empty()
+        || service_account.is_empty()
+        || service_account
+            .bytes()
+            .any(|byte| matches!(byte, b'/' | b'?' | b'#'))
+    {
+        return Err(InterlinkError::Identity(format!(
+            "malformed SPIFFE path: expected /ns/<ns>/sa/<sa>, got /ns/{path}"
+        )));
+    }
+
+    Ok(SpiffeUriParts {
+        trust_domain,
+        namespace,
+        service_account,
+    })
 }
 
 /// A pre-compiled policy pattern that avoids `Url::parse` on every evaluation.
@@ -61,29 +262,11 @@ pub struct CompiledPattern {
 
 impl CompiledPattern {
     pub fn from_uri(uri: &str) -> Result<Self, InterlinkError> {
-        let parsed = Url::parse(uri)
-            .map_err(|e| InterlinkError::Identity(format!("invalid pattern URI: {}", e)))?;
-        if parsed.scheme() != "spiffe" {
-            return Err(InterlinkError::Identity(format!(
-                "expected spiffe:// scheme, got {}",
-                parsed.scheme()
-            )));
-        }
-        let trust_domain = parsed
-            .host_str()
-            .ok_or_else(|| InterlinkError::Identity("missing trust domain".into()))?
-            .to_string();
-        let segments: Vec<&str> = parsed.path().trim_start_matches('/').split('/').collect();
-        if segments.len() != 4 || segments[0] != "ns" || segments[2] != "sa" {
-            return Err(InterlinkError::Identity(format!(
-                "malformed SPIFFE path: expected /ns/<ns>/sa/<sa>, got {}",
-                parsed.path()
-            )));
-        }
+        let parts = parse_spiffe_uri(uri, "pattern URI")?;
         Ok(Self {
-            trust_domain,
-            namespace: SegmentGlob::new(segments[1]),
-            service_account: SegmentGlob::new(segments[3]),
+            trust_domain: parts.trust_domain.to_ascii_lowercase(),
+            namespace: SegmentGlob::new(parts.namespace),
+            service_account: SegmentGlob::new(parts.service_account),
         })
     }
 
@@ -160,45 +343,27 @@ impl SpiffeId {
     /// Render as URI: spiffe://trust/ns/foo/sa/bar
     /// Used in X.509 SAN extension per RFC 5280 §4.2.1.6:2030
     pub fn to_uri(&self) -> String {
-        format!(
-            "spiffe://{}/ns/{}/sa/{}",
-            self.trust_domain, self.namespace, self.service_account
-        )
+        let mut uri = String::with_capacity(
+            17 + self.trust_domain.len() + self.namespace.len() + self.service_account.len(),
+        );
+        uri.push_str("spiffe://");
+        uri.push_str(&self.trust_domain);
+        uri.push_str("/ns/");
+        uri.push_str(&self.namespace);
+        uri.push_str("/sa/");
+        uri.push_str(&self.service_account);
+        uri
     }
 
     /// Parse from a URI string.
     /// MUST be an absolute URI per RFC 5280 §4.2.1.6:2031-2032.
     pub fn from_uri(uri: &str) -> Result<Self, InterlinkError> {
-        let parsed =
-            Url::parse(uri).map_err(|e| InterlinkError::Identity(format!("invalid URI: {}", e)))?;
-
-        if parsed.scheme() != "spiffe" {
-            return Err(InterlinkError::Identity(format!(
-                "expected spiffe:// scheme, got {}",
-                parsed.scheme()
-            )));
-        }
-
-        let trust_domain = parsed
-            .host_str()
-            .ok_or_else(|| InterlinkError::Identity("missing trust domain in SPIFFE URI".into()))?;
-
-        let segments: Vec<&str> = parsed.path().trim_start_matches('/').split('/').collect();
-
-        if segments.len() != 4 || segments[0] != "ns" || segments[2] != "sa" {
-            return Err(InterlinkError::Identity(format!(
-                "malformed SPIFFE path: expected /ns/<ns>/sa/<sa>, got {}",
-                parsed.path()
-            )));
-        }
-
-        let id = Self {
-            trust_domain: trust_domain.to_string(),
-            namespace: segments[1].to_string(),
-            service_account: segments[3].to_string(),
-        };
-        id.validate_segments()?;
-        Ok(id)
+        let parts = parse_spiffe_uri(uri, "URI")?;
+        Self::try_new(
+            parts.trust_domain.to_ascii_lowercase(),
+            parts.namespace,
+            parts.service_account,
+        )
     }
 
     /// Check if this identity matches a policy pattern (supports wildcards).
@@ -222,7 +387,12 @@ impl SpiffeId {
 
 impl fmt::Display for SpiffeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_uri())
+        f.write_str("spiffe://")?;
+        f.write_str(&self.trust_domain)?;
+        f.write_str("/ns/")?;
+        f.write_str(&self.namespace)?;
+        f.write_str("/sa/")?;
+        f.write_str(&self.service_account)
     }
 }
 
@@ -319,6 +489,64 @@ mod tests {
         assert!(!id.matches_pattern("spiffe://trust/ns/other/sa/web-api"));
         assert!(!id.matches_pattern("spiffe://other/ns/default/sa/web-api"));
         assert!(!id.matches_pattern("spiffe://trust/ns/default/sa/web"));
+    }
+
+    #[test]
+    fn segment_glob_covers_all_compiled_shapes() {
+        let cases = [
+            ("", "", true),
+            ("", "anything", false),
+            ("*", "anything", true),
+            ("exact", "exact", true),
+            ("exact", "other", false),
+            ("pre*", "prefix", true),
+            ("pre*", "other", false),
+            ("*suffix", "suffix-suffix", true),
+            ("*suffix", "suffix-other", false),
+            ("*middle*", "a-middle-z", true),
+            ("*middle*", "absent", false),
+            ("pre*suffix", "pre-middle-suffix", true),
+            ("pre*suffix", "presuffix", true),
+            ("pre*suffix", "prefix", false),
+            ("a*b*c", "a-1-b-2-c", true),
+            ("a*b*c", "a-1-c-2-b", false),
+            ("*a*b*", "z-a-1-b-z", true),
+            ("*a*b*", "z-b-1-a-z", false),
+            ("a**b", "a-middle-b", true),
+            ("**", "anything", true),
+        ];
+
+        for (pattern, value, expected) in cases {
+            assert_eq!(
+                SegmentGlob::new(pattern).matches(value),
+                expected,
+                "pattern {pattern:?}, value {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn spiffe_uri_rejects_non_identity_components() {
+        for uri in [
+            "spiffe://user@example.org/ns/foo/sa/bar",
+            "spiffe://example.org:443/ns/foo/sa/bar",
+            "spiffe://example.org/ns/foo/sa/bar?query",
+            "spiffe://example.org/ns/foo/sa/bar#fragment",
+            "spiffe://example.org/ns/foo/sa/bar/extra",
+        ] {
+            assert!(SpiffeId::from_uri(uri).is_err(), "{uri} must be rejected");
+            assert!(
+                CompiledPattern::from_uri(uri).is_err(),
+                "{uri} must be rejected as a pattern"
+            );
+        }
+    }
+
+    #[test]
+    fn spiffe_uri_normalizes_scheme_and_trust_domain_case() {
+        let id = SpiffeId::from_uri("SPIFFE://EXAMPLE.ORG/ns/foo/sa/bar").unwrap();
+        assert_eq!(id.trust_domain, "example.org");
+        assert_eq!(id.to_uri(), "spiffe://example.org/ns/foo/sa/bar");
     }
 
     #[test]

@@ -111,8 +111,8 @@ const STREAMS_PER_TUNNEL: usize = 200;
 const MAX_TUNNELS_PER_PEER: usize = 16;
 
 /// The negotiated ALPN protocol of a TLS stream, if any.
-pub(crate) fn negotiated_alpn(stream: &tokio_rustls::TlsStream<TcpStream>) -> Option<Vec<u8>> {
-    stream.get_ref().1.alpn_protocol().map(|p| p.to_vec())
+pub(crate) fn negotiated_alpn(stream: &tokio_rustls::TlsStream<TcpStream>) -> Option<&[u8]> {
+    stream.get_ref().1.alpn_protocol()
 }
 
 static TUNNEL_IDS: AtomicU64 = AtomicU64::new(0);
@@ -130,7 +130,7 @@ pub(crate) struct Tunnel {
     live: Arc<std::sync::atomic::AtomicUsize>,
     /// Identity the peer presented at tunnel establishment; policy is
     /// evaluated against this for every stream (B5: never fabricated).
-    pub(crate) peer_identity: SpiffeId,
+    pub(crate) peer_identity: Arc<SpiffeId>,
 }
 
 impl Tunnel {
@@ -230,7 +230,7 @@ impl MuxPool {
         self: &Arc<Self>,
         addr: SocketAddr,
         tls: tokio_rustls::TlsStream<TcpStream>,
-        peer_identity: SpiffeId,
+        peer_identity: Arc<SpiffeId>,
     ) -> Tunnel {
         let conn = Connection::new(tls.compat(), YamuxConfig::default(), Mode::Client);
         let (open_tx, open_rx) = mpsc::channel::<OpenRequest>(256);
@@ -326,14 +326,13 @@ async fn drive_client(
 pub(crate) async fn serve_tunnel(
     tls: tokio_rustls::TlsStream<TcpStream>,
     upstream: SocketAddr,
-    peer: SpiffeId,
+    peer: Arc<SpiffeId>,
 ) {
     let mut conn = Connection::new(tls.compat(), YamuxConfig::default(), Mode::Server);
     info!("mux tunnel established from {} → {}", peer, upstream);
 
     loop {
-        let next =
-            futures_util::future::poll_fn(|cx| conn.poll_next_inbound(cx)).await;
+        let next = futures_util::future::poll_fn(|cx| conn.poll_next_inbound(cx)).await;
         let stream = match next {
             Some(Ok(s)) => s,
             Some(Err(e)) => {
@@ -361,14 +360,16 @@ async fn relay_stream_to_upstream(mut stream: Compat<yamux::Stream>, upstream: S
         }
     };
     if let Err(e) = crate::proxy::configure_socket(&upstream_stream) {
-        warn!("failed to configure mux upstream socket {}: {}", upstream, e);
+        warn!(
+            "failed to configure mux upstream socket {}: {}",
+            upstream, e
+        );
     }
 
-    match crate::proxy::copy_bidirectional(&mut stream, &mut upstream_stream).await {
-        Ok((up, down)) => crate::metrics::record_connection(up, down, start.elapsed()),
-        Err(e) => {
-            debug!("mux stream relay error → {}: {}", upstream, e);
-            crate::metrics::record_connection_failed();
-        }
+    if let Err(e) = crate::proxy::record_relay_result(
+        crate::proxy::copy_bidirectional(&mut stream, &mut upstream_stream).await,
+        start,
+    ) {
+        debug!("mux stream relay error → {}: {}", upstream, e);
     }
 }

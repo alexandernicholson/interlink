@@ -1,3 +1,4 @@
+use std::io::{BufReader, Error as IoError, ErrorKind};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -104,9 +105,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     };
 
-    // 7. Build policy engine and service discovery.
+    // 7. Default-deny except for peers presenting this workload's exact
+    // SPIFFE identity. Cluster replicas intentionally share one service
+    // identity; a certificate signed by the trust bundle is still required.
     let mut policy_engine = PolicyEngine::new();
-    // Allow all traffic when INTERLINK_ALLOW_ALL is set (benchmark mode).
+    let identity_uri = identity.to_uri();
+    policy_engine.set_global_policies(vec![interlink::policy::patterns::allow(
+        &identity_uri,
+        &identity_uri,
+        "allow replicas of this workload identity",
+    )]);
+    // Explicit benchmark escape hatch; never set this in a workload manifest.
     if std::env::var("INTERLINK_ALLOW_ALL").as_deref() == Ok("true") {
         policy_engine.set_default_decision(interlink::policy::Decision::Allow);
     }
@@ -152,10 +161,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("interlinkd ready");
 
-    // 11. Wait for shutdown signal.
-    match tokio::signal::ctrl_c().await {
+    // 12. Kubernetes sends SIGTERM; local runs commonly use SIGINT.
+    match wait_for_shutdown_signal().await {
         Ok(()) => info!("received shutdown signal"),
-        Err(e) => error!("failed to listen for ctrl-c: {}", e),
+        Err(e) => error!("failed to listen for shutdown signal: {}", e),
     }
 
     // Signal proxies and admin server to stop accepting.
@@ -167,6 +176,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+async fn wait_for_shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await
+    }
+}
+
 fn load_ca_bundle(config: &Config) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
     let path = config
         .ca_bundle_path
@@ -176,8 +202,12 @@ fn load_ca_bundle(config: &Config) -> Result<Vec<Vec<u8>>, Box<dyn std::error::E
         .ok_or("INTERLINK_CA_BUNDLE_PATH not set and no default cert dir found")?;
 
     info!("loading CA bundle from {:?}", path);
-    let bytes = std::fs::read(&path)?;
-    Ok(vec![bytes])
+    parse_certificates(std::fs::read(&path)?).map(|certs| {
+        certs
+            .into_iter()
+            .map(|cert| cert.as_ref().to_vec())
+            .collect()
+    })
 }
 
 fn load_cert_and_key(
@@ -201,13 +231,48 @@ fn load_cert_and_key(
         "loading proxy cert from {:?}, key from {:?}",
         cert_path, key_path
     );
-    let cert = std::fs::read(&cert_path)?;
-    let key = std::fs::read(&key_path)?;
+    let cert = parse_certificates(std::fs::read(&cert_path)?)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| IoError::new(ErrorKind::InvalidData, "certificate file is empty"))?;
+    let key_bytes = std::fs::read(&key_path)?;
+    let key = if contains_pem_header(&key_bytes) {
+        rustls_pemfile::private_key(&mut BufReader::new(key_bytes.as_slice()))?.ok_or_else(
+            || {
+                IoError::new(
+                    ErrorKind::InvalidData,
+                    "PEM file contains no supported private key",
+                )
+            },
+        )?
+    } else {
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_bytes))
+    };
 
-    Ok((
-        CertificateDer::from(cert),
-        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)),
-    ))
+    Ok((cert, key))
+}
+
+fn parse_certificates(
+    bytes: Vec<u8>,
+) -> Result<Vec<CertificateDer<'static>>, Box<dyn std::error::Error>> {
+    if !contains_pem_header(&bytes) {
+        return Ok(vec![CertificateDer::from(bytes)]);
+    }
+
+    let certs = rustls_pemfile::certs(&mut BufReader::new(bytes.as_slice()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if certs.is_empty() {
+        return Err(
+            IoError::new(ErrorKind::InvalidData, "PEM file contains no certificates").into(),
+        );
+    }
+    Ok(certs)
+}
+
+fn contains_pem_header(bytes: &[u8]) -> bool {
+    bytes
+        .windows(b"-----BEGIN ".len())
+        .any(|window| window == b"-----BEGIN ")
 }
 
 fn default_cert_dir() -> Option<PathBuf> {
@@ -215,4 +280,62 @@ fn default_cert_dir() -> Option<PathBuf> {
         .ok()
         .map(PathBuf::from)
         .or_else(|| Some(std::env::temp_dir().join("interlink-demo")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_cert_dir(test_name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "interlink-{test_name}-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn parses_every_certificate_in_a_pem_bundle() {
+        let generated = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let pem = generated.cert.pem();
+        let bundle = format!("{pem}\n{pem}");
+
+        let parsed = parse_certificates(bundle.into_bytes()).unwrap();
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].as_ref(), generated.cert.der().as_ref());
+        assert_eq!(parsed[1].as_ref(), generated.cert.der().as_ref());
+    }
+
+    #[test]
+    fn loads_cert_manager_pem_secret_files() {
+        let generated = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let dir = temp_cert_dir("pem-secret");
+        let ca_path = dir.join("ca.crt");
+        let cert_path = dir.join("tls.crt");
+        let key_path = dir.join("tls.key");
+        std::fs::write(&ca_path, generated.cert.pem()).unwrap();
+        std::fs::write(&cert_path, generated.cert.pem()).unwrap();
+        std::fs::write(&key_path, generated.key_pair.serialize_pem()).unwrap();
+        let config = Config {
+            ca_bundle_path: Some(ca_path.to_string_lossy().into_owned()),
+            cert_path: Some(cert_path.to_string_lossy().into_owned()),
+            key_path: Some(key_path.to_string_lossy().into_owned()),
+            ..Config::default()
+        };
+
+        let ca_bundle = load_ca_bundle(&config).unwrap();
+        let (cert, key) = load_cert_and_key(&config).unwrap();
+
+        assert_eq!(ca_bundle, vec![generated.cert.der().as_ref().to_vec()]);
+        assert_eq!(cert.as_ref(), generated.cert.der().as_ref());
+        assert_eq!(
+            key.secret_der(),
+            generated.key_pair.serialize_der().as_slice()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

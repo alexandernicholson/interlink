@@ -156,10 +156,9 @@ async fn test_tls_resumption() {
         .unwrap(),
     );
 
-    // Bind a listener and get the port. Connect via localhost (must match cert SAN).
+    // Bind a listener and get the typed destination.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let addr = format!("localhost:{}", port);
+    let addr = listener.local_addr().unwrap();
 
     // Connection 1: should be Full.
     let tls_server1 = tls_server.clone();
@@ -176,7 +175,7 @@ async fn test_tls_resumption() {
     });
 
     // Client side: connect and handshake.
-    let mut tls1 = tls_client.connect(&addr).await.unwrap();
+    let mut tls1 = tls_client.connect(addr).await.unwrap();
     // Write a byte to trigger the server's read.
     tls1.inner.write_all(b"x").await.unwrap();
     tls1.inner.flush().await.unwrap();
@@ -190,8 +189,7 @@ async fn test_tls_resumption() {
 
     // Connection 2: should be Resumed.
     let listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port2 = listener2.local_addr().unwrap().port();
-    let addr2 = format!("localhost:{}", port2);
+    let addr2 = listener2.local_addr().unwrap();
 
     let tls_server2 = tls_server.clone();
     let server_handle2 = tokio::spawn(async move {
@@ -204,7 +202,7 @@ async fn test_tls_resumption() {
         tls.inner
     });
 
-    let mut tls2 = tls_client.connect(&addr2).await.unwrap();
+    let mut tls2 = tls_client.connect(addr2).await.unwrap();
 
     // The handshake kind is known as soon as the handshake completes.
     let is_resumed =

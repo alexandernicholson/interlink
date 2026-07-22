@@ -90,17 +90,16 @@ async fn test_watch_shutdown_already_signalled() {
     assert!(done.is_ok(), "pre-signalled shutdown did not stop run()");
 }
 
-/// R26: when no acceptor can bind (privileged port as non-root), run() must
-/// return promptly — no panic, no headless proxy.
+/// R26: when no acceptor can bind, run() must return promptly — no panic and
+/// no headless proxy. Occupying the address is portable; privileged ports are
+/// not reserved for root on every supported OS.
 #[tokio::test]
 async fn test_bind_failure_returns_instead_of_panicking() {
-    // Root can bind port 1; skip there (CI containers occasionally run as root).
-    if unsafe { libc::geteuid() } == 0 {
-        eprintln!("skipping: running as root, privileged bind would succeed");
-        return;
-    }
-    let proxy = Arc::new(make_proxy(1));
+    let blocker = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = blocker.local_addr().unwrap().port();
+    let proxy = Arc::new(make_proxy(port));
     let done = tokio::time::timeout(Duration::from_secs(5), proxy.spawn()).await;
     let join = done.expect("run() should return promptly when nothing can bind");
     assert!(join.is_ok(), "run() panicked on bind failure: {:?}", join);
+    drop(blocker);
 }

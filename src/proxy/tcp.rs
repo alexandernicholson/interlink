@@ -20,9 +20,10 @@ use crate::proxy::config::ProxyConfig;
 use crate::proxy::configure_socket;
 use crate::proxy::get_original_dst;
 use crate::proxy::handshake::TlsHandshake;
+use crate::proxy::UpstreamTarget;
 
 pub struct TcpProxy {
-    config: ProxyConfig,
+    default_upstream: Option<UpstreamTarget>,
     connection_semaphore: Arc<Semaphore>,
     listen_port: u16,
     tls_server: Arc<dyn TlsHandshake>,
@@ -77,8 +78,9 @@ impl TcpProxy {
                 SpiffeId::try_new(&config.trust_domain, "default", "proxy")
                     .expect("trust_domain validated in Config::validate")
             });
+        let default_upstream = UpstreamTarget::from_config(config.default_upstream);
         Self {
-            config,
+            default_upstream,
             connection_semaphore: Arc::new(Semaphore::new(max_conn)),
             listen_port: port,
             tls_server,
@@ -102,28 +104,20 @@ impl TcpProxy {
 
     async fn resolve_upstream(
         &self,
-        upstream: &str,
+        upstream: &UpstreamTarget,
     ) -> Result<std::net::SocketAddr, InterlinkError> {
-        if let Ok(sa) = upstream.parse::<std::net::SocketAddr>() {
-            return Ok(sa);
-        }
+        let (name, port) = match upstream {
+            UpstreamTarget::Socket(addr) => return Ok(*addr),
+            UpstreamTarget::Host { name, port } => (name, port),
+        };
         let Some(discovery) = self.discovery.as_ref() else {
             return Err(InterlinkError::DnsResolution(format!(
                 "cannot resolve hostname '{}' without discovery",
                 upstream
             )));
         };
-        // Split "host:port" BEFORE the DNS lookup — a resolver query for
-        // "name:8080" can never succeed (":" is not valid in a hostname).
-        let (host, port) = match upstream.rsplit_once(':') {
-            Some((h, p)) => match p.parse::<u16>() {
-                Ok(port) => (h, Some(port)),
-                Err(_) => (upstream, None),
-            },
-            None => (upstream, None),
-        };
-        let resolved = discovery.resolve(host).await?;
-        let first = resolved.addrs.into_iter().next().ok_or_else(|| {
+        let resolved = discovery.resolve(name).await?;
+        let first = resolved.addrs.first().copied().ok_or_else(|| {
             InterlinkError::DnsResolution(format!("no endpoints for {}", upstream))
         })?;
         Ok(std::net::SocketAddr::new(
@@ -213,22 +207,17 @@ impl TcpProxy {
             warn!("failed to configure accepted socket {}: {}", peer_addr, e);
         }
 
-        let upstream = match &self.config.default_upstream {
-            Some(dst) => dst.clone(),
-            None => get_original_dst(&stream)
-                .map(|sa| sa.to_string())
-                .unwrap_or_else(|| {
-                    warn!("no upstream for connection from {}, dropping", peer_addr);
-                    String::new()
-                }),
-        };
-
-        if upstream.is_empty() {
+        let upstream = self
+            .default_upstream
+            .clone()
+            .or_else(|| get_original_dst(&stream).map(UpstreamTarget::Socket));
+        let Some(upstream) = upstream else {
+            warn!("no upstream for connection from {}, dropping", peer_addr);
             let _ = stream.into_std().map(|s| {
                 let _ = s.shutdown(std::net::Shutdown::Both);
             });
             return;
-        }
+        };
 
         // Use try_acquire_owned to avoid head-of-line blocking — the accept
         // loop never stalls when the connection limit is reached.
@@ -276,7 +265,7 @@ impl TcpProxy {
     async fn handle_connection(
         &self,
         stream: TcpStream,
-        upstream: String,
+        upstream: UpstreamTarget,
         peer_addr: std::net::SocketAddr,
     ) {
         let start = Instant::now();
@@ -347,7 +336,7 @@ impl TcpProxy {
         // session; every stream relays to this connection's upstream. The
         // pre-connected upstream socket belongs to the 1:1 model — release it
         // and let each stream dial its own.
-        if crate::proxy::mux::negotiated_alpn(&tls_stream.inner).as_deref()
+        if crate::proxy::mux::negotiated_alpn(&tls_stream.inner)
             == Some(crate::proxy::mux::ALPN_MUX)
         {
             let peer = tls_stream.peer_identity.clone();
@@ -397,20 +386,15 @@ impl TcpProxy {
             return;
         }
 
-        let copy_result =
-            crate::proxy::copy_bidirectional(&mut tls_reader, &mut upstream_stream).await;
-        let (bytes_up, bytes_down) = match copy_result {
-            Ok((up, down)) => (up, down),
-            Err(e) => {
-                warn!(
-                    "bidirectional copy error for {} → {}: {}",
-                    peer_id, upstream, e
-                );
-                (0, 0)
-            }
-        };
-
-        metrics::record_connection(bytes_up, bytes_down, start.elapsed());
+        if let Err(e) = crate::proxy::record_relay_result(
+            crate::proxy::copy_bidirectional(&mut tls_reader, &mut upstream_stream).await,
+            start,
+        ) {
+            warn!(
+                "bidirectional copy error for {} → {}: {}",
+                peer_id, upstream, e
+            );
+        }
         debug!("done {} → {}", peer_id, upstream);
     }
 }

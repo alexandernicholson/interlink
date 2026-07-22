@@ -10,7 +10,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
-      - name: preflight (clippy -D warnings + tests)
+      - name: install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: preflight (clippy + tests + microbenchmark paths)
         run: ./scripts/preflight.sh

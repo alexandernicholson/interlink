@@ -23,7 +23,10 @@ fn main() {
     // Issue server cert (for the backend service)
     let server_id = SpiffeId::try_new(TRUST_DOMAIN, "default", "backend").expect("valid SPIFFE ID");
     let (server_cert, server_key) = ca
-        .issue_leaf_with_key(&server_id, &["localhost", "127.0.0.1", "backend.example.local"])
+        .issue_leaf_with_key(
+            &server_id,
+            &["localhost", "127.0.0.1", "backend.example.local"],
+        )
         .expect("issue server cert");
     fs::write(out.join("server.der"), &server_cert).expect("write server cert");
     fs::write(out.join("server.key"), &server_key).expect("write server key");
@@ -32,7 +35,10 @@ fn main() {
     let client_id =
         SpiffeId::try_new(TRUST_DOMAIN, "default", "frontend").expect("valid SPIFFE ID");
     let (client_cert, client_key) = ca
-        .issue_leaf_with_key(&client_id, &["localhost", "127.0.0.1", "frontend.example.local"])
+        .issue_leaf_with_key(
+            &client_id,
+            &["localhost", "127.0.0.1", "frontend.example.local"],
+        )
         .expect("issue client cert");
     fs::write(out.join("client.der"), &client_cert).expect("write client cert");
     fs::write(out.join("client.key"), &client_key).expect("write client key");

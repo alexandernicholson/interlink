@@ -6,6 +6,7 @@
 //! pin that it (1) accepts a valid peer dialed by an address NOT in its SAN,
 //! yet (2) still enforces full chain validation: a peer from a different CA or
 //! a different trust domain is rejected (fail closed).
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use interlink::common::error::InterlinkError;
@@ -78,13 +79,45 @@ async fn accepts_peer_dialed_by_address_not_in_san() {
 
     // Dial by IP literal — not present in the server cert's SANs.
     let tls = client
-        .connect(&format!("127.0.0.1:{}", port))
+        .connect(SocketAddr::from(([127, 0, 0, 1], port)))
         .await
         .expect("handshake should succeed via SPIFFE identity, not name match");
     assert_eq!(
-        tls.peer_identity,
+        *tls.peer_identity,
         SpiffeId::try_new("mesh.local", "default", "backend").unwrap()
     );
+}
+
+#[tokio::test]
+async fn accepts_ipv6_socket_address() {
+    let ca = CertificateAuthority::new("mesh.local").unwrap();
+    let id = SpiffeId::try_new("mesh.local", "default", "backend").unwrap();
+    let (cert, key) = ca.issue_leaf_with_key(&id, &["localhost"]).unwrap();
+    let td = TrustDomain::new("mesh.local").with_ca(ca.root_cert_der().to_vec());
+    let server = Arc::new(
+        TlsServer::new(
+            Arc::new(P { id, td }),
+            cert,
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)),
+        )
+        .unwrap(),
+    );
+    let listener = TcpListener::bind("[::1]:0")
+        .await
+        .expect("IPv6 loopback must be available");
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        server.accept(stream).await.unwrap()
+    });
+
+    let client = build_client(&ca, "mesh.local");
+    let tls = client
+        .connect(addr)
+        .await
+        .expect("typed IPv6 address must complete the handshake");
+
+    assert_eq!(tls.peer_identity.trust_domain, "mesh.local");
 }
 
 /// Negative: a server whose cert chains to a DIFFERENT CA is rejected — full
@@ -97,7 +130,9 @@ async fn rejects_peer_from_untrusted_ca() {
     // Client trusts only `other_ca`, not the server's CA.
     let client = build_client(&other_ca, "mesh.local");
 
-    let res = client.connect(&format!("127.0.0.1:{}", port)).await;
+    let res = client
+        .connect(SocketAddr::from(([127, 0, 0, 1], port)))
+        .await;
     assert!(
         res.is_err(),
         "peer signed by an untrusted CA must be rejected"
@@ -115,7 +150,9 @@ async fn rejects_peer_from_wrong_trust_domain() {
     // "mesh.local" — the SPIFFE trust-domain check must reject it.
     let client = build_client(&ca, "mesh.local");
 
-    let res = client.connect(&format!("127.0.0.1:{}", port)).await;
+    let res = client
+        .connect(SocketAddr::from(([127, 0, 0, 1], port)))
+        .await;
     assert!(
         res.is_err(),
         "peer in a different trust domain must be rejected even with a valid chain"

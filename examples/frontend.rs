@@ -70,18 +70,12 @@ async fn main() {
     )
     .expect("TlsClient init");
 
-    // Build the connection address. We connect to the IP but tell TLS we want "localhost"
-    // so the certificate's DNS name matches.
-    let (_host, port) = backend_addr
-        .split_once(':')
-        .unwrap_or(("localhost", "8443"));
-    let connect_addr = format!("localhost:{}", port);
+    let connect_addr = backend_addr
+        .parse()
+        .expect("backend address must be an IP socket address");
 
-    info!(
-        "Connecting to backend at {} (TLS SNI: localhost) via mTLS...",
-        backend_addr
-    );
-    match tls_client.connect(&connect_addr).await {
+    info!("Connecting to backend at {} via mTLS...", backend_addr);
+    match tls_client.connect(connect_addr).await {
         Ok(mut tls_stream) => {
             let peer_id = &tls_stream.peer_identity;
             info!("mTLS connected! Backend identity = {}", peer_id);

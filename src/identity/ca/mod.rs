@@ -74,7 +74,11 @@ impl CertificateAuthority {
     ) -> Result<CertificateDer<'static>, InterlinkError> {
         let mut params = CertificateParams::new(Vec::<String>::new())
             .map_err(|e| InterlinkError::Identity(format!("params: {}", e)))?;
-        let uri_str: rcgen::Ia5String = identity.to_uri().as_str().try_into().unwrap();
+        let uri = identity.to_uri();
+        let uri_str: rcgen::Ia5String = uri
+            .as_str()
+            .try_into()
+            .map_err(|e| InterlinkError::Identity(format!("SPIFFE URI SAN: {:?}", e)))?;
         params.subject_alt_names = vec![SanType::URI(uri_str)];
 
         // RFC 5280 §4.2.1.6: subject empty, identity in SAN
@@ -294,5 +298,14 @@ mod tests {
             expected,
             ttl
         );
+    }
+    #[test]
+    fn issue_leaf_reports_non_ascii_uri_instead_of_panicking() {
+        let ca = CertificateAuthority::new("td.local").unwrap();
+        let id = SpiffeId::try_new("td.local", "ns", "servicé").unwrap();
+
+        let result = ca.issue_leaf(&id);
+
+        assert!(result.is_err(), "non-IA5 SAN input must return an error");
     }
 }

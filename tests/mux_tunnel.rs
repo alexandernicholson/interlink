@@ -5,6 +5,7 @@
 //! over one peer cost exactly 1 TLS handshake (counted by a wrapper around the
 //! real `TlsClient` — global metrics are shared across tests and unusable for
 //! assertions).
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,7 +46,7 @@ struct CountingHandshake {
 
 #[async_trait]
 impl TlsHandshake for CountingHandshake {
-    async fn connect(&self, addr: &str) -> Result<TlsStream, InterlinkError> {
+    async fn connect(&self, addr: SocketAddr) -> Result<TlsStream, InterlinkError> {
         self.connects.fetch_add(1, Ordering::SeqCst);
         self.inner.connect(addr).await
     }
@@ -68,7 +69,9 @@ fn pick_port() -> u16 {
 /// concurrently in-flight (to exercise per-session stream caps).
 async fn echo_held(listener: TcpListener, hold: Duration) {
     loop {
-        let Ok((mut s, _)) = listener.accept().await else { return; };
+        let Ok((mut s, _)) = listener.accept().await else {
+            return;
+        };
         tokio::spawn(async move {
             let mut data = Vec::new();
             if s.read_to_end(&mut data).await.is_ok() {
@@ -105,7 +108,12 @@ async fn start_mesh_full(td_name: &str, inbound_mux: bool, outbound_mux: bool) -
     start_mesh_cfg(td_name, inbound_mux, outbound_mux, Duration::ZERO).await
 }
 
-async fn start_mesh_cfg(td_name: &str, inbound_mux: bool, outbound_mux: bool, echo_hold: Duration) -> Mesh {
+async fn start_mesh_cfg(
+    td_name: &str,
+    inbound_mux: bool,
+    outbound_mux: bool,
+    echo_hold: Duration,
+) -> Mesh {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -318,7 +326,6 @@ async fn test_mux_half_close_large_payload() {
     assert_eq!(resp, expected, "payload corrupted through mux");
 }
 
-
 /// INTERLINK_MUX=false semantics: the client offers only legacy ALPN, so even
 /// a mux-capable peer negotiates h2 and both sides speak 1:1 — N handshakes,
 /// no protocol mismatch (the bug this test pins: a disabled client must not
@@ -354,12 +361,17 @@ async fn test_mux_high_concurrency() {
         handles.push(tokio::spawn(async move {
             b.wait().await; // release all at once → genuine concurrency
             let payload = format!("c{}", i);
-            let mut c = TcpStream::connect(("127.0.0.1", port)).await.map_err(|e| format!("connect: {e}"))?;
-            c.write_all(payload.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
+            let mut c = TcpStream::connect(("127.0.0.1", port))
+                .await
+                .map_err(|e| format!("connect: {e}"))?;
+            c.write_all(payload.as_bytes())
+                .await
+                .map_err(|e| format!("write: {e}"))?;
             c.shutdown().await.map_err(|e| format!("shutdown: {e}"))?;
             let mut resp = Vec::new();
             tokio::time::timeout(Duration::from_secs(20), c.read_to_end(&mut resp))
-                .await.map_err(|_| "timeout".to_string())
+                .await
+                .map_err(|_| "timeout".to_string())
                 .and_then(|r| r.map_err(|e| format!("read: {e}")))?;
             if resp != format!("echo:{}", payload).into_bytes() {
                 return Err(format!("bad resp len {}", resp.len()));
@@ -371,12 +383,16 @@ async fn test_mux_high_concurrency() {
     for h in handles {
         if let Err(e) = h.await.unwrap() {
             errs += 1;
-            if errs <= 5 { eprintln!("conn error: {e}"); }
+            if errs <= 5 {
+                eprintln!("conn error: {e}");
+            }
         }
     }
-    assert_eq!(errs, 0, "{errs}/{n} concurrent connections failed through the mux tunnel");
+    assert_eq!(
+        errs, 0,
+        "{errs}/{n} concurrent connections failed through the mux tunnel"
+    );
 }
-
 
 /// >512 concurrent streams: a single yamux session caps at max_num_streams=512,
 /// so a single-tunnel-per-peer design fails opens beyond that. This drives 700
@@ -394,12 +410,17 @@ async fn test_mux_beyond_single_session_cap() {
         handles.push(tokio::spawn(async move {
             b.wait().await;
             let payload = format!("cap{}", i);
-            let mut c = TcpStream::connect(("127.0.0.1", port)).await.map_err(|e| format!("connect: {e}"))?;
-            c.write_all(payload.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
+            let mut c = TcpStream::connect(("127.0.0.1", port))
+                .await
+                .map_err(|e| format!("connect: {e}"))?;
+            c.write_all(payload.as_bytes())
+                .await
+                .map_err(|e| format!("write: {e}"))?;
             c.shutdown().await.map_err(|e| format!("shutdown: {e}"))?;
             let mut resp = Vec::new();
             tokio::time::timeout(Duration::from_secs(30), c.read_to_end(&mut resp))
-                .await.map_err(|_| "timeout".to_string())
+                .await
+                .map_err(|_| "timeout".to_string())
                 .and_then(|r| r.map_err(|e| format!("read: {e}")))?;
             if resp != format!("echo:{}", payload).into_bytes() {
                 return Err(format!("bad resp len {}", resp.len()));
@@ -408,6 +429,13 @@ async fn test_mux_beyond_single_session_cap() {
         }));
     }
     let mut errs = 0;
-    for h in handles { if h.await.unwrap().is_err() { errs += 1; } }
-    assert_eq!(errs, 0, "{errs}/{n} connections failed (single-session cap?)");
+    for h in handles {
+        if h.await.unwrap().is_err() {
+            errs += 1;
+        }
+    }
+    assert_eq!(
+        errs, 0,
+        "{errs}/{n} connections failed (single-session cap?)"
+    );
 }

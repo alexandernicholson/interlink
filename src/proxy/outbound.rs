@@ -18,6 +18,7 @@ use crate::proxy::config::ProxyConfig;
 use crate::proxy::configure_socket;
 use crate::proxy::get_original_dst;
 use crate::proxy::handshake::TlsHandshake;
+use crate::proxy::UpstreamTarget;
 
 /// The outbound TCP proxy that wraps local plaintext connections in mTLS.
 ///
@@ -30,7 +31,7 @@ use crate::proxy::handshake::TlsHandshake;
 ///   6. Bidirectional data copy
 pub struct OutboundProxy {
     connection_semaphore: Arc<Semaphore>,
-    default_upstream: Option<String>,
+    default_upstream: Option<UpstreamTarget>,
     mux_enabled: bool,
     mux_pool: Arc<crate::proxy::mux::MuxPool>,
     listen_port: u16,
@@ -79,10 +80,12 @@ impl OutboundProxy {
                 SpiffeId::try_new(&config.trust_domain, "default", "proxy")
                     .expect("trust_domain validated in Config::validate")
             });
+        let mux_enabled = config.mux;
+        let default_upstream = UpstreamTarget::from_config(config.default_upstream);
         Self {
             connection_semaphore: Arc::new(Semaphore::new(max_conn)),
-            default_upstream: config.default_upstream.clone(),
-            mux_enabled: config.mux,
+            default_upstream,
+            mux_enabled,
             mux_pool: crate::proxy::mux::MuxPool::new(),
             listen_port: port,
             tls_client,
@@ -111,28 +114,20 @@ impl OutboundProxy {
     /// If the upstream is already a socket address, it is returned unchanged.
     async fn resolve_upstream(
         &self,
-        upstream: &str,
+        upstream: &UpstreamTarget,
     ) -> Result<std::net::SocketAddr, InterlinkError> {
-        if let Ok(sa) = upstream.parse::<std::net::SocketAddr>() {
-            return Ok(sa);
-        }
+        let (name, port) = match upstream {
+            UpstreamTarget::Socket(addr) => return Ok(*addr),
+            UpstreamTarget::Host { name, port } => (name, port),
+        };
         let Some(discovery) = self.discovery.as_ref() else {
             return Err(InterlinkError::DnsResolution(format!(
                 "cannot resolve hostname '{}' without discovery",
                 upstream
             )));
         };
-        // Split "host:port" BEFORE the DNS lookup — a resolver query for
-        // "name:8080" can never succeed (":" is not valid in a hostname).
-        let (host, port) = match upstream.rsplit_once(':') {
-            Some((h, p)) => match p.parse::<u16>() {
-                Ok(port) => (h, Some(port)),
-                Err(_) => (upstream, None),
-            },
-            None => (upstream, None),
-        };
-        let resolved = discovery.resolve(host).await?;
-        let first = resolved.addrs.into_iter().next().ok_or_else(|| {
+        let resolved = discovery.resolve(name).await?;
+        let first = resolved.addrs.first().copied().ok_or_else(|| {
             InterlinkError::DnsResolution(format!("no endpoints for {}", upstream))
         })?;
         Ok(std::net::SocketAddr::new(
@@ -165,7 +160,10 @@ impl OutboundProxy {
             }
         }
         if listeners.is_empty() {
-            error!("no acceptors could bind outbound {}; proxy not started", addr);
+            error!(
+                "no acceptors could bind outbound {}; proxy not started",
+                addr
+            );
             return;
         }
         info!(
@@ -227,22 +225,18 @@ impl OutboundProxy {
         // configured default upstream instead of connecting to ourselves.
         let upstream = get_original_dst(&stream)
             .filter(|sa| sa.port() != self.listen_port)
-            .map(|sa| sa.to_string())
-            .or_else(|| self.default_upstream.clone())
-            .unwrap_or_else(|| {
-                warn!(
-                    "no upstream for outbound connection from {}, dropping",
-                    peer_addr
-                );
-                String::new()
-            });
-
-        if upstream.is_empty() {
+            .map(UpstreamTarget::Socket)
+            .or_else(|| self.default_upstream.clone());
+        let Some(upstream) = upstream else {
+            warn!(
+                "no upstream for outbound connection from {}, dropping",
+                peer_addr
+            );
             let _ = stream.into_std().map(|s| {
                 let _ = s.shutdown(std::net::Shutdown::Both);
             });
             return;
-        }
+        };
 
         let permit = self.connection_semaphore.clone().try_acquire_owned();
         match permit {
@@ -288,7 +282,7 @@ impl OutboundProxy {
     async fn handle_connection(
         &self,
         mut local_stream: TcpStream,
-        upstream: String,
+        upstream: UpstreamTarget,
         peer_addr: std::net::SocketAddr,
     ) {
         let start = Instant::now();
@@ -314,28 +308,23 @@ impl OutboundProxy {
         match self.route(upstream).await {
             Route::MuxStream(mut stream) => {
                 metrics::record_mux_stream();
-                match crate::proxy::copy_bidirectional(&mut local_stream, &mut stream).await {
-                    Ok((up, down)) => metrics::record_connection(up, down, start.elapsed()),
-                    Err(e) => {
-                        debug!("mux stream relay error → {}: {}", upstream, e);
-                        metrics::record_connection_failed();
-                    }
+                if let Err(e) = crate::proxy::record_relay_result(
+                    crate::proxy::copy_bidirectional(&mut local_stream, &mut stream).await,
+                    start,
+                ) {
+                    debug!("mux stream relay error → {}: {}", upstream, e);
                 }
             }
             Route::Legacy(mut tls) => {
-                let copy_result =
-                    crate::proxy::copy_bidirectional(&mut local_stream, tls.as_mut()).await;
-                let (bytes_up, bytes_down) = match copy_result {
-                    Ok((up, down)) => (up, down),
-                    Err(e) => {
-                        warn!(
-                            "bidirectional copy error for {} → {}: {}",
-                            self.local_id, upstream, e
-                        );
-                        (0, 0)
-                    }
-                };
-                metrics::record_connection(bytes_up, bytes_down, start.elapsed());
+                if let Err(e) = crate::proxy::record_relay_result(
+                    crate::proxy::copy_bidirectional(&mut local_stream, tls.as_mut()).await,
+                    start,
+                ) {
+                    warn!(
+                        "bidirectional copy error for {} → {}: {}",
+                        self.local_id, upstream, e
+                    );
+                }
             }
             Route::Denied | Route::Failed => {
                 metrics::record_connection_failed();
@@ -426,7 +415,7 @@ impl OutboundProxy {
     /// promote it to a shared tunnel (peer negotiated mux) or use it 1:1.
     async fn establish(&self, upstream: std::net::SocketAddr) -> Route {
         let handshake_start = Instant::now();
-        let tls_stream = match self.tls_client.connect(&upstream.to_string()).await {
+        let tls_stream = match self.tls_client.connect(upstream).await {
             Ok(s) => {
                 metrics::record_handshake(handshake_start.elapsed());
                 s
@@ -457,7 +446,7 @@ impl OutboundProxy {
         // ALPN commits the wire protocol: if the handshake negotiated mux we
         // MUST speak mux, whatever the local flag says (the flag controls what
         // the TlsClient offers — wired in main.rs — not what was agreed).
-        if crate::proxy::mux::negotiated_alpn(&tls_stream.inner).as_deref()
+        if crate::proxy::mux::negotiated_alpn(&tls_stream.inner)
             == Some(crate::proxy::mux::ALPN_MUX)
         {
             let tunnel = self

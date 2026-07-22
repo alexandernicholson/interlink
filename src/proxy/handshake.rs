@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -41,14 +42,14 @@ pub fn legacy_alpn_protocols() -> Vec<Vec<u8>> {
 /// The CertificateRequest message in the handshake makes this mutual TLS.
 #[async_trait]
 pub trait TlsHandshake: Send + Sync {
-    async fn connect(&self, addr: &str) -> Result<TlsStream, InterlinkError>;
+    async fn connect(&self, addr: SocketAddr) -> Result<TlsStream, InterlinkError>;
     async fn accept(&self, stream: TcpStream) -> Result<TlsStream, InterlinkError>;
 }
 
 /// A TLS 1.3 stream with the peer's SPIFFE identity extracted from the SAN.
 pub struct TlsStream {
     pub inner: tokio_rustls::TlsStream<TcpStream>,
-    pub peer_identity: SpiffeId,
+    pub peer_identity: Arc<SpiffeId>,
 }
 
 // ─── TLS Client (outbound mTLS) ──────────────────────────────────────
@@ -137,16 +138,13 @@ impl TlsClient {
 
 #[async_trait]
 impl TlsHandshake for TlsClient {
-    async fn connect(&self, addr: &str) -> Result<TlsStream, InterlinkError> {
+    async fn connect(&self, addr: SocketAddr) -> Result<TlsStream, InterlinkError> {
         let stream = TcpStream::connect(addr).await.map_err(InterlinkError::Io)?;
         if let Err(e) = configure_socket(&stream) {
             tracing::warn!("failed to configure outbound TLS socket {}: {}", addr, e);
         }
 
-        let host = addr.split(':').next().unwrap_or(addr);
-        let server_name = ServerName::try_from(host.to_string()).map_err(|_| {
-            InterlinkError::Tls(rustls::Error::General("invalid server name".to_string()))
-        })?;
+        let server_name = ServerName::IpAddress(addr.ip().into());
 
         let tls_stream: tokio_rustls::TlsStream<_> = timeout(
             timeouts::TLS_HANDSHAKE,
@@ -239,7 +237,7 @@ impl TlsServer {
 
 #[async_trait]
 impl TlsHandshake for TlsServer {
-    async fn connect(&self, _addr: &str) -> Result<TlsStream, InterlinkError> {
+    async fn connect(&self, _addr: SocketAddr) -> Result<TlsStream, InterlinkError> {
         Err(InterlinkError::Tls(rustls::Error::General(
             "server cannot initiate connections".to_string(),
         )))
@@ -283,7 +281,7 @@ static SAN_OID: LazyLock<x509_parser::asn1_rs::Oid<'static>> =
 /// Capacity: 1024 entries. Peak mesh deployments commonly have 50–500 peers,
 /// so this avoids re-parsing X.509 certs on repeated connections from the
 /// same identity.
-static IDENTITY_CACHE: LazyLock<moka::sync::Cache<Vec<u8>, SpiffeId>> = LazyLock::new(|| {
+static IDENTITY_CACHE: LazyLock<moka::sync::Cache<Vec<u8>, Arc<SpiffeId>>> = LazyLock::new(|| {
     moka::sync::Cache::builder()
         .max_capacity(1024)
         .name("identity-cache")
@@ -296,7 +294,7 @@ static IDENTITY_CACHE: LazyLock<moka::sync::Cache<Vec<u8>, SpiffeId>> = LazyLock
 /// connections from the same peer skip the X.509 parse entirely.
 pub(crate) fn extract_identity_from_tls_stream(
     stream: &tokio_rustls::TlsStream<TcpStream>,
-) -> Result<SpiffeId, InterlinkError> {
+) -> Result<Arc<SpiffeId>, InterlinkError> {
     let (_io, state) = stream.get_ref();
     let certs = state
         .peer_certificates()
@@ -312,7 +310,7 @@ pub(crate) fn extract_identity_from_tls_stream(
         return Ok(cached);
     }
 
-    let id = spiffe_id_from_cert_der(leaf_der)?;
+    let id = Arc::new(spiffe_id_from_cert_der(leaf_der)?);
     IDENTITY_CACHE.insert(leaf_der.to_vec(), id.clone());
     Ok(id)
 }

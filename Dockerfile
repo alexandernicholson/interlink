@@ -8,9 +8,17 @@ COPY benches ./benches
 COPY examples ./examples
 RUN cargo build --release --bin interlinkd
 
-# Runtime stage
-FROM gcr.io/distroless/cc-debian12:nonroot
-COPY --from=builder /src/target/release/interlinkd /interlinkd
-EXPOSE 4143 4140 4192
-USER nonroot:nonroot
-ENTRYPOINT ["/interlinkd"]
+# Runtime stage. The same image is used by the short-lived Kubernetes
+# redirect initializer, so it contains iptables and a shell in addition to
+# the non-root proxy runtime.
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    iptables \
+    && groupadd --gid 1337 interlink \
+    && useradd --uid 1337 --gid 1337 --no-create-home --shell /usr/sbin/nologin interlink \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /src/target/release/interlinkd /usr/local/bin/interlinkd
+EXPOSE 5433 15001 15000 4192
+USER 1337:1337
+ENTRYPOINT ["/usr/local/bin/interlinkd"]

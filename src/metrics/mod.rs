@@ -11,6 +11,7 @@ pub static INTERLINK_METRICS: LazyLock<InterlinkMetrics> = LazyLock::new(Interli
 /// Descriptive metrics for the proxy.
 pub struct InterlinkMetrics {
     pub connections_total: Counter,
+    pub connection_errors_total: Counter,
     pub connections_active: Gauge,
     pub handshakes_total: Counter,
     pub bytes_total: Counter,
@@ -35,6 +36,7 @@ impl InterlinkMetrics {
     pub fn new() -> Self {
         Self {
             connections_total: counter!("interlink_connections_total"),
+            connection_errors_total: counter!("interlink_connection_errors_total"),
             connections_active: gauge!("interlink_connections_active"),
             handshakes_total: counter!("interlink_handshakes_total"),
             bytes_total: counter!("interlink_bytes_total"),
@@ -72,6 +74,7 @@ pub fn record_connection(bytes_up: u64, bytes_down: u64, duration: std::time::Du
 pub fn record_connection_failed() {
     let m = &INTERLINK_METRICS;
     m.connections_total.increment(1);
+    m.connection_errors_total.increment(1);
     m.connections_active.decrement(1);
 }
 

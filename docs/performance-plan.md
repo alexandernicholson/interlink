@@ -1,6 +1,10 @@
 # Performance Uplift Plan
 
-Status: **R29 resolved (2026-07-08, eleventh round)** — the reported `SO_REUSEPORT`
+Status: **microbenchmark path and profiling pass complete (2026-07-22)** — 147
+declared semantic paths now run through a checked inventory and source-coverage floor;
+all checked-in Criterion cases use a 100 ms warm-up plus 500 ms measurement window.
+
+Prior status: **R29 resolved (2026-07-08, eleventh round)** — the reported `SO_REUSEPORT`
 regression **does not exist**: an interleaved same-binary A/B (3× heavy + 2× churn
 trials per arm via a new `INTERLINK_ACCEPTORS` env knob) shows the arms statistically
 indistinguishable; single-run heavy-profile p99 on this shared machine varies
@@ -15,6 +19,73 @@ Grounded in a full read of the per-connection hot path
 (`src/proxy/tcp.rs`, `src/proxy/outbound.rs`, `src/proxy/handshake.rs`, `src/policy/mod.rs`,
 `src/common/identity.rs`, `src/discovery/dns.rs`, `src/metrics/mod.rs`) and the measured
 results in `bench/results/`.
+
+## Microbenchmark path harness and hot-path pass (2026-07-22)
+
+`benches/path_inventory.json` is the source of truth for four production-aligned
+benchmark binaries: pure proxy decisions, runtime services, TLS/certificate work, and
+the two-proxy data plane. `scripts/verify-microbench-paths.py` fails when a declared
+case is missing, a benchmark has no owner, a Rust source file is unclassified, or a
+file gains uncovered lines/functions. The verifier executes every case in Criterion
+test mode under `cargo llvm-cov`; the current guarded surface is **1,692/2,118 lines
+(79.9%) and 207/288 functions (71.9%)**, with identity and proxy configuration at
+100%. The remaining lines are explicitly locked rather than hidden by an aggregate
+percentage: any newly uncovered path fails preflight. CI installs `llvm-tools-preview`
+and `cargo-llvm-cov` and runs the same gate.
+
+Every benchmark uses the shared production allocator (mimalloc) and a compile-time
+checked **600 ms** timing budget (100 ms warm-up + 500 ms measurement), below the
+requested two-second ceiling. Cases include cache hit/miss/expiry/error/single-flight;
+configuration and identity-provider precedence/rejections; admin responses and every
+metric event; certificate success/rejection; full/resumed/IPv6/rejected TLS;
+mux/legacy relay, half-close, copy failure, policy denial, handshake failure, missing
+upstream, and saturation.
+
+Bounded Criterion measurements on the same M4 Max host:
+
+| path | initial median | final 99% interval (median) | change |
+|---|---:|---:|---:|
+| SPIFFE parse | 231.35 ns | 38.954–39.631 ns (39.307) | **−83.0%, 5.89×** |
+| SPIFFE format | 66.96 ns | 11.355–11.650 ns (11.538) | **−82.8%, 5.80×** |
+| string policy pattern | 305.89 ns | 66.774–68.683 ns (67.765) | **−77.8%, 4.51×** |
+| compiled policy pattern | 36.46 ns | 10.409–10.680 ns (10.539) | **−71.1%, 3.46×** |
+| segment glob | 22.21 ns | 7.081–7.259 ns (7.152) | **−67.8%, 3.11×** |
+| policy evaluation | 47.87 ns | 19.698–19.880 ns (19.800) | **−58.6%, 2.42×** |
+| DNS cache hit | 45.500 ns Vec-copy control | 42.427–42.910 ns (42.682) | **−6.2%** |
+
+The allocation-heavy initial results predate correcting the benchmark allocator to
+match `interlinkd`; their deltas therefore include both the algorithmic cutover and
+the allocator correction. The no-allocation glob/policy comparisons do not have that
+confound. Current end-to-end fixture medians are 147.69 µs for a small mux relay and
+316.89 µs for legacy per-connection TLS; a full TLS handshake is 351.19 µs.
+
+Two bounded samply profiles drove the changes. Policy evaluation moved from 77.6%
+inclusive in generic glob searching (52.7% constructing `StrSearcher`) to 40.5% in
+specialized `SegmentGlob::matches`; the remaining profile is memcmp (28.7% exclusive),
+`PolicyEngine::evaluate` (26.9%), and hashing (10.4%). An `ArcSwap<HashMap>` policy
+lookup experiment was rejected and reverted after a measured **34.2% regression**
+(19.392–19.592 ns to 26.066–26.155 ns). The identity profile then exposed fixed-string
+`split_once` searchers; byte-delimiter scans reduced the already-improved parser from
+about 109 ns to 39.3 ns.
+
+Implementation and correctness fixes:
+
+- Classified glob shapes remove per-match splitting/searcher construction; an empty
+  pattern now matches only an empty segment.
+- SPIFFE parsing is strict and allocation-minimal: userinfo, ports, query, fragment,
+  malformed paths, and missing components fail closed instead of being normalized by
+  a generic URL parser. Formatting pre-sizes one output allocation.
+- DNS endpoints are `Arc<[SocketAddr]>`; cache hits no longer clone an address vector.
+  Upstream targets and TLS dials remain typed `SocketAddr`, eliminating string
+  format/parse churn and fixing IPv6.
+- Peer SPIFFE IDs are cached/shared as `Arc<SpiffeId>`; HTTP request-line validation
+  no longer allocates a `Vec`; benchmark TLS uses rustls' production crypto path.
+- File configuration now applies `mux`; non-IA5 certificate SAN input returns an
+  error instead of panicking.
+- Inbound, outbound, and mux relay failures now share one accounting path: failures
+  skip latency/byte observations and increment the precise new
+  `interlink_connection_errors_total` counter. Success and reset behavior are both
+  exercised.
 
 ## Where the time goes today
 

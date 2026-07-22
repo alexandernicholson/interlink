@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 use std::net::SocketAddr;
+#[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
 
 use tokio::net::TcpStream;

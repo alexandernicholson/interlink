@@ -15,9 +15,9 @@ pub struct Config {
     pub max_connections: usize,
     /// Path to the CA bundle (DER or PEM) used to validate peer certificates.
     pub ca_bundle_path: Option<String>,
-    /// Path to the leaf certificate (DER) this proxy presents.
+    /// Path to the leaf certificate (DER or PEM) this proxy presents.
     pub cert_path: Option<String>,
-    /// Path to the leaf private key (PKCS#8) for this proxy.
+    /// Path to a PEM private key or raw PKCS#8 DER key for this proxy.
     pub key_path: Option<String>,
     /// Default upstream address for when SO_ORIGINAL_DST is unavailable.
     pub default_upstream: Option<String>,
@@ -100,6 +100,7 @@ impl Config {
         if file_cfg.default_upstream.is_some() {
             self.default_upstream = file_cfg.default_upstream;
         }
+        self.mux = file_cfg.mux;
 
         Ok(self)
     }
@@ -228,5 +229,26 @@ mod tests {
             ..Config::default()
         };
         assert!(cfg.validate().is_err());
+    }
+    #[test]
+    fn config_file_overrides_mux_flag() {
+        let path = std::env::temp_dir().join(format!(
+            "interlink-config-mux-{}-{}.json",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let file_cfg = Config {
+            mux: false,
+            ..Config::default()
+        };
+        std::fs::write(&path, serde_json::to_vec(&file_cfg).unwrap()).unwrap();
+
+        let loaded = Config::default().with_file(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+
+        assert!(
+            !loaded.mux,
+            "file-level mux=false must override the default"
+        );
     }
 }
