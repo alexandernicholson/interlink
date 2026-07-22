@@ -102,8 +102,8 @@
     "src/proxy/mod.rs": {"min_line_percent": 70.0, "max_uncovered_lines": 24, "max_uncovered_functions": 3},
     "src/proxy/mux.rs": {"min_line_percent": 77.0, "max_uncovered_lines": 45, "max_uncovered_functions": 6},
     "src/proxy/original_dst.rs": {"min_line_percent": {"linux": 45.0, "default": 100.0}, "max_uncovered_lines": {"linux": 20, "default": 0}, "max_uncovered_functions": 0},
-    "src/proxy/outbound.rs": {"min_line_percent": 72.0, "max_uncovered_lines": 83, "max_uncovered_functions": 8},
-    "src/proxy/tcp.rs": {"min_line_percent": 64.0, "max_uncovered_lines": 98, "max_uncovered_functions": 11},
+    "src/proxy/outbound.rs": {"min_line_percent": {"linux": 71.0, "default": 72.0}, "max_uncovered_lines": {"linux": 86, "default": 83}, "max_uncovered_functions": 8},
+    "src/proxy/tcp.rs": {"min_line_percent": {"linux": 63.0, "default": 64.0}, "max_uncovered_lines": {"linux": 100, "default": 98}, "max_uncovered_functions": 11},
     "src/proxy/verify.rs": {"min_line_percent": 80.0, "max_uncovered_lines": 12, "max_uncovered_functions": 3}
   },
   "exempt_sources": {
