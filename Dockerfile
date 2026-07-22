@@ -11,7 +11,7 @@ RUN cargo build --release --bin interlinkd
 # Runtime stage. The same image is used by the short-lived Kubernetes
 # redirect initializer, so it contains iptables and a shell in addition to
 # the non-root proxy runtime.
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     iptables \
