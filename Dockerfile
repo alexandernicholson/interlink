@@ -19,6 +19,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd --uid 1337 --gid 1337 --no-create-home --shell /usr/sbin/nologin interlink \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /src/target/release/interlinkd /usr/local/bin/interlinkd
-EXPOSE 5433 15001 15000 4192
+EXPOSE 5433 15001 4190 4192
 USER 1337:1337
 ENTRYPOINT ["/usr/local/bin/interlinkd"]
