@@ -3,6 +3,7 @@ name = "interlink"
 version = "0.1.0"
 edition = "2021"
 description = "A lightweight, RFC-backed service mesh proxy for cloud-to-edge"
+license = "MIT"
 
 [lib]
 name = "interlink"

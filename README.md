@@ -342,7 +342,7 @@ connections over a single handshake** (−63 % proxy CPU) under connection churn
 
 ## License
 
-Committed to the public domain. See `UNLICENSE` or `LICENSE` file.
+Licensed under the [MIT License](LICENSE).
 
 <hr />
 
