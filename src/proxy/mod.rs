@@ -7,12 +7,14 @@ pub mod handshake;
 pub(crate) mod mux;
 pub(crate) mod original_dst;
 pub mod outbound;
+pub mod reload;
 pub mod tcp;
 pub(crate) mod verify;
 
 pub use handshake::{TlsClient, TlsHandshake, TlsServer};
 pub(crate) use original_dst::get_original_dst;
 pub use outbound::OutboundProxy;
+pub use reload::{TlsCredentialPaths, TlsCredentialReloader};
 pub use tcp::TcpProxy;
 
 use std::fmt;

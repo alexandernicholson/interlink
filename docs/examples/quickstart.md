@@ -31,7 +31,7 @@ Admin endpoints:
 
 - `GET /healthz` — liveness probe
 - `GET /readyz` — readiness probe
-- `POST /reload` — reload configuration and policy from disk
+- `POST /reload` — atomically reload the CA bundle, certificate, and private key for new handshakes; invalid files return `500` without replacing the active credentials
 
 ## Running the Demo
 

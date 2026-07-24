@@ -54,7 +54,7 @@
       {
         "group": "admin_http",
         "covers": ["src/admin/mod.rs"],
-        "cases": ["health", "not_ready", "ready", "reload", "not_found"]
+        "cases": ["health", "not_ready", "ready", "reload", "reload_failed", "reload_unavailable", "not_found"]
       },
       {
         "group": "metrics",
@@ -113,6 +113,7 @@
     "src/common/error.rs": "error type declarations only",
     "src/discovery/mod.rs": "module declarations and re-exports only",
     "src/identity/mod.rs": "module declarations only",
-    "src/main.rs": "process orchestration and signal lifecycle are smoke-tested, not microbenchmarked"
+    "src/main.rs": "process orchestration and signal lifecycle are smoke-tested, not microbenchmarked",
+    "src/proxy/reload.rs": "credential reload is control-plane file validation; atomic generation access is covered by bounded concurrency integration tests"
   }
 }

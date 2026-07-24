@@ -92,8 +92,8 @@ Environment variable equivalents:
 | `INTERLINK_METRICS_PORT` | Prometheus metrics port | 4190 |
 | `INTERLINK_TRUST_DOMAIN` | SPIFFE trust domain | `cluster.local` |
 | `INTERLINK_IDENTITY` | This proxy's SPIFFE ID | derived |
-| `INTERLINK_CA_BUNDLE_PATH` | CA bundle (DER) for peer validation | — |
-| `INTERLINK_CERT_PATH` / `INTERLINK_KEY_PATH` | Leaf cert (DER) / key (PKCS#8 DER) | — |
+| `INTERLINK_CA_BUNDLE_PATH` | CA bundle (DER or PEM) for peer validation | — |
+| `INTERLINK_CERT_PATH` / `INTERLINK_KEY_PATH` | Leaf cert (DER or PEM) / key (PKCS#8 DER or PEM) | — |
 | `INTERLINK_DEFAULT_UPSTREAM` | Fallback upstream when `SO_ORIGINAL_DST` is unavailable | — |
 | `INTERLINK_MUX` | Offer multiplexed tunnels (ALPN `il/mux/1`) to peers | `true` |
 | `INTERLINK_ACCEPTORS` | SO_REUSEPORT acceptor tasks per listener (1–16) | `min(cores,4)` |
@@ -101,7 +101,15 @@ Environment variable equivalents:
 | `INTERLINK_MAX_CONNECTIONS` | Per-proxy connection limit | 1024 |
 | `INTERLINK_CONFIG_FILE` | Path to JSON config file | `/etc/interlink/config.json` |
 
-Runtime reload of policy and certificate settings is available via `POST /reload` on the admin port.
+`POST /reload` on the admin port atomically reloads the CA bundle, leaf certificate, and private key for new handshakes. A reload succeeds only when the files form a trusted, currently valid key pair with the configured SPIFFE identity; otherwise it returns `500` and preserves the last-known-good credentials. Existing TLS streams are uninterrupted.
+
+For a Signet agent using its default shared-volume layout, point Interlink at the same files and set `INTERLINK_IDENTITY` to the SPIFFE ID derived from the agent's trust-domain, namespace, and service-account arguments:
+
+```sh
+INTERLINK_CA_BUNDLE_PATH=/var/run/interlink/ca-bundle.pem
+INTERLINK_CERT_PATH=/var/run/interlink/identity/tls.crt
+INTERLINK_KEY_PATH=/var/run/interlink/identity/tls.key
+```
 
 <hr />
 

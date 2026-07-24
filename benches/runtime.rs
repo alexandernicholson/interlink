@@ -2,14 +2,14 @@ mod support;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use futures_util::future::join_all;
-use interlink::admin::AdminServer;
+use interlink::admin::{AdminServer, ReloadHandler};
 use interlink::common::config::Config;
 use interlink::common::error::InterlinkError;
 use interlink::common::identity::{IdentityProvider, SpiffeId, TrustDomain};
@@ -58,6 +58,21 @@ impl DnsResolver for FakeResolver {
             Err(InterlinkError::DnsResolution("injected failure".into()))
         } else {
             Ok(vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080)])
+        }
+    }
+}
+
+struct SwitchableReload {
+    fail: AtomicBool,
+}
+
+#[async_trait]
+impl ReloadHandler for SwitchableReload {
+    async fn reload(&self) -> Result<(), InterlinkError> {
+        if self.fail.load(Ordering::Relaxed) {
+            Err(InterlinkError::Config("measured reload failure".into()))
+        } else {
+            Ok(())
         }
     }
 }
@@ -351,20 +366,38 @@ fn bench_admin_paths(c: &mut Criterion) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let port = reserve_port();
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let reload = Arc::new(SwitchableReload {
+        fail: AtomicBool::new(false),
+    });
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server = Arc::new(
         AdminServer::new()
             .with_port(port)
-            .with_shutdown(shutdown_rx),
+            .with_shutdown(shutdown_rx)
+            .with_reload_handler(reload.clone()),
     );
     let task = {
         let _runtime_guard = runtime.enter();
         server.clone().spawn()
     };
+    let unavailable_port = reserve_port();
+    let unavailable_addr = SocketAddr::from(([127, 0, 0, 1], unavailable_port));
+    let (unavailable_shutdown_tx, unavailable_shutdown_rx) = watch::channel(false);
+    let unavailable_server = Arc::new(
+        AdminServer::new()
+            .with_port(unavailable_port)
+            .with_shutdown(unavailable_shutdown_rx),
+    );
+    let unavailable_task = {
+        let _runtime_guard = runtime.enter();
+        unavailable_server.spawn()
+    };
     runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if TcpStream::connect(addr).await.is_ok() {
+                if TcpStream::connect(addr).await.is_ok()
+                    && TcpStream::connect(unavailable_addr).await.is_ok()
+                {
                     return;
                 }
                 tokio::task::yield_now().await;
@@ -403,7 +436,22 @@ fn bench_admin_paths(c: &mut Criterion) {
     group.bench_function("reload", |b| {
         b.to_async(&runtime).iter(|| async {
             let response = admin_request(addr, b"POST /reload HTTP/1.1\r\n\r\n").await;
-            assert!(response.ends_with(b"reload acknowledged"));
+            assert!(response.ends_with(b"reload complete"));
+            black_box(response)
+        })
+    });
+    reload.fail.store(true, Ordering::Relaxed);
+    group.bench_function("reload_failed", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let response = admin_request(addr, b"POST /reload HTTP/1.1\r\n\r\n").await;
+            assert!(response.ends_with(b"reload failed"));
+            black_box(response)
+        })
+    });
+    group.bench_function("reload_unavailable", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let response = admin_request(unavailable_addr, b"POST /reload HTTP/1.1\r\n\r\n").await;
+            assert!(response.ends_with(b"reload unavailable"));
             black_box(response)
         })
     });
@@ -417,11 +465,14 @@ fn bench_admin_paths(c: &mut Criterion) {
     group.finish();
 
     shutdown_tx.send(true).unwrap();
+    unavailable_shutdown_tx.send(true).unwrap();
     runtime.block_on(async {
-        tokio::time::timeout(Duration::from_secs(1), task)
-            .await
-            .unwrap()
-            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            task.await.unwrap();
+            unavailable_task.await.unwrap();
+        })
+        .await
+        .unwrap();
     });
 }
 

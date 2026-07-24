@@ -5,24 +5,32 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 
-use crate::common::constants::ports;
+use crate::common::{constants::ports, error::InterlinkError};
 
-/// Administrative HTTP server for health, readiness, and config reload.
+/// Administrative HTTP server for health, readiness, and TLS credential reload.
 ///
 /// Endpoints:
 /// - `GET /healthz` — liveness probe (always 200 when server is running)
 /// - `GET /readyz` — readiness probe (200 when proxies are accepting traffic)
-/// - `POST /reload` — trigger configuration reload (placeholder)
+/// - `POST /reload` — atomically reload TLS credentials for new handshakes
+#[async_trait::async_trait]
+pub trait ReloadHandler: Send + Sync {
+    async fn reload(&self) -> Result<(), InterlinkError>;
+}
+
 pub struct AdminServer {
     port: u16,
     ready: Arc<std::sync::atomic::AtomicBool>,
     shutdown: Option<watch::Receiver<bool>>,
+    reload_handler: Option<Arc<dyn ReloadHandler>>,
 }
 
 const HEALTH_RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
 const READY_RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nready";
 const NOT_READY_RESPONSE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot ready";
-const RELOAD_RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 19\r\nConnection: close\r\n\r\nreload acknowledged";
+const RELOAD_RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 15\r\nConnection: close\r\n\r\nreload complete";
+const RELOAD_FAILED_RESPONSE: &[u8] = b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: close\r\n\r\nreload failed";
+const RELOAD_UNAVAILABLE_RESPONSE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 18\r\nConnection: close\r\n\r\nreload unavailable";
 const NOT_FOUND_RESPONSE: &[u8] = b"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found";
 
 impl AdminServer {
@@ -31,6 +39,7 @@ impl AdminServer {
             port: ports::ADMIN,
             ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             shutdown: None,
+            reload_handler: None,
         }
     }
 
@@ -41,6 +50,11 @@ impl AdminServer {
 
     pub fn with_shutdown(mut self, shutdown: watch::Receiver<bool>) -> Self {
         self.shutdown = Some(shutdown);
+        self
+    }
+
+    pub fn with_reload_handler(mut self, reload_handler: Arc<dyn ReloadHandler>) -> Self {
+        self.reload_handler = Some(reload_handler);
         self
     }
 
@@ -123,13 +137,22 @@ impl AdminServer {
                     NOT_READY_RESPONSE
                 }
             }
-            (b"POST", b"/reload") => {
-                warn!(
-                    "config reload requested from {} (not yet implemented)",
-                    peer_addr
-                );
-                RELOAD_RESPONSE
-            }
+            (b"POST", b"/reload") => match &self.reload_handler {
+                Some(handler) => match handler.reload().await {
+                    Ok(()) => {
+                        info!("TLS credentials reloaded at request of {}", peer_addr);
+                        RELOAD_RESPONSE
+                    }
+                    Err(error) => {
+                        error!(%error, %peer_addr, "TLS credential reload failed");
+                        RELOAD_FAILED_RESPONSE
+                    }
+                },
+                None => {
+                    warn!(%peer_addr, "TLS credential reload is unavailable");
+                    RELOAD_UNAVAILABLE_RESPONSE
+                }
+            },
             _ => NOT_FOUND_RESPONSE,
         };
 
@@ -200,5 +223,86 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 503 Service Unavailable"));
 
         handle.abort();
+    }
+
+    struct FixedReloadHandler {
+        fail: bool,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ReloadHandler for FixedReloadHandler {
+        async fn reload(&self) -> Result<(), InterlinkError> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.fail {
+                Err(InterlinkError::Config("invalid replacement".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    async fn request(admin: &AdminServer, request: &'static [u8]) -> Vec<u8> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = tokio::spawn(async move {
+            let mut stream = TcpStream::connect(address).await.unwrap();
+            stream.write_all(request).await.unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).await.unwrap();
+            response
+        });
+        let (stream, peer_address) = listener.accept().await.unwrap();
+        admin.handle_request(stream, peer_address).await;
+        client.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn reload_is_unavailable_without_a_handler() {
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            request(&AdminServer::new(), b"POST /reload HTTP/1.1\r\n\r\n"),
+        )
+        .await
+        .expect("admin request timed out");
+
+        assert!(response.starts_with(b"HTTP/1.1 503 Service Unavailable\r\n"));
+    }
+
+    #[tokio::test]
+    async fn reload_reports_handler_success() {
+        let handler = Arc::new(FixedReloadHandler {
+            fail: false,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let admin = AdminServer::new().with_reload_handler(handler.clone());
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            request(&admin, b"POST /reload HTTP/1.1\r\n\r\n"),
+        )
+        .await
+        .expect("admin request timed out");
+
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert_eq!(handler.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn reload_reports_handler_failure() {
+        let handler = Arc::new(FixedReloadHandler {
+            fail: true,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let admin = AdminServer::new().with_reload_handler(handler.clone());
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            request(&admin, b"POST /reload HTTP/1.1\r\n\r\n"),
+        )
+        .await
+        .expect("admin request timed out");
+
+        assert!(response.starts_with(b"HTTP/1.1 500 Internal Server Error\r\n"));
+        assert_eq!(handler.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }
