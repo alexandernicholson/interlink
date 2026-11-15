@@ -3,14 +3,16 @@ name: ci
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   preflight:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal --component clippy --component llvm-tools-preview && rustup default stable
       - name: install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
+        run: cargo install cargo-llvm-cov --locked --version 0.6.21
       - name: preflight (clippy + tests + microbenchmark paths)
         run: ./scripts/preflight.sh

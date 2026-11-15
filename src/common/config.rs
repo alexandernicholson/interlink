@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 
 use crate::common::error::InterlinkError;
@@ -24,6 +25,43 @@ pub struct Config {
     /// Multiplex proxy-to-proxy connections over shared mTLS tunnels.
     #[serde(default = "crate::proxy::config::default_mux_true")]
     pub mux: bool,
+    /// Outbound listener IP; defaults to loopback to keep the relay local.
+    #[serde(default = "default_loopback_bind")]
+    pub outbound_bind: String,
+    /// Metrics listener IP; defaults to loopback.
+    #[serde(default = "default_loopback_bind")]
+    pub metrics_bind: String,
+    /// Admin listener socket address; non-loopback use requires a token.
+    #[serde(default = "default_admin_bind")]
+    pub admin_bind: String,
+    /// Optional bearer token required for authenticated admin operations.
+    #[serde(default)]
+    pub admin_token: Option<String>,
+    /// CIDRs permitted as outbound destinations, parsed by the proxy constructor.
+    #[serde(default)]
+    pub egress_subnets: Vec<String>,
+    /// Maximum lifetime of a multiplexed tunnel in seconds.
+    #[serde(default = "default_tunnel_max_age_secs")]
+    pub tunnel_max_age_secs: u64,
+    /// Maximum concurrent streams on one multiplexed tunnel.
+    #[serde(default = "default_mux_max_streams_per_tunnel")]
+    pub mux_max_streams_per_tunnel: usize,
+}
+
+fn default_loopback_bind() -> String {
+    "127.0.0.1".into()
+}
+
+fn default_admin_bind() -> String {
+    "127.0.0.1:4192".into()
+}
+
+fn default_tunnel_max_age_secs() -> u64 {
+    3600
+}
+
+fn default_mux_max_streams_per_tunnel() -> usize {
+    64
 }
 
 impl Default for Config {
@@ -41,6 +79,13 @@ impl Default for Config {
             key_path: None,
             default_upstream: None,
             mux: true,
+            outbound_bind: default_loopback_bind(),
+            metrics_bind: default_loopback_bind(),
+            admin_bind: default_admin_bind(),
+            admin_token: None,
+            egress_subnets: Vec::new(),
+            tunnel_max_age_secs: default_tunnel_max_age_secs(),
+            mux_max_streams_per_tunnel: default_mux_max_streams_per_tunnel(),
         }
     }
 }
@@ -101,6 +146,15 @@ impl Config {
             self.default_upstream = file_cfg.default_upstream;
         }
         self.mux = file_cfg.mux;
+        self.outbound_bind = file_cfg.outbound_bind;
+        self.metrics_bind = file_cfg.metrics_bind;
+        self.admin_bind = file_cfg.admin_bind;
+        if file_cfg.admin_token.is_some() {
+            self.admin_token = file_cfg.admin_token;
+        }
+        self.egress_subnets = file_cfg.egress_subnets;
+        self.tunnel_max_age_secs = file_cfg.tunnel_max_age_secs;
+        self.mux_max_streams_per_tunnel = file_cfg.mux_max_streams_per_tunnel;
 
         Ok(self)
     }
@@ -145,18 +199,50 @@ impl Config {
         if let Ok(v) = std::env::var("INTERLINK_MUX") {
             self.mux = v != "false" && v != "0";
         }
+        if let Ok(v) = std::env::var("INTERLINK_OUTBOUND_BIND") {
+            self.outbound_bind = v;
+        }
+        if let Ok(v) = std::env::var("INTERLINK_METRICS_BIND") {
+            self.metrics_bind = v;
+        }
+        if let Ok(v) = std::env::var("INTERLINK_ADMIN_BIND") {
+            self.admin_bind = v;
+        }
+        if let Ok(v) = std::env::var("INTERLINK_ADMIN_TOKEN") {
+            self.admin_token = Some(v);
+        }
+        if let Ok(v) = std::env::var("INTERLINK_EGRESS_SUBNETS") {
+            self.egress_subnets = v.split(',').map(|entry| entry.trim().to_string()).collect();
+        }
+        if let Ok(v) = std::env::var("INTERLINK_TUNNEL_MAX_AGE_SECS") {
+            self.tunnel_max_age_secs = v.parse().map_err(|e| {
+                InterlinkError::Config(format!("INTERLINK_TUNNEL_MAX_AGE_SECS: {e}"))
+            })?;
+        }
+        if let Ok(v) = std::env::var("INTERLINK_MUX_MAX_STREAMS") {
+            self.mux_max_streams_per_tunnel = v.parse().map_err(|e| {
+                InterlinkError::Config(format!("INTERLINK_MUX_MAX_STREAMS: {e}"))
+            })?;
+        }
         Ok(self)
     }
 
     /// Convert the common runtime config into a proxy-specific config.
-    pub fn to_proxy_config(&self) -> crate::proxy::config::ProxyConfig {
-        crate::proxy::config::ProxyConfig {
+    pub fn to_proxy_config(&self) -> Result<crate::proxy::config::ProxyConfig, InterlinkError> {
+        let outbound_bind = self.outbound_bind.parse::<IpAddr>().map_err(|e| {
+            InterlinkError::Config(format!("invalid outbound_bind: {e}"))
+        })?;
+        Ok(crate::proxy::config::ProxyConfig {
             trust_domain: self.trust_domain.clone(),
             identity: self.identity.clone(),
             default_upstream: self.default_upstream.clone(),
             max_connections: Some(self.max_connections),
             mux: self.mux,
-        }
+            outbound_bind,
+            egress_subnets: self.egress_subnets.clone(),
+            tunnel_max_age_secs: self.tunnel_max_age_secs,
+            mux_max_streams_per_tunnel: self.mux_max_streams_per_tunnel,
+        })
     }
 
     /// Validate the configuration.
@@ -165,6 +251,37 @@ impl Config {
             return Err(InterlinkError::Config(
                 "trust_domain must not be empty".into(),
             ));
+        }
+        if self
+            .trust_domain
+            .bytes()
+            .any(|byte| !byte.is_ascii() || byte.is_ascii_control())
+        {
+            return Err(InterlinkError::Config(
+                "trust_domain must contain only printable ASCII characters".into(),
+            ));
+        }
+        for (name, bind) in [
+            ("outbound_bind", &self.outbound_bind),
+            ("metrics_bind", &self.metrics_bind),
+        ] {
+            bind.parse::<IpAddr>()
+                .map_err(|e| InterlinkError::Config(format!("invalid {name}: {e}")))?;
+        }
+        self.admin_bind
+            .parse::<SocketAddr>()
+            .map_err(|e| InterlinkError::Config(format!("invalid admin_bind: {e}")))?;
+        if self.admin_token.as_ref().is_some_and(|token| token.is_empty()) {
+            return Err(InterlinkError::Config("admin_token must not be empty".into()));
+        }
+        if self.egress_subnets.iter().any(|entry| entry.trim().is_empty()) {
+            return Err(InterlinkError::Config("egress_subnets entries must not be empty".into()));
+        }
+        if self.tunnel_max_age_secs == 0 {
+            return Err(InterlinkError::Config("tunnel_max_age_secs must be > 0".into()));
+        }
+        if self.mux_max_streams_per_tunnel == 0 {
+            return Err(InterlinkError::Config("mux_max_streams_per_tunnel must be > 0".into()));
         }
         if self.max_connections == 0 {
             return Err(InterlinkError::Config("max_connections must be > 0".into()));
@@ -193,6 +310,14 @@ mod tests {
         assert_eq!(cfg.trust_domain, "cluster.local");
         assert!(cfg.identity.is_none());
         assert_eq!(cfg.max_connections, 1024);
+        assert_eq!(cfg.outbound_bind, "127.0.0.1");
+        assert_eq!(cfg.metrics_bind, "127.0.0.1");
+        assert_eq!(cfg.admin_bind, "127.0.0.1:4192");
+        assert!(cfg.admin_token.is_none());
+        assert!(cfg.egress_subnets.is_empty());
+        assert_eq!(cfg.tunnel_max_age_secs, 3600);
+        assert_eq!(cfg.mux_max_streams_per_tunnel, 64);
+        cfg.validate().unwrap();
     }
 
     #[test]
@@ -202,11 +327,39 @@ mod tests {
         std::env::set_var("INTERLINK_TRUST_DOMAIN", "env.local");
         std::env::set_var("INTERLINK_MAX_CONNECTIONS", "512");
         std::env::remove_var("INTERLINK_IDENTITY");
+        let overrides = [
+            ("INTERLINK_OUTBOUND_BIND", "::1"),
+            ("INTERLINK_METRICS_BIND", "0.0.0.0"),
+            ("INTERLINK_ADMIN_BIND", "[::1]:9192"),
+            ("INTERLINK_ADMIN_TOKEN", "secret"),
+            ("INTERLINK_EGRESS_SUBNETS", "10.0.0.0/8, ::1/128"),
+            ("INTERLINK_TUNNEL_MAX_AGE_SECS", "120"),
+            ("INTERLINK_MUX_MAX_STREAMS", "8"),
+        ];
+        for (key, value) in overrides {
+            std::env::set_var(key, value);
+        }
 
         let cfg = Config::load().unwrap();
         assert_eq!(cfg.trust_domain, "env.local");
         assert_eq!(cfg.max_connections, 512);
         assert!(cfg.identity.is_none());
+        assert_eq!(cfg.outbound_bind, "::1");
+        assert_eq!(cfg.metrics_bind, "0.0.0.0");
+        assert_eq!(cfg.admin_bind, "[::1]:9192");
+        assert_eq!(cfg.admin_token.as_deref(), Some("secret"));
+        assert_eq!(cfg.egress_subnets, ["10.0.0.0/8", "::1/128"]);
+        assert_eq!(cfg.tunnel_max_age_secs, 120);
+        assert_eq!(cfg.mux_max_streams_per_tunnel, 8);
+        for key in ["INTERLINK_TUNNEL_MAX_AGE_SECS", "INTERLINK_MUX_MAX_STREAMS"] {
+            let original = std::env::var(key).unwrap();
+            std::env::set_var(key, "not-a-number");
+            assert!(matches!(Config::default().with_env(), Err(InterlinkError::Config(_))));
+            std::env::set_var(key, original);
+        }
+        for (key, _) in overrides {
+            std::env::remove_var(key);
+        }
 
         std::env::remove_var("INTERLINK_CONFIG_FILE");
         std::env::remove_var("INTERLINK_TRUST_DOMAIN");
@@ -250,5 +403,89 @@ mod tests {
             !loaded.mux,
             "file-level mux=false must override the default"
         );
+    }
+
+    #[test]
+    fn config_security_fields_file_overrides_and_serde_defaults() {
+        let path = std::env::temp_dir().join(format!(
+            "interlink-security-config-{}.json", std::process::id()
+        ));
+        let file_cfg = Config {
+            outbound_bind: "::1".into(),
+            metrics_bind: "0.0.0.0".into(),
+            admin_bind: "[::1]:9192".into(),
+            admin_token: Some("secret".into()),
+            egress_subnets: vec!["10.0.0.0/8".into()],
+            tunnel_max_age_secs: 120,
+            mux_max_streams_per_tunnel: 8,
+            ..Config::default()
+        };
+        std::fs::write(&path, serde_json::to_vec(&file_cfg).unwrap()).unwrap();
+        let loaded = Config::default().with_file(&path).unwrap();
+        loaded.validate().unwrap();
+        assert_eq!(loaded.outbound_bind, "::1");
+        assert_eq!(loaded.metrics_bind, "0.0.0.0");
+        assert_eq!(loaded.admin_bind, "[::1]:9192");
+        assert_eq!(loaded.admin_token.as_deref(), Some("secret"));
+        assert_eq!(loaded.egress_subnets, ["10.0.0.0/8"]);
+        assert_eq!(loaded.tunnel_max_age_secs, 120);
+        assert_eq!(loaded.mux_max_streams_per_tunnel, 8);
+
+        let mut legacy_json = serde_json::to_value(Config::default()).unwrap();
+        for key in [
+            "outbound_bind", "metrics_bind", "admin_bind", "admin_token",
+            "egress_subnets", "tunnel_max_age_secs", "mux_max_streams_per_tunnel",
+        ] {
+            legacy_json.as_object_mut().unwrap().remove(key);
+        }
+        std::fs::write(&path, serde_json::to_vec(&legacy_json).unwrap()).unwrap();
+        let defaults = Config::default().with_file(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        defaults.validate().unwrap();
+        assert_eq!(defaults.outbound_bind, "127.0.0.1");
+        assert_eq!(defaults.metrics_bind, "127.0.0.1");
+        assert_eq!(defaults.admin_bind, "127.0.0.1:4192");
+        assert!(defaults.admin_token.is_none());
+        assert!(defaults.egress_subnets.is_empty());
+        assert_eq!(defaults.tunnel_max_age_secs, 3600);
+        assert_eq!(defaults.mux_max_streams_per_tunnel, 64);
+    }
+
+    #[test]
+    fn config_rejects_invalid_security_fields() {
+        for cfg in [
+            Config { outbound_bind: "localhost".into(), ..Config::default() },
+            Config { metrics_bind: "127.0.0.1:80".into(), ..Config::default() },
+            Config { admin_bind: "127.0.0.1".into(), ..Config::default() },
+            Config { admin_token: Some(String::new()), ..Config::default() },
+            Config { egress_subnets: vec![" ".into()], ..Config::default() },
+            Config { tunnel_max_age_secs: 0, ..Config::default() },
+            Config { mux_max_streams_per_tunnel: 0, ..Config::default() },
+        ] {
+            assert!(matches!(cfg.validate(), Err(InterlinkError::Config(_))));
+        }
+        for ch in (0u8..=31).chain([127]).map(char::from).chain(['é']) {
+            let cfg = Config { trust_domain: format!("trust{ch}.local"), ..Config::default() };
+            assert!(matches!(cfg.validate(), Err(InterlinkError::Config(_))));
+        }
+    }
+
+    #[test]
+    fn proxy_conversion_preserves_security_fields_and_missing_identity() {
+        let cfg = Config {
+            outbound_bind: "::1".into(),
+            egress_subnets: vec!["10.0.0.0/8".into()],
+            tunnel_max_age_secs: 120,
+            mux_max_streams_per_tunnel: 8,
+            ..Config::default()
+        };
+        let proxy = cfg.to_proxy_config().unwrap();
+        assert_eq!(proxy.outbound_bind, "::1".parse::<IpAddr>().unwrap());
+        assert_eq!(proxy.egress_subnets, cfg.egress_subnets);
+        assert_eq!(proxy.tunnel_max_age_secs, 120);
+        assert_eq!(proxy.mux_max_streams_per_tunnel, 8);
+        assert!(proxy.identity.is_none());
+        let invalid = Config { outbound_bind: "bad".into(), ..cfg };
+        assert!(matches!(invalid.to_proxy_config(), Err(InterlinkError::Config(_))));
     }
 }

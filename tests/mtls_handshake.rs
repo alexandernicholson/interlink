@@ -45,7 +45,7 @@ fn test_policy_engine_multi_namespace() {
     // billing namespace allows internal traffic
     engine.add_namespace_rule(
         "billing",
-        interlink::policy::patterns::allow_same_namespace("cluster.local", "billing"),
+        interlink::policy::patterns::allow_same_namespace("cluster.local", "billing").unwrap(),
     );
 
     // monitoring namespace allows traffic from billing
@@ -55,7 +55,7 @@ fn test_policy_engine_multi_namespace() {
             "spiffe://cluster.local/ns/billing/sa/*",
             "spiffe://cluster.local/ns/monitoring/sa/grafana",
             "billing can access grafana",
-        ),
+        ).unwrap(),
     );
 
     let billing_svc = SpiffeId::try_new("cluster.local", "billing", "invoice-worker").unwrap();
@@ -83,7 +83,7 @@ fn test_high_volume_policy_lookup() {
         let ns = format!("ns-{}", i);
         engine.add_namespace_rule(
             &ns,
-            interlink::policy::patterns::allow_same_namespace("cluster.local", &ns),
+            interlink::policy::patterns::allow_same_namespace("cluster.local", &ns).unwrap(),
         );
     }
 
@@ -113,7 +113,7 @@ fn test_high_volume_policy_lookup() {
 #[tokio::test]
 async fn test_tls_resumption() {
     use interlink::common::identity::SpiffeId;
-    use interlink::identity::ca::CertificateAuthority;
+    use interlink_test_support::CertificateAuthority;
     use interlink::proxy::handshake::{TlsClient, TlsServer};
     use interlink::proxy::TlsHandshake;
     use std::sync::Arc;

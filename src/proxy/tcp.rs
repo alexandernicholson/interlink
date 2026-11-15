@@ -16,9 +16,8 @@ use crate::discovery::ServiceDiscovery;
 use crate::metrics;
 use crate::policy::{Decision, PolicyEngine};
 use crate::protocol::ProtocolDetector;
-use crate::proxy::config::ProxyConfig;
+use crate::proxy::config::{EgressPolicy, ProxyConfig};
 use crate::proxy::configure_socket;
-use crate::proxy::get_original_dst;
 use crate::proxy::handshake::TlsHandshake;
 use crate::proxy::UpstreamTarget;
 
@@ -32,6 +31,12 @@ pub struct TcpProxy {
     shutdown: Option<watch::Receiver<bool>>,
     active_connections: Arc<AtomicUsize>,
     local_id: SpiffeId,
+    egress: EgressPolicy,
+    dialer: Arc<dyn crate::proxy::UpstreamDialer>,
+    tunnel_max_age: std::time::Duration,
+    max_streams_per_tunnel: usize,
+    total_streams: Arc<Semaphore>,
+    original_destination: Arc<dyn crate::proxy::OriginalDestination>,
 }
 
 impl TcpProxy {
@@ -39,7 +44,7 @@ impl TcpProxy {
         config: ProxyConfig,
         tls_server: Arc<dyn TlsHandshake>,
         policy: Arc<PolicyEngine>,
-    ) -> Self {
+    ) -> Result<Self, InterlinkError> {
         Self::new_with_discovery(
             config,
             crate::common::constants::ports::INBOUND_PROXY,
@@ -54,7 +59,7 @@ impl TcpProxy {
         port: u16,
         tls_server: Arc<dyn TlsHandshake>,
         policy: Arc<PolicyEngine>,
-    ) -> Self {
+    ) -> Result<Self, InterlinkError> {
         Self::new_with_discovery(config, port, tls_server, policy, None)
     }
 
@@ -64,22 +69,17 @@ impl TcpProxy {
         tls_server: Arc<dyn TlsHandshake>,
         policy: Arc<PolicyEngine>,
         discovery: Option<Arc<ServiceDiscovery>>,
-    ) -> Self {
+    ) -> Result<Self, InterlinkError> {
         let max_conn = config.max_connections.unwrap_or(1024);
-        // B8: try_new validates at the identity boundary, even though the
-        // config has already been checked at startup. The unwrap is safe
-        // because Config::validate() enforces non-empty trust_domain.
-        #[cfg_attr(not(test), allow(clippy::expect_used))]
-        let local_id = config
-            .identity
-            .as_ref()
-            .and_then(|s| SpiffeId::from_uri(s).ok())
-            .unwrap_or_else(|| {
-                SpiffeId::try_new(&config.trust_domain, "default", "proxy")
-                    .expect("trust_domain validated in Config::validate")
-            });
+        let local_id = config.local_identity()?;
+        let egress = EgressPolicy::parse(&config.egress_subnets)?;
+        if config.tunnel_max_age_secs == 0 || config.mux_max_streams_per_tunnel == 0 {
+            return Err(InterlinkError::Config(
+                "tunnel limits must be positive".into(),
+            ));
+        }
         let default_upstream = UpstreamTarget::from_config(config.default_upstream);
-        Self {
+        Ok(Self {
             default_upstream,
             connection_semaphore: Arc::new(Semaphore::new(max_conn)),
             listen_port: port,
@@ -89,7 +89,15 @@ impl TcpProxy {
             shutdown: None,
             active_connections: Arc::new(AtomicUsize::new(0)),
             local_id,
-        }
+            egress,
+            dialer: Arc::new(crate::proxy::TcpDialer),
+            tunnel_max_age: std::time::Duration::from_secs(config.tunnel_max_age_secs),
+            max_streams_per_tunnel: config.mux_max_streams_per_tunnel,
+            // Initial TOTAL_STREAMS permits; each mux relay holds one named
+            // guard and releases it on exit. Shared by every tunnel of this proxy.
+            total_streams: Arc::new(Semaphore::new(crate::common::constants::mux::TOTAL_STREAMS)),
+            original_destination: Arc::new(crate::proxy::NetfilterDestination),
+        })
     }
 
     pub fn with_discovery(mut self, discovery: Arc<ServiceDiscovery>) -> Self {
@@ -106,9 +114,9 @@ impl TcpProxy {
         &self,
         upstream: &UpstreamTarget,
     ) -> Result<std::net::SocketAddr, InterlinkError> {
-        let (name, port) = match upstream {
+        let name = match upstream {
             UpstreamTarget::Socket(addr) => return Ok(*addr),
-            UpstreamTarget::Host { name, port } => (name, port),
+            UpstreamTarget::Host(name) => name,
         };
         let Some(discovery) = self.discovery.as_ref() else {
             return Err(InterlinkError::DnsResolution(format!(
@@ -120,10 +128,7 @@ impl TcpProxy {
         let first = resolved.addrs.first().copied().ok_or_else(|| {
             InterlinkError::DnsResolution(format!("no endpoints for {}", upstream))
         })?;
-        Ok(std::net::SocketAddr::new(
-            first.ip(),
-            port.unwrap_or_else(|| first.port()),
-        ))
+        Ok(first)
     }
 
     pub fn spawn(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
@@ -207,10 +212,12 @@ impl TcpProxy {
             warn!("failed to configure accepted socket {}: {}", peer_addr, e);
         }
 
-        let upstream = self
-            .default_upstream
-            .clone()
-            .or_else(|| get_original_dst(&stream).map(UpstreamTarget::Socket));
+        let upstream = self.default_upstream.clone().or_else(|| {
+            self.original_destination
+                .get(&stream)
+                .filter(|sa| sa.port() != self.listen_port)
+                .map(UpstreamTarget::Socket)
+        });
         let Some(upstream) = upstream else {
             warn!("no upstream for connection from {}, dropping", peer_addr);
             let _ = stream.into_std().map(|s| {
@@ -271,6 +278,43 @@ impl TcpProxy {
         let start = Instant::now();
         metrics::record_connection_start();
 
+        // Authentication and policy must complete before any upstream I/O:
+        // unauthenticated clients must not turn this listener into a dial oracle.
+        let handshake_start = Instant::now();
+        let tls_stream = match self.tls_server.accept(stream).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("mTLS handshake failed from {}: {}", peer_addr, e);
+                metrics::record_handshake_error();
+                metrics::record_connection_failed();
+                return;
+            }
+        };
+        metrics::record_handshake(handshake_start.elapsed());
+
+        let peer_id = &tls_stream.peer_identity;
+        debug!(
+            "mTLS connection from {} identity={}",
+            peer_addr,
+            peer_id.sanitized()
+        );
+
+        let decision = self.policy.evaluate(peer_id, &self.local_id);
+        metrics::record_policy(&decision);
+        match decision {
+            Decision::Allow => {}
+            Decision::Deny(reason) => {
+                warn!(
+                    "policy denied {} → {}: {}",
+                    peer_id.sanitized(),
+                    self.local_id.sanitized(),
+                    reason
+                );
+                metrics::record_connection_failed();
+                return;
+            }
+        }
+
         let upstream = match self.resolve_upstream(&upstream).await {
             Ok(addr) => addr,
             Err(e) => {
@@ -279,31 +323,41 @@ impl TcpProxy {
                 return;
             }
         };
+        if !self.egress.allows(upstream.ip()) {
+            warn!("egress denied {} → {}", self.local_id.sanitized(), upstream);
+            metrics::record_policy(&Decision::Deny(
+                "egress destination outside allowed subnets",
+            ));
+            metrics::record_connection_failed();
+            return;
+        }
 
-        debug!("handling connection from {} → {}", peer_addr, upstream);
-
-        // Overlap the upstream TCP connect with the mTLS handshake.
-        let handshake_start = Instant::now();
-        let (tls_result, upstream_result) = tokio::join!(
-            self.tls_server.accept(stream),
-            TcpStream::connect(&upstream),
-        );
-
-        let tls_stream = match tls_result {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("mTLS handshake failed from {}: {}", peer_addr, e);
-                metrics::record_handshake_error();
-                if let Ok(up) = upstream_result {
-                    let _ = up.into_std().map(|s| s.shutdown(std::net::Shutdown::Both));
-                }
-                metrics::record_connection_failed();
-                return;
+        // A negotiated mux tunnel dials only when its authorized streams open.
+        if crate::proxy::mux::negotiated_alpn(&tls_stream.inner)
+            == Some(crate::proxy::mux::ALPN_MUX)
+        {
+            let limits = crate::proxy::mux::TunnelLimits {
+                max_age: self.tunnel_max_age,
+                max_streams_per_tunnel: self.max_streams_per_tunnel,
+                total_streams: self.total_streams.clone(),
+            };
+            if let Err(e) = crate::proxy::mux::serve_tunnel(
+                tls_stream.inner,
+                upstream,
+                peer_id.as_ref().clone(),
+                self.local_id.clone(),
+                self.policy.clone(),
+                limits,
+            )
+            .await
+            {
+                warn!("mux tunnel failed for {}: {}", peer_id.sanitized(), e);
             }
-        };
-        metrics::record_handshake(handshake_start.elapsed());
+            metrics::record_tunnel_closed();
+            return;
+        }
 
-        let mut upstream_stream = match upstream_result {
+        let mut upstream_stream = match self.dialer.connect(upstream).await {
             Ok(s) => s,
             Err(e) => {
                 warn!("upstream connect failed to {}: {}", upstream, e);
@@ -313,41 +367,6 @@ impl TcpProxy {
         };
         if let Err(e) = configure_socket(&upstream_stream) {
             warn!("failed to configure upstream socket {}: {}", upstream, e);
-        }
-
-        let peer_id = &tls_stream.peer_identity;
-        debug!("mTLS connection from {} identity={}", peer_addr, peer_id);
-
-        let decision = self.policy.evaluate(peer_id, &self.local_id);
-        metrics::record_policy(&decision);
-        match decision {
-            Decision::Allow => {}
-            Decision::Deny(reason) => {
-                warn!("policy denied {} → {}: {}", peer_id, self.local_id, reason);
-                let _ = upstream_stream
-                    .into_std()
-                    .map(|s| s.shutdown(std::net::Shutdown::Both));
-                metrics::record_connection_failed();
-                return;
-            }
-        }
-
-        // Mux tunnel path (ALPN-negotiated): the whole connection is a yamux
-        // session; every stream relays to this connection's upstream. The
-        // pre-connected upstream socket belongs to the 1:1 model — release it
-        // and let each stream dial its own.
-        if crate::proxy::mux::negotiated_alpn(&tls_stream.inner)
-            == Some(crate::proxy::mux::ALPN_MUX)
-        {
-            let peer = tls_stream.peer_identity.clone();
-            let _ = upstream_stream
-                .into_std()
-                .map(|s| s.shutdown(std::net::Shutdown::Both));
-            // The tunnel holds this accepted connection's active slot for its
-            // lifetime; streams are the accounted connections (serve_tunnel).
-            crate::proxy::mux::serve_tunnel(tls_stream.inner, upstream, peer).await;
-            metrics::record_tunnel_closed();
-            return;
         }
 
         let mut detect_buf = [0u8; buffers::PROTOCOL_DETECT];
@@ -422,5 +441,236 @@ mod tests {
         let mut buf = Vec::new();
         b.read_to_end(&mut buf).await.unwrap();
         assert_eq!(buf.len(), 65536);
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use crate::proxy::test_support::*;
+
+    fn proxy(
+        config: ProxyConfig,
+        port: u16,
+        handshake: Arc<dyn TlsHandshake>,
+        dialer: Arc<GateDialer>,
+        allowed: bool,
+    ) -> Arc<TcpProxy> {
+        let mut policy = PolicyEngine::new();
+        if allowed {
+            policy.set_default_decision(Decision::Allow);
+        }
+        let mut proxy = TcpProxy::new_with_port(config, port, handshake, Arc::new(policy)).unwrap();
+        proxy.dialer = dialer;
+        proxy.original_destination = Arc::new(DirectDestination);
+        Arc::new(proxy)
+    }
+
+    #[tokio::test]
+    async fn inbound_direct_listener_drops_without_permit_or_dial() {
+        tokio::time::timeout(WAIT, async {
+            let (handshake, _) = handshake(false);
+            let dialer = GateDialer::new();
+            let (mut client, server, peer) = pair().await;
+            let port = server.local_addr().unwrap().port();
+            let proxy = proxy(config(), port, handshake.clone(), dialer.clone(), true);
+            proxy.handle_accept(server, peer).await;
+            assert_eq!(client.read(&mut [0; 1]).await.unwrap(), 0);
+            assert_eq!(proxy.connection_semaphore.available_permits(), 4);
+            assert_eq!(proxy.active_connections.load(Ordering::SeqCst), 0);
+            assert_eq!(handshake.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(dialer.calls.load(Ordering::SeqCst), 0);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_handshake_failures_release_permits_without_dials() {
+        tokio::time::timeout(WAIT, async {
+            let (handshake, _) = handshake(false);
+            let dialer = GateDialer::new();
+            let mut config = config();
+            config.default_upstream = Some("127.0.0.1:9".into());
+            let proxy = proxy(config, 4143, handshake.clone(), dialer.clone(), true);
+            let mut clients = Vec::new();
+            for _ in 0..4 {
+                let (client, server, peer) = pair().await;
+                proxy.handle_accept(server, peer).await;
+                clients.push(client);
+            }
+            wait_for(|| handshake.calls.load(Ordering::SeqCst) == 4).await;
+            assert_eq!(proxy.connection_semaphore.available_permits(), 0);
+            assert_eq!(dialer.calls.load(Ordering::SeqCst), 0);
+            handshake.release.add_permits(4);
+            wait_for(|| proxy.connection_semaphore.available_permits() == 4).await;
+            assert_eq!(dialer.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(proxy.active_connections.load(Ordering::SeqCst), 0);
+            for mut client in clients {
+                assert_eq!(client.read(&mut [0; 1]).await.unwrap(), 0);
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn authenticated_flow(allow_policy: bool, subnets: Vec<String>, expect_dial: bool) {
+        tokio::time::timeout(WAIT, async {
+            let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let (handshake, client_config) = handshake(true);
+            let dialer = GateDialer::new();
+            let mut config = config();
+            config.default_upstream = Some(upstream.local_addr().unwrap().to_string());
+            config.egress_subnets = subnets;
+            let proxy = proxy(
+                config,
+                4143,
+                handshake.clone(),
+                dialer.clone(),
+                allow_policy,
+            );
+            let (client, server, peer) = pair().await;
+            proxy.handle_accept(server, peer).await;
+            wait_for(|| handshake.calls.load(Ordering::SeqCst) == 1).await;
+            // The handshake is held in-flight: upstream dialing must not start.
+            assert_eq!(dialer.calls.load(Ordering::SeqCst), 0);
+            handshake.release.add_permits(1);
+            let mut client = tokio_rustls::TlsConnector::from(client_config)
+                .connect(
+                    rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+                    client,
+                )
+                .await
+                .unwrap();
+            if expect_dial {
+                wait_for(|| dialer.calls.load(Ordering::SeqCst) == 1).await;
+                assert_eq!(proxy.connection_semaphore.available_permits(), 3);
+                dialer.release.add_permits(1);
+                let (mut backend, _) = upstream.accept().await.unwrap();
+                client.write_all(b"hello").await.unwrap();
+                client.shutdown().await.unwrap();
+                let mut received = Vec::new();
+                backend.read_to_end(&mut received).await.unwrap();
+                assert_eq!(received, b"hello");
+                backend.write_all(b"reply").await.unwrap();
+                backend.shutdown().await.unwrap();
+                let mut reply = Vec::new();
+                client.read_to_end(&mut reply).await.unwrap();
+                assert_eq!(reply, b"reply");
+            } else {
+                // Policy/egress denial must return even while the dialer's gate
+                // is closed; a regression would hold this permit until timeout.
+                wait_for(|| proxy.connection_semaphore.available_permits() == 4).await;
+                assert_eq!(dialer.calls.load(Ordering::SeqCst), 0);
+            }
+            wait_for(|| proxy.connection_semaphore.available_permits() == 4).await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn inbound_policy_denial_never_dials() {
+        authenticated_flow(false, Vec::new(), false).await;
+    }
+
+    #[tokio::test]
+    async fn inbound_egress_denial_never_dials() {
+        authenticated_flow(true, vec!["10.0.0.0/8".into()], false).await;
+    }
+
+    #[tokio::test]
+    async fn inbound_authorizes_before_dial_and_relays_allowed_subnet() {
+        authenticated_flow(true, vec!["127.0.0.0/8".into()], true).await;
+    }
+
+    #[tokio::test]
+    async fn inbound_empty_egress_allows_authenticated_relay() {
+        authenticated_flow(true, Vec::new(), true).await;
+    }
+
+    #[test]
+    fn inbound_constructors_reject_missing_invalid_identity_and_cidr() {
+        let (handshake, _) = handshake(false);
+        let policy = Arc::new(PolicyEngine::new());
+        for identity in [None, Some("not-spiffe".into())] {
+            let mut config = config();
+            config.identity = identity;
+            assert!(TcpProxy::new(config.clone(), handshake.clone(), policy.clone()).is_err());
+            assert!(TcpProxy::new_with_port(
+                config.clone(),
+                4143,
+                handshake.clone(),
+                policy.clone()
+            )
+            .is_err());
+            assert!(TcpProxy::new_with_discovery(
+                config,
+                4143,
+                handshake.clone(),
+                policy.clone(),
+                None
+            )
+            .is_err());
+        }
+        for cidr in ["", "127.0.0.1", "127.0.0.1/33", "::1/129", "not-a-cidr"] {
+            let mut config = config();
+            config.egress_subnets = vec![cidr.into()];
+            let result = TcpProxy::new(config, handshake.clone(), policy.clone());
+            let error = result.err().expect("malformed CIDR must fail").to_string();
+            assert!(error.contains(&format!("{cidr:?}")), "{error}");
+        }
+        assert!(TcpProxy::new(config(), handshake, policy).is_ok());
+    }
+
+    #[test]
+    fn inbound_tunnel_limits_are_validated_and_shared_per_proxy() {
+        let (handshake, _) = handshake(false);
+        let policy = Arc::new(PolicyEngine::new());
+        for (age, streams) in [(0, 64), (3600, 0)] {
+            let mut config = config();
+            config.tunnel_max_age_secs = age;
+            config.mux_max_streams_per_tunnel = streams;
+            assert!(TcpProxy::new(config, handshake.clone(), policy.clone()).is_err());
+        }
+        let mut config = config();
+        config.tunnel_max_age_secs = 17;
+        config.mux_max_streams_per_tunnel = 3;
+        let proxy = TcpProxy::new(config, handshake, policy).unwrap();
+        assert_eq!(proxy.tunnel_max_age, std::time::Duration::from_secs(17));
+        assert_eq!(proxy.max_streams_per_tunnel, 3);
+        assert_eq!(
+            proxy.total_streams.available_permits(),
+            crate::common::constants::mux::TOTAL_STREAMS
+        );
+    }
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+    use crate::proxy::test_support::*;
+
+    #[tokio::test]
+    async fn inbound_hostname_endpoint_keeps_explicit_port_for_discovery() {
+        let (handshake, _) = handshake(false);
+        let discovery = Arc::new(ServiceDiscovery::with_resolver(
+            Arc::new(ExpectedEndpoint),
+            std::time::Duration::from_secs(30),
+        ));
+        let proxy = TcpProxy::new_with_discovery(
+            config(),
+            4143,
+            handshake,
+            Arc::new(PolicyEngine::new()),
+            Some(discovery),
+        )
+        .unwrap();
+        let target = UpstreamTarget::from_config(Some("backend.test:8443".into())).unwrap();
+        let resolved = tokio::time::timeout(WAIT, proxy.resolve_upstream(&target))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved, "192.0.2.7:8443".parse().unwrap());
     }
 }

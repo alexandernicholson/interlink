@@ -3,7 +3,6 @@ pub mod ports {
     pub const INBOUND_PROXY: u16 = 4143;
     pub const OUTBOUND_PROXY: u16 = 4140;
     pub const METRICS: u16 = 4190;
-    pub const IDENTITY_GRPC: u16 = 4191;
     pub const ADMIN: u16 = 4192;
 }
 
@@ -13,6 +12,7 @@ pub mod timeouts {
 
     /// TLS 1.3 handshake timeout (RFC 8446 §4).
     pub const TLS_HANDSHAKE: Duration = Duration::from_secs(10);
+    pub const TCP_CONNECT: Duration = Duration::from_secs(5);
     pub const TCP_IDLE: Duration = Duration::from_secs(300);
     pub const DNS_RESOLVE: Duration = Duration::from_secs(5);
     pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
@@ -31,4 +31,18 @@ pub mod buffers {
     pub const PROTOCOL_DETECT: usize = 32;
     pub const SOCKET_READ: usize = 16384;
     pub const MAX_FRAME_SIZE: u32 = 16_777_215;
+}
+
+/// Administrative listener resource limits.
+pub mod admin {
+    use std::time::Duration;
+
+    pub const MAX_CONNECTIONS: usize = 64;
+    pub const READ_TIMEOUT: Duration = Duration::from_secs(5);
+}
+
+/// Aggregate multiplexing limits and per-stream receive window.
+pub mod mux {
+    pub const TOTAL_STREAMS: usize = 4096;
+    pub const STREAM_WINDOW: u32 = 256 * 1024;
 }

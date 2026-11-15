@@ -32,9 +32,9 @@
 //!    handshake fails closed (B5). TLS 1.2/1.3 handshake-signature
 //!    verification is delegated to the crypto provider unchanged (RFC 8446).
 //!
-//! This mirrors the inbound direction, where `WebPkiClientVerifier` already
-//! performs chain-only validation (client certs have no "server name") and
-//! identity/policy is applied after the handshake.
+//! The inbound verifier below wraps `WebPkiClientVerifier`, retaining its
+//! client-auth EKU, path, and signature validation and adding the same mandatory
+//! SPIFFE trust-domain check.
 
 use std::sync::Arc;
 
@@ -121,5 +121,75 @@ impl ServerCertVerifier for SpiffeServerVerifier {
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.algs.supported_schemes()
+    }
+}
+
+/// Mandatory client authentication with local SPIFFE trust-domain enforcement.
+#[derive(Debug)]
+pub(crate) struct SpiffeClientVerifier {
+    inner: Arc<dyn rustls::server::danger::ClientCertVerifier>,
+    trust_domain: String,
+}
+
+impl SpiffeClientVerifier {
+    pub(crate) fn new(
+        roots: RootCertStore,
+        trust_domain: String,
+    ) -> Result<Self, crate::common::error::InterlinkError> {
+        let inner = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+            .build()
+            .map_err(|error| Error::General(format!("client verifier: {error}")))?;
+        Ok(Self {
+            inner,
+            trust_domain,
+        })
+    }
+}
+
+impl rustls::server::danger::ClientCertVerifier for SpiffeClientVerifier {
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        self.inner.root_hint_subjects()
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        now: UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, Error> {
+        let verified = self
+            .inner
+            .verify_client_cert(end_entity, intermediates, now)?;
+        let id = crate::proxy::handshake::spiffe_id_from_cert_der(end_entity.as_ref())
+            .map_err(|error| Error::General(format!("SPIFFE identity: {error}")))?;
+        if id.trust_domain != self.trust_domain {
+            return Err(Error::General(format!(
+                "peer trust domain '{}' does not match ours '{}'",
+                id.trust_domain, self.trust_domain,
+            )));
+        }
+        Ok(verified)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
     }
 }

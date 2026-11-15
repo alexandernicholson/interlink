@@ -3,8 +3,6 @@ use std::sync::LazyLock;
 use metrics::{counter, gauge, histogram, Counter, Gauge, Histogram};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
-use crate::common::constants::ports;
-
 /// Global metrics registry.
 pub static INTERLINK_METRICS: LazyLock<InterlinkMetrics> = LazyLock::new(InterlinkMetrics::new);
 
@@ -24,6 +22,7 @@ pub struct InterlinkMetrics {
     pub handshake_resumed_total: Counter,
     pub mux_tunnels_opened_total: Counter,
     pub mux_streams_total: Counter,
+    pub allow_all_enabled_total: Counter,
 }
 
 impl Default for InterlinkMetrics {
@@ -49,16 +48,26 @@ impl InterlinkMetrics {
             handshake_resumed_total: counter!("interlink_handshake_resumed_total"),
             mux_tunnels_opened_total: counter!("interlink_mux_tunnels_opened_total"),
             mux_streams_total: counter!("interlink_mux_streams_total"),
+            allow_all_enabled_total: counter!("interlink_allow_all_enabled_total"),
         }
     }
 }
 
-/// Initialize the Prometheus metrics exporter.
-pub fn init_metrics_exporter() -> Result<(), Box<dyn std::error::Error>> {
-    let addr: std::net::SocketAddr = ([0, 0, 0, 0], ports::METRICS).into();
-    let builder = PrometheusBuilder::new();
-    builder.with_http_listener(addr).install()?;
+/// Initialize the Prometheus exporter at the operator-selected listen address.
+/// The library has no HTTP connection/read timeout setting: `idle_timeout`
+/// expires metric series, not sockets. Keep the configured default loopback-only.
+pub fn init_metrics_exporter(bind: std::net::SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    exporter_builder(bind).install()?;
     Ok(())
+}
+
+fn exporter_builder(bind: std::net::SocketAddr) -> PrometheusBuilder {
+    PrometheusBuilder::new().with_http_listener(bind)
+}
+
+/// Record startup with the explicit default-deny bypass enabled.
+pub fn record_allow_all_enabled() {
+    INTERLINK_METRICS.allow_all_enabled_total.increment(1);
 }
 
 /// Record a completed connection with histogram observation.
@@ -193,8 +202,53 @@ pub mod test_helpers {
 mod tests {
     use super::test_helpers as test_metrics;
 
+    // These legacy helper tests reset shared counters; their complete
+    // reset/record/assert transactions must not interleave.
+    static TEST_COUNTERS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[tokio::test]
+    async fn metrics_exporter_honors_loopback_and_chosen_port() {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
+
+        let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let bind = reservation.local_addr().unwrap();
+        drop(reservation);
+        let (_recorder, exporter) = super::exporter_builder(bind).build().unwrap();
+        let task = tokio::spawn(exporter);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut connection = TcpStream::connect(bind).await.unwrap();
+            assert_eq!(connection.peer_addr().unwrap(), bind);
+            connection
+                .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            connection.read_to_end(&mut response).await.unwrap();
+            assert!(response.starts_with(b"HTTP/1.1 200"));
+        })
+        .await
+        .expect("metrics scrape timed out");
+        task.abort();
+    }
+
+    #[test]
+    fn metrics_registers_allow_all_startup_counter() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            let metrics = super::InterlinkMetrics::new();
+            metrics.allow_all_enabled_total.increment(1);
+        });
+        assert!(handle
+            .render()
+            .contains("interlink_allow_all_enabled_total 1"));
+    }
+
     #[test]
     fn test_metrics_counters() {
+        let _guard = TEST_COUNTERS_LOCK.lock().unwrap();
         test_metrics::reset();
         test_metrics::record_connection();
         test_metrics::record_bytes(1024);
@@ -221,6 +275,7 @@ mod tests {
 
     #[test]
     fn test_metrics_multiple_increments() {
+        let _guard = TEST_COUNTERS_LOCK.lock().unwrap();
         test_metrics::reset();
         for _ in 0..100 {
             test_metrics::record_connection();
@@ -233,6 +288,7 @@ mod tests {
 
     #[test]
     fn test_metrics_reset() {
+        let _guard = TEST_COUNTERS_LOCK.lock().unwrap();
         test_metrics::reset();
         assert_eq!(
             test_metrics::TEST_CONNECTIONS.load(std::sync::atomic::Ordering::Relaxed),

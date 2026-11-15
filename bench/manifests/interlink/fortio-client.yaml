@@ -1,6 +1,8 @@
 # Load-generator pod with an interlink outbound sidecar. Fortio targets its
 # local sidecar (127.0.0.1:4140), which establishes the mTLS/mux path to the
 # echo Service — the sidecar model needs no traffic interception at all.
+# Shares the generated proxy SPIFFE identity with the echo sidecar so the
+# default replica policy authorizes the benchmark without INTERLINK_ALLOW_ALL.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,7 +40,7 @@ spec:
             - name: INTERLINK_TRUST_DOMAIN
               value: "bench.local"
             - name: INTERLINK_IDENTITY
-              value: "spiffe://bench.local/ns/bench/sa/fortio-client"
+              value: "spiffe://bench.local/ns/bench/sa/proxy"
             - name: INTERLINK_PROXY_INBOUND_PORT
               value: "0"
             - name: INTERLINK_PROXY_OUTBOUND_PORT
@@ -51,8 +53,6 @@ spec:
               value: "/etc/interlink/certs/server.der"
             - name: INTERLINK_KEY_PATH
               value: "/etc/interlink/certs/server.key"
-            - name: INTERLINK_ALLOW_ALL
-              value: "true"
             - name: INTERLINK_MUX
               value: "${INTERLINK_MUX}"
             - name: INTERLINK_LOG_LEVEL

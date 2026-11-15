@@ -1,6 +1,8 @@
 /target
 /tmp
 bench/bin/
+# Ephemeral benchmark CA, private keys, and certificates regenerated per run.
+bench/results/**/certs/
 *.swp
 *.swo
 .DS_Store

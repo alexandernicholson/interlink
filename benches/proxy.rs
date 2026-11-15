@@ -138,6 +138,16 @@ fn bench_spiffe_id_parse(c: &mut Criterion) {
             "spiffe://cluster.local/ns/default/account/payments",
             false,
         ),
+        (
+            "reject_control_chars",
+            "spiffe://cluster.local/ns/de\u{1}fault/sa/payments",
+            false,
+        ),
+        (
+            "reject_non_ascii",
+            "spiffe://cluster.local/ns/défault/sa/payments",
+            false,
+        ),
     ];
 
     let mut group = c.benchmark_group("spiffe_id");
@@ -172,6 +182,16 @@ fn bench_spiffe_id_parse(c: &mut Criterion) {
             )
         })
     });
+    group.bench_function("canonicalize_trust_domain", |b| {
+        b.iter(|| {
+            let id = SpiffeId::try_new("CLUSTER.LOCAL", "default", "payments").unwrap();
+            assert_eq!(id.trust_domain, "cluster.local");
+            black_box(id)
+        })
+    });
+    group.bench_function("sanitized_display", |b| {
+        b.iter(|| black_box(format!("{}", black_box(&id).sanitized())))
+    });
     for (name, trust_domain, namespace, service_account) in [
         ("reject_empty_trust_domain", "", "default", "payments"),
         ("reject_empty_namespace", "cluster.local", "", "payments"),
@@ -180,6 +200,18 @@ fn bench_spiffe_id_parse(c: &mut Criterion) {
             "cluster.local",
             "default",
             "",
+        ),
+        (
+            "reject_control_char_namespace",
+            "cluster.local",
+            "de\u{1}fault",
+            "payments",
+        ),
+        (
+            "reject_non_ascii_service_account",
+            "cluster.local",
+            "default",
+            "payménts",
         ),
     ] {
         group.bench_function(name, |b| {
@@ -233,7 +265,7 @@ fn bench_policy_evaluation(c: &mut Criterion) {
     for i in 0..100u32 {
         let ns = format!("ns-{}", i);
         namespace_engine
-            .add_namespace_rule(&ns, patterns::allow_same_namespace("cluster.local", &ns));
+            .add_namespace_rule(&ns, patterns::allow_same_namespace("cluster.local", &ns).unwrap());
     }
 
     let source = SpiffeId::try_new("cluster.local", "ns-50", "svc").unwrap();
@@ -245,7 +277,7 @@ fn bench_policy_evaluation(c: &mut Criterion) {
         "spiffe://cluster.local/ns/ns-50/sa/svc",
         "spiffe://cluster.local/ns/unconfigured/sa/other",
         "global allow",
-    )]);
+    ).unwrap()]);
 
     let namespace_then_global = PolicyEngine::new();
     namespace_then_global.add_namespace_rule(
@@ -254,19 +286,52 @@ fn bench_policy_evaluation(c: &mut Criterion) {
             "spiffe://cluster.local/ns/other/sa/*",
             "spiffe://cluster.local/ns/unconfigured/sa/*",
             "nonmatching namespace rule",
-        ),
+        ).unwrap(),
     );
     namespace_then_global.set_global_policies(vec![patterns::allow(
         "spiffe://cluster.local/ns/ns-50/sa/svc",
         "spiffe://cluster.local/ns/unconfigured/sa/other",
         "global fallback",
-    )]);
+    ).unwrap()]);
 
     let deny_engine = PolicyEngine::new();
-    deny_engine.set_global_policies(vec![patterns::deny(
+    deny_engine.set_global_policies(vec![patterns::deny_source(
         "spiffe://cluster.local/ns/ns-50/sa/svc",
         "global deny",
-    )]);
+    )
+    .unwrap()]);
+    let global_deny_vs_ns_allow = PolicyEngine::new();
+    global_deny_vs_ns_allow.add_namespace_rule(
+        "ns-50",
+        patterns::allow(
+            "spiffe://cluster.local/ns/ns-50/sa/*",
+            "spiffe://cluster.local/ns/ns-50/sa/*",
+            "namespace allow",
+        )
+        .unwrap(),
+    );
+    global_deny_vs_ns_allow.set_global_policies(vec![patterns::deny_source(
+        "spiffe://cluster.local/ns/ns-50/sa/svc",
+        "global deny outranks namespace allow",
+    )
+    .unwrap()]);
+
+    let ns_deny_vs_global_allow = PolicyEngine::new();
+    ns_deny_vs_global_allow.add_namespace_rule(
+        "ns-50",
+        patterns::deny_source(
+            "spiffe://cluster.local/ns/ns-50/sa/svc",
+            "namespace deny outranks global allow",
+        )
+        .unwrap(),
+    );
+    ns_deny_vs_global_allow.set_global_policies(vec![patterns::allow(
+        "spiffe://cluster.local/ns/ns-50/sa/svc",
+        "spiffe://cluster.local/ns/ns-50/sa/other",
+        "global allow",
+    )
+    .unwrap()]);
+
     let mut default_allow_engine = PolicyEngine::new();
     default_allow_engine.set_default_decision(Decision::Allow);
 
@@ -314,6 +379,32 @@ fn bench_policy_evaluation(c: &mut Criterion) {
             black_box(
                 namespace_engine.evaluate(black_box(&source), black_box(&default_destination)),
             )
+        })
+    });
+    group.bench_function("global_deny_beats_namespace_allow", |b| {
+        b.iter(|| {
+            let decision = global_deny_vs_ns_allow.evaluate(black_box(&source), black_box(&destination));
+            assert!(matches!(decision, Decision::Deny(_)));
+            black_box(decision)
+        })
+    });
+    group.bench_function("namespace_deny_beats_global_allow", |b| {
+        b.iter(|| {
+            let decision = ns_deny_vs_global_allow.evaluate(black_box(&source), black_box(&destination));
+            assert!(matches!(decision, Decision::Deny(_)));
+            black_box(decision)
+        })
+    });
+    group.bench_function("set_namespace_policies", |b| {
+        b.iter(|| {
+            ns_deny_vs_global_allow.set_namespace_policies(
+                black_box("ns-50"),
+                vec![patterns::allow_same_namespace("cluster.local", "ns-50").unwrap()],
+            );
+            let decision =
+                ns_deny_vs_global_allow.evaluate(black_box(&source), black_box(&destination));
+            assert!(matches!(decision, Decision::Allow));
+            black_box(decision)
         })
     });
     group.bench_function("default_allow", |b| {

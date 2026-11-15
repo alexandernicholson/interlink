@@ -27,6 +27,7 @@ struct FakeResolver {
     calls: AtomicUsize,
     delay: Duration,
     fail: bool,
+    port: u16,
 }
 
 impl FakeResolver {
@@ -35,6 +36,7 @@ impl FakeResolver {
             calls: AtomicUsize::new(0),
             delay,
             fail: false,
+            port: 8080,
         })
     }
 
@@ -43,6 +45,16 @@ impl FakeResolver {
             calls: AtomicUsize::new(0),
             delay: Duration::ZERO,
             fail: true,
+            port: 0,
+        })
+    }
+
+    fn zero_port() -> Arc<Self> {
+        Arc::new(Self {
+            calls: AtomicUsize::new(0),
+            delay: Duration::ZERO,
+            fail: false,
+            port: 0,
         })
     }
 }
@@ -57,7 +69,7 @@ impl DnsResolver for FakeResolver {
         if self.fail {
             Err(InterlinkError::DnsResolution("injected failure".into()))
         } else {
-            Ok(vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080)])
+            Ok(vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), self.port)])
         }
     }
 }
@@ -103,6 +115,11 @@ fn bench_discovery_paths(c: &mut Criterion) {
 
     let failing_discovery = Arc::new(ServiceDiscovery::with_resolver(
         FakeResolver::failing(),
+        Duration::from_secs(30),
+    ));
+
+    let zero_port_discovery = Arc::new(ServiceDiscovery::with_resolver(
+        FakeResolver::zero_port(),
         Duration::from_secs(30),
     ));
 
@@ -160,6 +177,13 @@ fn bench_discovery_paths(c: &mut Criterion) {
             black_box(result)
         })
     });
+    group.bench_function("zero_port_rejected", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let result = zero_port_discovery.resolve(black_box("backend.local")).await;
+            assert!(result.is_err());
+            black_box(result)
+        })
+    });
     group.bench_function("singleflight_8", |b| {
         b.to_async(&runtime).iter(|| async {
             singleflight_discovery.clear_cache();
@@ -185,6 +209,44 @@ fn bench_discovery_paths(c: &mut Criterion) {
         b.iter(|| black_box(ServiceDiscovery::new().unwrap()))
     });
     group.finish();
+
+    let slow_resolver = FakeResolver::ready(Duration::from_secs(6));
+    let timeout_discovery = Arc::new(ServiceDiscovery::with_resolver(
+        slow_resolver,
+        Duration::from_secs(3600),
+    ));
+    let cancel_resolver = FakeResolver::ready(Duration::from_millis(1500));
+    let cancel_discovery = Arc::new(ServiceDiscovery::with_resolver(
+        cancel_resolver,
+        Duration::from_secs(3600),
+    ));
+    let mut dns_limits = c.benchmark_group("dns_limits");
+    dns_limits.sample_size(10);
+    dns_limits.bench_function("resolve_timeout", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let result = timeout_discovery.resolve(black_box("timeout.local")).await;
+            assert!(result.is_err());
+            black_box(result)
+        })
+    });
+    dns_limits.bench_function("cancelled_leader_reresolves", |b| {
+        b.to_async(&runtime).iter(|| async {
+            cancel_discovery.clear_cache();
+            let leader = tokio::spawn({
+                let discovery = cancel_discovery.clone();
+                async move { discovery.resolve("cancel.local").await }
+            });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            leader.abort();
+            let result = cancel_discovery.resolve("cancel.local").await;
+            assert!(
+                result.is_ok(),
+                "cancelled leader must not wedge the election: {result:?}"
+            );
+            black_box(result)
+        })
+    });
+    dns_limits.finish();
 }
 
 fn config_path() -> PathBuf {
@@ -217,6 +279,27 @@ fn bench_config_and_provider_paths(c: &mut Criterion) {
         ..Config::default()
     };
     std::fs::write(&path, serde_json::to_vec(&file_config).unwrap()).unwrap();
+    let security_path = std::env::temp_dir().join(format!(
+        "interlink-runtime-bench-security-{}.json",
+        std::process::id()
+    ));
+    let security_file_config = Config {
+        trust_domain: "bench.local".into(),
+        outbound_bind: "127.0.0.1".into(),
+        metrics_bind: "127.0.0.1".into(),
+        admin_bind: "127.0.0.1:4914".into(),
+        admin_token: Some("file-token".into()),
+        egress_subnets: vec!["127.0.0.0/8".into()],
+        tunnel_max_age_secs: 240,
+        mux_max_streams_per_tunnel: 12,
+        ..Config::default()
+    };
+    std::fs::write(
+        &security_path,
+        serde_json::to_vec(&security_file_config).unwrap(),
+    )
+    .unwrap();
+
 
     let valid = Config::default();
     let invalid_domain = Config {
@@ -229,6 +312,28 @@ fn bench_config_and_provider_paths(c: &mut Criterion) {
     };
     let invalid_identity = Config {
         identity: Some("not-a-spiffe-id".into()),
+        ..Config::default()
+    };
+    let invalid_admin_bind = Config {
+        admin_bind: "not-an-addr".into(),
+        ..Config::default()
+    };
+    let invalid_outbound_bind = Config {
+        outbound_bind: "999.0.0.1".into(),
+        ..Config::default()
+    };
+    let zero_tunnel_age = Config {
+        tunnel_max_age_secs: 0,
+        ..Config::default()
+    };
+    let security_fields = Config {
+        outbound_bind: "127.0.0.1".into(),
+        metrics_bind: "127.0.0.1".into(),
+        admin_bind: "127.0.0.1:4912".into(),
+        admin_token: Some("bench-token".into()),
+        egress_subnets: vec!["127.0.0.0/8".into(), "fd00::/8".into()],
+        tunnel_max_age_secs: 120,
+        mux_max_streams_per_tunnel: 8,
         ..Config::default()
     };
 
@@ -256,6 +361,19 @@ fn bench_config_and_provider_paths(c: &mut Criterion) {
         b.iter(|| {
             let config = Config::default().with_file(black_box(&path)).unwrap();
             assert!(!config.mux);
+            black_box(config)
+        })
+    });
+    group.bench_function("load_file_security_fields", |b| {
+        b.iter(|| {
+            let config = Config::default()
+                .with_file(black_box(&security_path))
+                .unwrap();
+            assert_eq!(config.admin_bind, "127.0.0.1:4914");
+            assert_eq!(config.admin_token.as_deref(), Some("file-token"));
+            assert_eq!(config.egress_subnets, vec!["127.0.0.0/8".to_string()]);
+            assert_eq!(config.tunnel_max_age_secs, 240);
+            assert_eq!(config.mux_max_streams_per_tunnel, 12);
             black_box(config)
         })
     });
@@ -287,7 +405,89 @@ fn bench_config_and_provider_paths(c: &mut Criterion) {
         })
     });
     group.bench_function("to_proxy_config", |b| {
-        b.iter(|| black_box(black_box(&valid).to_proxy_config()))
+        b.iter(|| black_box(black_box(&valid).to_proxy_config().unwrap()))
+    });
+    group.bench_function("reject_invalid_admin_bind", |b| {
+        b.iter(|| {
+            let result = black_box(&invalid_admin_bind).validate();
+            assert!(result.is_err());
+            black_box(result)
+        })
+    });
+    group.bench_function("reject_invalid_outbound_bind", |b| {
+        b.iter(|| {
+            let result = black_box(&invalid_outbound_bind).validate();
+            assert!(result.is_err());
+            black_box(result)
+        })
+    });
+    group.bench_function("reject_zero_tunnel_max_age", |b| {
+        b.iter(|| {
+            let result = black_box(&zero_tunnel_age).validate();
+            assert!(result.is_err());
+            black_box(result)
+        })
+    });
+    group.bench_function("to_proxy_config_security_fields", |b| {
+        b.iter(|| {
+            let proxy = black_box(&security_fields).to_proxy_config().unwrap();
+            assert_eq!(
+                proxy.outbound_bind,
+                "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+            );
+            assert_eq!(proxy.tunnel_max_age_secs, 120);
+            assert_eq!(proxy.mux_max_streams_per_tunnel, 8);
+            assert_eq!(proxy.egress_subnets.len(), 2);
+            black_box(proxy)
+        })
+    });
+    group.bench_function("reject_invalid_metrics_bind", |b| {
+        b.iter(|| {
+            let config = Config {
+                metrics_bind: "not-an-ip".into(),
+                ..Config::default()
+            };
+            let result = black_box(&config).validate();
+            assert!(result.is_err());
+            black_box(result)
+        })
+    });
+    group.bench_function("reject_empty_admin_token", |b| {
+        b.iter(|| {
+            let config = Config {
+                admin_token: Some(String::new()),
+                ..Config::default()
+            };
+            let result = black_box(&config).validate();
+            assert!(result.is_err());
+            black_box(result)
+        })
+    });
+    group.bench_function("reject_zero_mux_streams", |b| {
+        b.iter(|| {
+            let config = Config {
+                mux_max_streams_per_tunnel: 0,
+                ..Config::default()
+            };
+            let result = black_box(&config).validate();
+            assert!(result.is_err());
+            black_box(result)
+        })
+    });
+    group.bench_function("config_serde_defaults", |b| {
+        b.iter(|| {
+            let config: Config = serde_json::from_str(
+                r#"{"trust_domain":"bench.local","identity":null,"proxy_inbound_port":4143,"proxy_outbound_port":4140,"metrics_port":4190,"log_level":"info","max_connections":1024,"ca_bundle_path":null,"cert_path":null,"key_path":null,"default_upstream":null,"mux":true}"#,
+            )
+            .unwrap();
+            assert_eq!(config.outbound_bind, "127.0.0.1");
+            assert_eq!(config.metrics_bind, "127.0.0.1");
+            assert_eq!(config.admin_bind, "127.0.0.1:4192");
+            assert_eq!(config.tunnel_max_age_secs, 3600);
+            assert_eq!(config.mux_max_streams_per_tunnel, 64);
+            assert!(config.egress_subnets.is_empty());
+            black_box(config)
+        })
     });
 
     std::env::set_var("INTERLINK_CONFIG_FILE", "/nonexistent/interlink-bench.json");
@@ -309,6 +509,31 @@ fn bench_config_and_provider_paths(c: &mut Criterion) {
     group.bench_function("load_env", |b| {
         b.iter(|| black_box(Config::load().unwrap()))
     });
+    std::env::set_var("INTERLINK_ADMIN_BIND", "127.0.0.1:4913");
+    std::env::set_var("INTERLINK_ADMIN_TOKEN", "bench-token");
+    std::env::set_var("INTERLINK_OUTBOUND_BIND", "127.0.0.1");
+    std::env::set_var("INTERLINK_METRICS_BIND", "127.0.0.1");
+    std::env::set_var("INTERLINK_EGRESS_SUBNETS", "127.0.0.0/8,fd00::/8");
+    std::env::set_var("INTERLINK_TUNNEL_MAX_AGE_SECS", "90");
+    std::env::set_var("INTERLINK_MUX_MAX_STREAMS", "16");
+    group.bench_function("with_env_security_fields", |b| {
+        b.iter(|| {
+            let config = Config::default().with_env().unwrap();
+            assert_eq!(config.admin_bind, "127.0.0.1:4913");
+            assert_eq!(config.admin_token.as_deref(), Some("bench-token"));
+            assert_eq!(config.egress_subnets.len(), 2);
+            assert_eq!(config.tunnel_max_age_secs, 90);
+            assert_eq!(config.mux_max_streams_per_tunnel, 16);
+            black_box(config)
+        })
+    });
+    std::env::remove_var("INTERLINK_ADMIN_BIND");
+    std::env::remove_var("INTERLINK_ADMIN_TOKEN");
+    std::env::remove_var("INTERLINK_OUTBOUND_BIND");
+    std::env::remove_var("INTERLINK_METRICS_BIND");
+    std::env::remove_var("INTERLINK_EGRESS_SUBNETS");
+    std::env::remove_var("INTERLINK_TUNNEL_MAX_AGE_SECS");
+    std::env::remove_var("INTERLINK_MUX_MAX_STREAMS");
     group.bench_function("kubernetes_explicit_identity", |b| {
         b.iter(|| black_box(KubernetesIdentityProvider::new("bench.local").unwrap()))
     });
@@ -340,6 +565,7 @@ fn bench_config_and_provider_paths(c: &mut Criterion) {
     group.finish();
 
     std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(security_path).unwrap();
     for (key, value) in saved_env {
         match value {
             Some(value) => std::env::set_var(key, value),
@@ -372,7 +598,7 @@ fn bench_admin_paths(c: &mut Criterion) {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server = Arc::new(
         AdminServer::new()
-            .with_port(port)
+            .with_bind(addr)
             .with_shutdown(shutdown_rx)
             .with_reload_handler(reload.clone()),
     );
@@ -385,18 +611,60 @@ fn bench_admin_paths(c: &mut Criterion) {
     let (unavailable_shutdown_tx, unavailable_shutdown_rx) = watch::channel(false);
     let unavailable_server = Arc::new(
         AdminServer::new()
-            .with_port(unavailable_port)
+            .with_bind(unavailable_addr)
             .with_shutdown(unavailable_shutdown_rx),
     );
     let unavailable_task = {
         let _runtime_guard = runtime.enter();
         unavailable_server.spawn()
     };
+    let token_port = reserve_port();
+    let token_addr = SocketAddr::from(([127, 0, 0, 1], token_port));
+    let (token_shutdown_tx, token_shutdown_rx) = watch::channel(false);
+    let token_server = Arc::new(
+        AdminServer::new()
+            .with_bind(token_addr)
+            .with_token(Some("bench-token".into()))
+            .with_shutdown(token_shutdown_rx)
+            .with_reload_handler(reload.clone()),
+    );
+    let token_task = {
+        let _runtime_guard = runtime.enter();
+        token_server.clone().spawn()
+    };
+    let cap_port = reserve_port();
+    let cap_addr = SocketAddr::from(([127, 0, 0, 1], cap_port));
+    let (cap_shutdown_tx, cap_shutdown_rx) = watch::channel(false);
+    let cap_server = Arc::new(
+        AdminServer::new()
+            .with_bind(cap_addr)
+            .with_shutdown(cap_shutdown_rx),
+    );
+    let cap_task = {
+        let _runtime_guard = runtime.enter();
+        cap_server.clone().spawn()
+    };
+    let open_port = reserve_port();
+    let open_addr = SocketAddr::from(([127, 0, 0, 1], open_port));
+    let (open_shutdown_tx, open_shutdown_rx) = watch::channel(false);
+    let open_server = Arc::new(
+        AdminServer::new()
+            .with_bind(SocketAddr::from(([0, 0, 0, 0], open_port)))
+            .with_shutdown(open_shutdown_rx)
+            .with_reload_handler(reload.clone()),
+    );
+    let open_task = {
+        let _runtime_guard = runtime.enter();
+        open_server.clone().spawn()
+    };
     runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if TcpStream::connect(addr).await.is_ok()
                     && TcpStream::connect(unavailable_addr).await.is_ok()
+                    && TcpStream::connect(token_addr).await.is_ok()
+                    && TcpStream::connect(cap_addr).await.is_ok()
+                    && TcpStream::connect(open_addr).await.is_ok()
                 {
                     return;
                 }
@@ -455,6 +723,40 @@ fn bench_admin_paths(c: &mut Criterion) {
             black_box(response)
         })
     });
+    group.bench_function("reload_with_valid_token", |b| {
+        b.to_async(&runtime).iter(|| async {
+            // The shared reload fixture is left failing by the
+            // reload_failed case above; this case asserts the authorized
+            // success path, so restore it first.
+            reload.fail.store(false, Ordering::Relaxed);
+            let response = admin_request(
+                token_addr,
+                b"POST /reload HTTP/1.1\r\nAuthorization: Bearer bench-token\r\n\r\n",
+            )
+            .await;
+            assert!(response.ends_with(b"reload complete"));
+            black_box(response)
+        })
+    });
+    group.bench_function("reload_with_wrong_token", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let response = admin_request(
+                token_addr,
+                b"POST /reload HTTP/1.1\r\nAuthorization: Bearer not-the-token\r\n\r\n",
+            )
+            .await;
+            assert!(response.starts_with(b"HTTP/1.1 401"));
+            black_box(response)
+        })
+    });
+    group.bench_function("reload_missing_token_on_token_server", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let response =
+                admin_request(token_addr, b"POST /reload HTTP/1.1\r\n\r\n").await;
+            assert!(response.starts_with(b"HTTP/1.1 401"));
+            black_box(response)
+        })
+    });
     group.bench_function("not_found", |b| {
         b.to_async(&runtime).iter(|| async {
             let response = admin_request(addr, b"GET /missing HTTP/1.1\r\n\r\n").await;
@@ -463,13 +765,69 @@ fn bench_admin_paths(c: &mut Criterion) {
         })
     });
     group.finish();
+    let mut limits_group = c.benchmark_group("admin_limits");
+    limits_group.sample_size(10);
+    limits_group.bench_function("admin_idle_connection_timeout", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let mut stream = TcpStream::connect(cap_addr).await.unwrap();
+            let mut response = Vec::new();
+            let dropped = tokio::time::timeout(
+                Duration::from_secs(6),
+                stream.read_to_end(&mut response),
+            )
+            .await;
+            assert!(
+                dropped.is_ok(),
+                "idle admin connection must be dropped by the read deadline"
+            );
+            black_box(response)
+        })
+    });
+    limits_group.bench_function("admin_connection_cap_exceeded", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let mut held = Vec::new();
+            for _ in 0..64 {
+                held.push(TcpStream::connect(cap_addr).await.unwrap());
+            }
+            let mut extra = TcpStream::connect(cap_addr).await.unwrap();
+            let _ = extra.shutdown().await;
+            let mut response = Vec::new();
+            let _ = tokio::time::timeout(
+                Duration::from_millis(500),
+                extra.read_to_end(&mut response),
+            )
+            .await;
+            assert!(
+                response.is_empty(),
+                "connection beyond the admin cap must be dropped without a response"
+            );
+            drop(held);
+            black_box(response)
+        })
+    });
+    limits_group.bench_function("reload_refused_on_non_loopback_without_token", |b| {
+        b.to_async(&runtime).iter(|| async {
+            // Server is bound to 0.0.0.0 (non-loopback) with no token: reload
+            // must be refused even though a handler is attached.
+            let response = admin_request(open_addr, b"POST /reload HTTP/1.1\r\n\r\n").await;
+            assert!(response.starts_with(b"HTTP/1.1 503"));
+            black_box(response)
+        })
+    });
+    limits_group.finish();
 
     shutdown_tx.send(true).unwrap();
     unavailable_shutdown_tx.send(true).unwrap();
+    token_shutdown_tx.send(true).unwrap();
+    cap_shutdown_tx.send(true).unwrap();
+    open_shutdown_tx.send(true).unwrap();
     runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(1), async {
             task.await.unwrap();
             unavailable_task.await.unwrap();
+            token_task.await.unwrap();
+            cap_task.await.unwrap();
+            open_task.await.unwrap();
         })
         .await
         .unwrap();
@@ -520,6 +878,18 @@ fn bench_metric_paths(c: &mut Criterion) {
         })
     });
     group.bench_function("mux_stream", |b| b.iter(metrics::record_mux_stream));
+    group.bench_function("init_exporter", |b| {
+        b.iter(|| {
+            // Driving the exporter init path: a repeated install may be
+            // rejected by the metrics runtime — an outcome of this
+            // control-plane case, not a bench failure.
+            let result = metrics::init_metrics_exporter(black_box(SocketAddr::from((
+                [127, 0, 0, 1],
+                0,
+            ))));
+            black_box(result)
+        })
+    });
     group.finish();
 }
 

@@ -16,7 +16,7 @@
       {
         "group": "spiffe_id",
         "covers": ["src/common/identity.rs"],
-        "cases": ["parse", "parse_uppercase", "reject_userinfo", "reject_port", "reject_query", "reject_fragment", "reject_scheme", "reject_path", "reject_empty", "reject_too_short", "reject_missing_path", "reject_missing_trust_domain", "reject_missing_namespace_separator", "reject_namespace_query", "reject_missing_service_prefix", "format", "display", "from_str", "try_new", "reject_empty_trust_domain", "reject_empty_namespace", "reject_empty_service_account", "trust_domain_new", "trust_domain_with_ca"]
+        "cases": ["parse", "parse_uppercase", "reject_userinfo", "reject_port", "reject_query", "reject_fragment", "reject_scheme", "reject_path", "reject_empty", "reject_too_short", "reject_missing_path", "reject_missing_trust_domain", "reject_missing_namespace_separator", "reject_namespace_query", "reject_missing_service_prefix", "reject_control_chars", "reject_non_ascii", "reject_control_char_namespace", "reject_non_ascii_service_account", "canonicalize_trust_domain", "sanitized_display", "format", "display", "from_str", "try_new", "reject_empty_trust_domain", "reject_empty_namespace", "reject_empty_service_account", "trust_domain_new", "trust_domain_with_ca"]
       },
       {
         "group": "memory_copy",
@@ -27,7 +27,7 @@
       {
         "group": "policy_engine",
         "covers": ["src/policy/mod.rs", "src/common/identity.rs"],
-        "cases": ["evaluate", "global_allow", "default_deny", "default_allow", "namespace_miss_global_allow", "global_deny", "default_constructor"]
+        "cases": ["evaluate", "global_allow", "default_deny", "default_allow", "namespace_miss_global_allow", "global_deny", "global_deny_beats_namespace_allow", "namespace_deny_beats_global_allow", "set_namespace_policies", "default_constructor"]
       },
       {
         "group": "pattern_match",
@@ -44,28 +44,38 @@
       {
         "group": "dns_discovery",
         "covers": ["src/discovery/dns.rs"],
-        "cases": ["cache_hit", "cache_hit_vec_copy_control", "cache_miss", "expired_refresh", "lookup_error", "singleflight_8", "hickory_new", "service_new"]
+        "cases": ["cache_hit", "cache_hit_vec_copy_control", "cache_miss", "expired_refresh", "lookup_error", "zero_port_rejected", "singleflight_8", "hickory_new", "service_new"]
       },
       {
         "group": "config_provider",
         "covers": ["src/common/config.rs", "src/proxy/config.rs", "src/identity/provider/mod.rs", "src/common/identity.rs"],
-        "cases": ["config_default", "proxy_config_default", "proxy_config_serde_default_mux", "load_file", "validate", "reject_empty_domain", "reject_zero_connections", "reject_identity", "to_proxy_config", "with_env", "load_env", "kubernetes_explicit_identity", "kubernetes_env_fallback", "static_new", "static_identity", "static_trust_domain", "plain_static_identity"]
+        "cases": ["config_default", "proxy_config_default", "proxy_config_serde_default_mux", "load_file", "load_file_security_fields", "validate", "reject_empty_domain", "reject_zero_connections", "reject_identity", "to_proxy_config", "to_proxy_config_security_fields", "reject_invalid_admin_bind", "reject_invalid_outbound_bind", "reject_invalid_metrics_bind", "reject_empty_admin_token", "reject_zero_tunnel_max_age", "reject_zero_mux_streams", "config_serde_defaults", "with_env", "with_env_security_fields", "load_env", "kubernetes_explicit_identity", "kubernetes_env_fallback", "static_new", "static_identity", "static_trust_domain", "plain_static_identity"]
       },
       {
         "group": "admin_http",
         "covers": ["src/admin/mod.rs"],
-        "cases": ["health", "not_ready", "ready", "reload", "reload_failed", "reload_unavailable", "not_found"]
+        "cases": ["health", "not_ready", "ready", "reload", "reload_with_valid_token", "reload_with_wrong_token", "reload_missing_token_on_token_server", "reload_failed", "reload_unavailable", "not_found"]
+      },
+      {
+        "group": "admin_limits",
+        "covers": ["src/admin/mod.rs"],
+        "cases": ["admin_idle_connection_timeout", "admin_connection_cap_exceeded", "reload_refused_on_non_loopback_without_token"]
+      },
+      {
+        "group": "dns_limits",
+        "covers": ["src/discovery/dns.rs"],
+        "cases": ["resolve_timeout", "cancelled_leader_reresolves"]
       },
       {
         "group": "metrics",
         "covers": ["src/metrics/mod.rs"],
-        "cases": ["connection_success", "connection_failure", "handshake_success", "handshake_failure", "handshake_full", "handshake_resumed", "policy_allow", "policy_deny", "saturation", "mux_tunnel", "mux_stream"]
+        "cases": ["connection_success", "connection_failure", "handshake_success", "handshake_failure", "handshake_full", "handshake_resumed", "policy_allow", "policy_deny", "saturation", "mux_tunnel", "mux_stream", "init_exporter"]
       }
     ],
     "crypto": [
       {
         "group": "certificate",
-        "covers": ["src/identity/ca/mod.rs", "src/common/identity.rs"],
+        "covers": ["src/common/identity.rs"],
         "cases": ["new_ca", "issue_leaf", "issue_leaf_with_dns_and_ip", "reject_non_ascii_identity", "reject_non_ascii_dns", "root_cert", "root_key"]
       },
       {
@@ -76,35 +86,34 @@
       {
         "group": "tls_handshake",
         "covers": ["src/proxy/handshake.rs", "src/proxy/verify.rs", "src/metrics/mod.rs"],
-        "cases": ["full", "resumed", "ipv6", "reject_untrusted_ca", "reject_wrong_trust_domain"]
+        "cases": ["full", "resumed", "ipv6", "reject_untrusted_ca", "reject_wrong_trust_domain", "inbound_rejects_foreign_trust_domain"]
       }
     ],
     "data_plane": [
       {
         "group": "proxy_relay",
         "covers": ["src/proxy/mod.rs", "src/proxy/mux.rs", "src/proxy/original_dst.rs", "src/proxy/outbound.rs", "src/proxy/tcp.rs", "src/proxy/handshake.rs", "src/policy/mod.rs", "src/metrics/mod.rs"],
-        "cases": ["mux_small", "legacy_small", "mux_16kb", "legacy_16kb", "policy_denied", "mux_half_close", "legacy_half_close", "mux_copy_error", "legacy_copy_error", "handshake_failure", "no_upstream", "saturation_rejection"]
+        "cases": ["mux_small", "legacy_small", "mux_16kb", "legacy_16kb", "policy_denied", "egress_denied", "mux_half_close", "legacy_half_close", "mux_copy_error", "legacy_copy_error", "handshake_failure", "no_upstream", "saturation_rejection", "constructor_rejects_invalid_config"]
       }
     ]
   },
   "coverage": {
-    "src/admin/mod.rs": {"min_line_percent": 88.0, "max_uncovered_lines": 10, "max_uncovered_functions": 1},
-    "src/common/config.rs": {"min_line_percent": 81.0, "max_uncovered_lines": 26, "max_uncovered_functions": 6},
-    "src/common/identity.rs": {"min_line_percent": 100.0, "max_uncovered_lines": 0, "max_uncovered_functions": 0},
-    "src/discovery/dns.rs": {"min_line_percent": 89.0, "max_uncovered_lines": 8, "max_uncovered_functions": 5},
-    "src/identity/ca/mod.rs": {"min_line_percent": 91.0, "max_uncovered_lines": 11, "max_uncovered_functions": 11},
+    "src/admin/mod.rs": {"min_line_percent": 89.0, "max_uncovered_lines": 18, "max_uncovered_functions": 1},
+    "src/common/config.rs": {"min_line_percent": 82.0, "max_uncovered_lines": 43, "max_uncovered_functions": 10},
+    "src/common/identity.rs": {"min_line_percent": 99.0, "max_uncovered_lines": 3, "max_uncovered_functions": 0},
+    "src/discovery/dns.rs": {"min_line_percent": 80.0, "max_uncovered_lines": 20, "max_uncovered_functions": 7},
     "src/identity/provider/mod.rs": {"min_line_percent": 58.0, "max_uncovered_lines": 36, "max_uncovered_functions": 6},
     "src/metrics/mod.rs": {"min_line_percent": 58.0, "max_uncovered_lines": 49, "max_uncovered_functions": 16},
     "src/policy/mod.rs": {"min_line_percent": 98.0, "max_uncovered_lines": 1, "max_uncovered_functions": 0},
     "src/protocol/mod.rs": {"min_line_percent": 95.0, "max_uncovered_lines": 2, "max_uncovered_functions": 0},
     "src/proxy/config.rs": {"min_line_percent": 100.0, "max_uncovered_lines": 0, "max_uncovered_functions": 0},
-    "src/proxy/handshake.rs": {"min_line_percent": 86.0, "max_uncovered_lines": 21, "max_uncovered_functions": 5},
-    "src/proxy/mod.rs": {"min_line_percent": 70.0, "max_uncovered_lines": 24, "max_uncovered_functions": 3},
-    "src/proxy/mux.rs": {"min_line_percent": 77.0, "max_uncovered_lines": 45, "max_uncovered_functions": 6},
+    "src/proxy/handshake.rs": {"min_line_percent": 87.0, "max_uncovered_lines": 25, "max_uncovered_functions": 6},
+    "src/proxy/mod.rs": {"min_line_percent": 70.0, "max_uncovered_lines": 24, "max_uncovered_functions": 4},
+    "src/proxy/mux.rs": {"min_line_percent": 76.0, "max_uncovered_lines": 95, "max_uncovered_functions": 9},
     "src/proxy/original_dst.rs": {"min_line_percent": {"linux": 45.0, "default": 100.0}, "max_uncovered_lines": {"linux": 20, "default": 0}, "max_uncovered_functions": 0},
-    "src/proxy/outbound.rs": {"min_line_percent": {"linux": 71.0, "default": 72.0}, "max_uncovered_lines": {"linux": 86, "default": 83}, "max_uncovered_functions": 8},
-    "src/proxy/tcp.rs": {"min_line_percent": {"linux": 63.0, "default": 64.0}, "max_uncovered_lines": {"linux": 100, "default": 98}, "max_uncovered_functions": 11},
-    "src/proxy/verify.rs": {"min_line_percent": 80.0, "max_uncovered_lines": 12, "max_uncovered_functions": 3}
+    "src/proxy/outbound.rs": {"min_line_percent": {"linux": 71.0, "default": 71.0}, "max_uncovered_lines": {"linux": 93, "default": 93}, "max_uncovered_functions": 6},
+    "src/proxy/tcp.rs": {"min_line_percent": {"linux": 63.0, "default": 63.0}, "max_uncovered_lines": {"linux": 100, "default": 104}, "max_uncovered_functions": {"linux": 11, "default": 9}},
+    "src/proxy/verify.rs": {"min_line_percent": 80.0, "max_uncovered_lines": 22, "max_uncovered_functions": 6}
   },
   "exempt_sources": {
     "src/lib.rs": "module declarations only",

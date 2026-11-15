@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use interlink::common::identity::SpiffeId;
 use interlink::common::identity::{IdentityProvider, TrustDomain};
-use interlink::identity::ca::CertificateAuthority;
+use interlink_test_support::CertificateAuthority;
 use interlink::policy::{Decision, PolicyEngine};
 use interlink::proxy::config::ProxyConfig;
 use interlink::proxy::handshake::{TlsHandshake, TlsServer};
@@ -100,7 +100,7 @@ impl MtlsTestHarness {
                 &format!("spiffe://{}/ns/{}/sa/*", trust_domain, ns),
                 &format!("spiffe://{}/ns/{}/sa/*", trust_domain, ns),
                 "e2e test allow-all",
-            ),
+            ).unwrap(),
         );
 
         // 7. Start echo server
@@ -116,8 +116,9 @@ impl MtlsTestHarness {
             default_upstream: Some(format!("127.0.0.1:{}", upstream_port)),
             max_connections: Some(10),
             mux: true,
+            ..Default::default()
         };
-        let proxy = TcpProxy::new_with_port(config, proxy_port, tls_server, policy.clone());
+        let proxy = TcpProxy::new_with_port(config, proxy_port, tls_server, policy.clone()).unwrap();
         let proxy_handle = Arc::new(proxy).spawn();
 
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -231,7 +232,7 @@ fn test_policy_engine_allow() {
             "spiffe://test.local/ns/default/sa/*",
             "spiffe://test.local/ns/billing/sa/*",
             "allow default to billing",
-        ),
+        ).unwrap(),
     );
     let src = SpiffeId::try_new(TRUST_DOMAIN, "default", "web").unwrap();
     let dst = SpiffeId::try_new(TRUST_DOMAIN, "billing", "api").unwrap();

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use interlink::common::error::InterlinkError;
 use interlink::common::identity::{IdentityProvider, SpiffeId, TrustDomain};
-use interlink::identity::ca::CertificateAuthority;
+use interlink_test_support::CertificateAuthority;
 use interlink::proxy::handshake::{TlsClient, TlsServer};
 use interlink::proxy::TlsHandshake;
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use interlink::common::error::InterlinkError;
 use interlink::common::identity::SpiffeId;
-use interlink::identity::ca::CertificateAuthority;
+use interlink_test_support::CertificateAuthority;
 use interlink::proxy::handshake::TlsStream;
 use interlink::proxy::{TlsCredentialPaths, TlsCredentialReloader, TlsHandshake};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

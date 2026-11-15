@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "test-support"]
+resolver = "2"
+
 [package]
 name = "interlink"
 version = "0.1.0"
@@ -17,11 +21,10 @@ path = "src/main.rs"
 tokio = { version = "1", features = ["full"] }
 rustls = "0.23"
 rustls-pki-types = "1"
-rustls-pemfile = "2"
 tokio-rustls = "0.26"
 x509-parser = "0.18"
-rcgen = "0.13"
 time = "0.3"
+ipnet = "2"
 ring = "0.17"
 http = "1"
 hickory-resolver = "0.26"
@@ -48,10 +51,12 @@ yamux = "0.13"
 tokio-util = { version = "0.7.18", features = ["compat"] }
 
 [dev-dependencies]
+interlink-test-support = { path = "test-support" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 tokio-test = "0.4"
 quickcheck = "1"
 proptest = "1"
+socket2 = "0.5"
 
 [[bench]]
 name = "proxy"

@@ -294,20 +294,20 @@ pub struct SpiffeId {
 }
 
 impl SpiffeId {
-    /// Construct a SPIFFE ID without validation (for compile-time-known constants
-    /// within this crate). For runtime input (config, network data), use `try_new()`
-    /// or `from_uri()`. This constructor is intentionally `pub(crate)` — external
-    /// consumers must go through the validated path (B13).
+    /// Validate and construct a SPIFFE ID, including compile-time-known inputs.
     pub(crate) fn new(
         trust_domain: impl Into<String>,
         namespace: impl Into<String>,
         service_account: impl Into<String>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, InterlinkError> {
+        let mut id = Self {
             trust_domain: trust_domain.into(),
             namespace: namespace.into(),
             service_account: service_account.into(),
-        }
+        };
+        id.validate_segments()?;
+        id.trust_domain.make_ascii_lowercase();
+        Ok(id)
     }
 
     /// Validate and construct — use for config/runtime data.
@@ -316,9 +316,7 @@ impl SpiffeId {
         namespace: impl Into<String>,
         service_account: impl Into<String>,
     ) -> Result<Self, InterlinkError> {
-        let id = Self::new(trust_domain, namespace, service_account);
-        id.validate_segments()?;
-        Ok(id)
+        Self::new(trust_domain, namespace, service_account)
     }
 
     fn validate_segments(&self) -> Result<(), InterlinkError> {
@@ -336,6 +334,20 @@ impl SpiffeId {
             return Err(InterlinkError::Identity(
                 "service account must not be empty".into(),
             ));
+        }
+        for (name, segment) in [
+            ("trust domain", &self.trust_domain),
+            ("namespace", &self.namespace),
+            ("service account", &self.service_account),
+        ] {
+            if segment
+                .bytes()
+                .any(|byte| !byte.is_ascii() || byte.is_ascii_control())
+            {
+                return Err(InterlinkError::Identity(format!(
+                    "{name} must contain only printable ASCII characters"
+                )));
+            }
         }
         Ok(())
     }
@@ -360,10 +372,15 @@ impl SpiffeId {
     pub fn from_uri(uri: &str) -> Result<Self, InterlinkError> {
         let parts = parse_spiffe_uri(uri, "URI")?;
         Self::try_new(
-            parts.trust_domain.to_ascii_lowercase(),
+            parts.trust_domain,
             parts.namespace,
             parts.service_account,
         )
+    }
+
+    /// Borrow a log-safe display wrapper without allocating.
+    pub fn sanitized(&self) -> SanitizedSpiffeId<'_> {
+        SanitizedSpiffeId(self)
     }
 
     /// Check if this identity matches a policy pattern (supports wildcards).
@@ -393,6 +410,32 @@ impl fmt::Display for SpiffeId {
         f.write_str(&self.namespace)?;
         f.write_str("/sa/")?;
         f.write_str(&self.service_account)
+    }
+}
+
+/// Defense-in-depth display for identities from mutable or deserialized data.
+pub struct SanitizedSpiffeId<'a>(&'a SpiffeId);
+
+impl fmt::Display for SanitizedSpiffeId<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn segment(f: &mut fmt::Formatter<'_>, value: &str) -> fmt::Result {
+            let mut start = 0;
+            for (offset, ch) in value.char_indices() {
+                if ch.is_control() {
+                    f.write_str(&value[start..offset])?;
+                    f.write_str("\u{fffd}")?;
+                    start = offset + ch.len_utf8();
+                }
+            }
+            f.write_str(&value[start..])
+        }
+
+        f.write_str("spiffe://")?;
+        segment(f, &self.0.trust_domain)?;
+        f.write_str("/ns/")?;
+        segment(f, &self.0.namespace)?;
+        f.write_str("/sa/")?;
+        segment(f, &self.0.service_account)
     }
 }
 
@@ -443,7 +486,7 @@ mod tests {
 
     #[test]
     fn test_spiffe_id_roundtrip() {
-        let id = SpiffeId::new("cluster.local", "default", "payments");
+        let id = SpiffeId::new("cluster.local", "default", "payments").unwrap();
         let uri = id.to_uri();
         assert_eq!(uri, "spiffe://cluster.local/ns/default/sa/payments");
 
@@ -480,7 +523,7 @@ mod tests {
 
     #[test]
     fn test_spiffe_id_wildcard_match() {
-        let id = SpiffeId::new("trust", "default", "web-api");
+        let id = SpiffeId::new("trust", "default", "web-api").unwrap();
         assert!(id.matches_pattern("spiffe://trust/ns/default/sa/web-api"));
         assert!(id.matches_pattern("spiffe://trust/ns/*/sa/*"));
         assert!(id.matches_pattern("spiffe://trust/ns/default/sa/*"));
@@ -551,7 +594,53 @@ mod tests {
 
     #[test]
     fn test_display() {
-        let id = SpiffeId::new("a.com", "b", "c");
+        let id = SpiffeId::new("a.com", "b", "c").unwrap();
         assert_eq!(format!("{}", id), "spiffe://a.com/ns/b/sa/c");
+    }
+
+    #[test]
+    fn all_constructors_reject_controls_and_non_ascii_in_every_segment() {
+        for ch in (0u8..=31).chain([127]).map(char::from).chain(['é', '界']) {
+            for segment in 0..3 {
+                let mut parts = ["trust.local".to_string(), "default".into(), "web".into()];
+                parts[segment].push(ch);
+                assert!(SpiffeId::new(&parts[0], &parts[1], &parts[2]).is_err());
+                assert!(SpiffeId::try_new(&parts[0], &parts[1], &parts[2]).is_err());
+                let uri = format!("spiffe://{}/ns/{}/sa/{}", parts[0], parts[1], parts[2]);
+                assert!(SpiffeId::from_uri(&uri).is_err(), "{uri:?}");
+            }
+        }
+        assert!(SpiffeId::try_new("trust.local", "default", "web-1").is_ok());
+    }
+
+    #[test]
+    fn all_constructors_canonicalize_trust_domain_and_roundtrip() {
+        for id in [
+            SpiffeId::new("TRUST.Local", "Default", "Web").unwrap(),
+            SpiffeId::try_new("TRUST.Local", "Default", "Web").unwrap(),
+            SpiffeId::from_uri("spiffe://TRUST.Local/ns/Default/sa/Web").unwrap(),
+        ] {
+            assert_eq!(id.trust_domain, "trust.local");
+            assert_eq!(id.namespace, "Default");
+            assert_eq!(id.service_account, "Web");
+            assert_eq!(id.to_uri(), "spiffe://trust.local/ns/Default/sa/Web");
+            assert_eq!(SpiffeId::from_uri(&id.to_uri()).unwrap(), id);
+        }
+    }
+
+    #[test]
+    fn sanitized_display_replaces_controls_in_all_segments() {
+        // Public fields/deserialization can bypass constructors; logs still escape controls.
+        let id = SpiffeId {
+            trust_domain: "trust\n.local".into(),
+            namespace: "de\u{7f}fault".into(),
+            service_account: "\0web\r\u{85}".into(),
+        };
+        assert_eq!(
+            id.sanitized().to_string(),
+            "spiffe://trust\u{fffd}.local/ns/de\u{fffd}fault/sa/\u{fffd}web\u{fffd}\u{fffd}"
+        );
+        let valid = SpiffeId::try_new("trust.local", "default", "web").unwrap();
+        assert_eq!(valid.sanitized().to_string(), valid.to_uri());
     }
 }

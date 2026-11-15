@@ -14,9 +14,8 @@ use crate::common::identity::SpiffeId;
 use crate::discovery::ServiceDiscovery;
 use crate::metrics;
 use crate::policy::{Decision, PolicyEngine};
-use crate::proxy::config::ProxyConfig;
+use crate::proxy::config::{EgressPolicy, ProxyConfig};
 use crate::proxy::configure_socket;
-use crate::proxy::get_original_dst;
 use crate::proxy::handshake::TlsHandshake;
 use crate::proxy::UpstreamTarget;
 
@@ -41,6 +40,9 @@ pub struct OutboundProxy {
     shutdown: Option<watch::Receiver<bool>>,
     active_connections: Arc<AtomicUsize>,
     local_id: SpiffeId,
+    outbound_bind: std::net::IpAddr,
+    egress: EgressPolicy,
+    original_destination: Arc<dyn crate::proxy::OriginalDestination>,
 }
 
 impl OutboundProxy {
@@ -48,7 +50,7 @@ impl OutboundProxy {
         config: ProxyConfig,
         tls_client: Arc<dyn TlsHandshake>,
         policy: Arc<PolicyEngine>,
-    ) -> Self {
+    ) -> Result<Self, InterlinkError> {
         Self::new_with_discovery(config, ports::OUTBOUND_PROXY, tls_client, policy, None)
     }
 
@@ -58,7 +60,7 @@ impl OutboundProxy {
         port: u16,
         tls_client: Arc<dyn TlsHandshake>,
         policy: Arc<PolicyEngine>,
-    ) -> Self {
+    ) -> Result<Self, InterlinkError> {
         Self::new_with_discovery(config, port, tls_client, policy, None)
     }
 
@@ -69,24 +71,22 @@ impl OutboundProxy {
         tls_client: Arc<dyn TlsHandshake>,
         policy: Arc<PolicyEngine>,
         discovery: Option<Arc<ServiceDiscovery>>,
-    ) -> Self {
+    ) -> Result<Self, InterlinkError> {
         let max_conn = config.max_connections.unwrap_or(1024);
-        #[cfg_attr(not(test), allow(clippy::expect_used))]
-        let local_id = config
-            .identity
-            .as_ref()
-            .and_then(|s| SpiffeId::from_uri(s).ok())
-            .unwrap_or_else(|| {
-                SpiffeId::try_new(&config.trust_domain, "default", "proxy")
-                    .expect("trust_domain validated in Config::validate")
-            });
+        let local_id = config.local_identity()?;
+        let egress = EgressPolicy::parse(&config.egress_subnets)?;
+        if config.tunnel_max_age_secs == 0 || config.mux_max_streams_per_tunnel == 0 {
+            return Err(InterlinkError::Config(
+                "tunnel limits must be positive".into(),
+            ));
+        }
         let mux_enabled = config.mux;
         let default_upstream = UpstreamTarget::from_config(config.default_upstream);
-        Self {
+        Ok(Self {
             connection_semaphore: Arc::new(Semaphore::new(max_conn)),
             default_upstream,
             mux_enabled,
-            mux_pool: crate::proxy::mux::MuxPool::new(),
+            mux_pool: crate::proxy::mux::MuxPool::new(config.mux_max_streams_per_tunnel),
             listen_port: port,
             tls_client,
             policy,
@@ -94,7 +94,10 @@ impl OutboundProxy {
             shutdown: None,
             active_connections: Arc::new(AtomicUsize::new(0)),
             local_id,
-        }
+            outbound_bind: config.outbound_bind,
+            egress,
+            original_destination: Arc::new(crate::proxy::NetfilterDestination),
+        })
     }
 
     /// Attach a service discovery resolver.
@@ -116,9 +119,9 @@ impl OutboundProxy {
         &self,
         upstream: &UpstreamTarget,
     ) -> Result<std::net::SocketAddr, InterlinkError> {
-        let (name, port) = match upstream {
+        let name = match upstream {
             UpstreamTarget::Socket(addr) => return Ok(*addr),
-            UpstreamTarget::Host { name, port } => (name, port),
+            UpstreamTarget::Host(name) => name,
         };
         let Some(discovery) = self.discovery.as_ref() else {
             return Err(InterlinkError::DnsResolution(format!(
@@ -130,18 +133,19 @@ impl OutboundProxy {
         let first = resolved.addrs.first().copied().ok_or_else(|| {
             InterlinkError::DnsResolution(format!("no endpoints for {}", upstream))
         })?;
-        Ok(std::net::SocketAddr::new(
-            first.ip(),
-            port.unwrap_or_else(|| first.port()),
-        ))
+        Ok(first)
     }
 
     pub fn spawn(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move { self.run().await })
     }
 
+    fn listen_addr(&self) -> std::net::SocketAddr {
+        std::net::SocketAddr::new(self.outbound_bind, self.listen_port)
+    }
+
     pub async fn run(self: Arc<Self>) {
-        let addr: std::net::SocketAddr = ([0, 0, 0, 0], self.listen_port).into();
+        let addr = self.listen_addr();
 
         if self.listen_port == 0 {
             info!("outbound proxy disabled (port 0)");
@@ -223,7 +227,9 @@ impl OutboundProxy {
         // entry for every connection, redirected or not). An original dst on
         // our own port therefore means "not redirected": fall back to the
         // configured default upstream instead of connecting to ourselves.
-        let upstream = get_original_dst(&stream)
+        let upstream = self
+            .original_destination
+            .get(&stream)
             .filter(|sa| sa.port() != self.listen_port)
             .map(UpstreamTarget::Socket)
             .or_else(|| self.default_upstream.clone());
@@ -312,7 +318,13 @@ impl OutboundProxy {
                     crate::proxy::copy_bidirectional(&mut local_stream, &mut stream).await,
                     start,
                 ) {
-                    debug!("mux stream relay error → {}: {}", upstream, e);
+                    warn!(
+                        local = %self.local_id.sanitized(),
+                        peer = %peer_addr,
+                        upstream = %upstream,
+                        error = %e,
+                        "mux stream relay error"
+                    );
                 }
             }
             Route::Legacy(mut tls) => {
@@ -335,15 +347,24 @@ impl OutboundProxy {
 
     /// Decide how this connection reaches `upstream`.
     async fn route(&self, upstream: std::net::SocketAddr) -> Route {
+        if !self.egress.allows(upstream.ip()) {
+            warn!("egress denied {} → {}", self.local_id.sanitized(), upstream);
+            metrics::record_policy(&Decision::Deny(
+                "egress destination outside allowed subnets",
+            ));
+            return Route::Denied;
+        }
         if !self.mux_enabled {
             return self.establish(upstream).await;
         }
 
         // Up to a few attempts: dead tunnels are evicted and retried.
-        for _ in 0..4 {
+        let mut attempts_used = 0;
+        for attempt in 0..4 {
+            attempts_used = attempt + 1;
             // Fast path: an existing tunnel with spare capacity, no lock.
             if let Some(tunnel) = self.mux_pool.pick_under_cap(&upstream) {
-                match self.try_tunnel_stream(&tunnel, upstream).await {
+                match self.try_tunnel_stream(tunnel, upstream).await {
                     Some(route) => return route,
                     None => continue, // dead → evicted; retry
                 }
@@ -358,7 +379,7 @@ impl OutboundProxy {
             // A concurrent task may have grown it while we waited.
             if let Some(tunnel) = self.mux_pool.pick_under_cap(&upstream) {
                 drop(guard);
-                match self.try_tunnel_stream(&tunnel, upstream).await {
+                match self.try_tunnel_stream(tunnel, upstream).await {
                     Some(route) => return route,
                     None => continue,
                 }
@@ -371,15 +392,23 @@ impl OutboundProxy {
             }
             drop(guard);
 
-            // Pool is at MAX_TUNNELS_PER_PEER and all are at the soft cap: use
-            // the least-loaded tunnel anyway (still under yamux's hard 512 cap).
+            // Pool is at MAX_TUNNELS_PER_PEER and every tunnel is saturated:
+            // pick_any only succeeds if a slot freed up meanwhile; otherwise
+            // this attempt fails — bounded by design (H4).
             if let Some(tunnel) = self.mux_pool.pick_any(&upstream) {
-                match self.try_tunnel_stream(&tunnel, upstream).await {
+                match self.try_tunnel_stream(tunnel, upstream).await {
                     Some(route) => return route,
                     None => continue,
                 }
             }
         }
+        warn!(
+            upstream = %upstream,
+            attempts = attempts_used,
+            can_grow = self.mux_pool.can_grow(&upstream),
+            local = %self.local_id.sanitized(),
+            "outbound route exhausted retries"
+        );
         Route::Failed
     }
 
@@ -387,9 +416,10 @@ impl OutboundProxy {
     /// `None` means the tunnel was dead (now evicted) — caller re-establishes.
     async fn try_tunnel_stream(
         &self,
-        tunnel: &crate::proxy::mux::Tunnel,
+        tunnel: crate::proxy::mux::ReservedTunnel,
         upstream: std::net::SocketAddr,
     ) -> Option<Route> {
+        let candidate = (*tunnel).clone();
         // Every stream is authorized against the tunnel's peer identity,
         // exactly as a dedicated connection would be.
         let decision = self.policy.evaluate(&self.local_id, &tunnel.peer_identity);
@@ -404,8 +434,13 @@ impl OutboundProxy {
         match tunnel.open_stream().await {
             Ok(s) => Some(Route::MuxStream(s)),
             Err(e) => {
-                debug!("mux tunnel to {} unusable ({}); evicting", upstream, e);
-                self.mux_pool.evict(&upstream, tunnel);
+                warn!(
+                    upstream = %upstream,
+                    peer = %candidate.peer_identity.sanitized(),
+                    error = %e,
+                    "mux tunnel unusable, evicting"
+                );
+                self.mux_pool.evict(&upstream, &candidate);
                 None
             }
         }
@@ -449,14 +484,22 @@ impl OutboundProxy {
         if crate::proxy::mux::negotiated_alpn(&tls_stream.inner)
             == Some(crate::proxy::mux::ALPN_MUX)
         {
-            let tunnel = self
+            let tunnel = match self
                 .mux_pool
-                .register(upstream, tls_stream.inner, upstream_id);
+                .register(upstream, tls_stream.inner, upstream_id)
+            {
+                Ok(reserved) => reserved,
+                Err(e) => {
+                    warn!("failed to register mux tunnel to {}: {}", upstream, e);
+                    return Route::Failed;
+                }
+            };
+            let candidate = (*tunnel).clone();
             return match tunnel.open_stream().await {
                 Ok(s) => Route::MuxStream(s),
                 Err(e) => {
                     warn!("freshly registered tunnel to {} unusable: {}", upstream, e);
-                    self.mux_pool.evict(&upstream, &tunnel);
+                    self.mux_pool.evict(&upstream, &candidate);
                     Route::Failed
                 }
             };
@@ -475,4 +518,173 @@ enum Route {
     Legacy(Box<tokio_rustls::TlsStream<TcpStream>>),
     Denied,
     Failed,
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use crate::proxy::test_support::*;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn outbound_bind_uses_configured_loopback() {
+        let (handshake, _) = handshake(false);
+        let config = config();
+        assert_eq!(
+            config.outbound_bind,
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        );
+        let proxy =
+            OutboundProxy::new_with_port(config, 0, handshake, Arc::new(PolicyEngine::new()))
+                .unwrap();
+        let listener = crate::proxy::bind_reuseport(proxy.listen_addr()).unwrap();
+        assert!(listener.local_addr().unwrap().ip().is_loopback());
+    }
+
+    #[tokio::test]
+    async fn outbound_direct_listener_drops_without_permit_or_handshake() {
+        tokio::time::timeout(WAIT, async {
+            let (handshake, _) = handshake(false);
+            let (mut client, server, peer) = pair().await;
+            let port = server.local_addr().unwrap().port();
+            let mut proxy = OutboundProxy::new_with_port(
+                config(),
+                port,
+                handshake.clone(),
+                Arc::new(PolicyEngine::new()),
+            )
+            .unwrap();
+            proxy.original_destination = Arc::new(DirectDestination);
+            let proxy = Arc::new(proxy);
+            proxy.handle_accept(server, peer).await;
+            assert_eq!(client.read(&mut [0; 1]).await.unwrap(), 0);
+            assert_eq!(proxy.connection_semaphore.available_permits(), 4);
+            assert_eq!(proxy.active_connections.load(Ordering::SeqCst), 0);
+            assert_eq!(handshake.calls.load(Ordering::SeqCst), 0);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn outbound_egress_gate_checks_both_families_before_handshake() {
+        tokio::time::timeout(WAIT, async {
+            for mux in [false, true] {
+                for (subnets, destination, allowed) in [
+                    (vec!["192.0.2.0/24"], "192.0.2.17:443", true),
+                    (vec!["192.0.2.0/24"], "192.0.3.17:443", false),
+                    (vec!["2001:db8::/32"], "[2001:db8::17]:443", true),
+                    (vec!["2001:db8::/32"], "[2001:db9::17]:443", false),
+                    (vec!["192.0.2.0/24"], "[::1]:443", false),
+                    (Vec::new(), "127.0.0.1:443", true),
+                ] {
+                    let (handshake, _) = handshake(false);
+                    let mut config = config();
+                    config.mux = mux;
+                    config.egress_subnets = subnets.into_iter().map(str::to_owned).collect();
+                    let proxy = OutboundProxy::new(
+                        config,
+                        handshake.clone(),
+                        Arc::new(PolicyEngine::new()),
+                    )
+                    .unwrap();
+                    let task =
+                        tokio::spawn(
+                            async move { proxy.route(destination.parse().unwrap()).await },
+                        );
+                    if allowed {
+                        wait_for(|| handshake.calls.load(Ordering::SeqCst) == 1).await;
+                        assert!(
+                            !task.is_finished(),
+                            "fake handshake gate must hold the route"
+                        );
+                        handshake.release.add_permits(1);
+                        assert!(matches!(task.await.unwrap(), Route::Failed));
+                    } else {
+                        assert!(matches!(task.await.unwrap(), Route::Denied));
+                        assert_eq!(handshake.calls.load(Ordering::SeqCst), 0);
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn outbound_constructors_reject_missing_invalid_identity_and_cidr() {
+        let (handshake, _) = handshake(false);
+        let policy = Arc::new(PolicyEngine::new());
+        for identity in [None, Some("not-spiffe".into())] {
+            let mut config = config();
+            config.identity = identity;
+            assert!(OutboundProxy::new(config.clone(), handshake.clone(), policy.clone()).is_err());
+            assert!(OutboundProxy::new_with_port(
+                config.clone(),
+                4140,
+                handshake.clone(),
+                policy.clone()
+            )
+            .is_err());
+            assert!(OutboundProxy::new_with_discovery(
+                config,
+                4140,
+                handshake.clone(),
+                policy.clone(),
+                None
+            )
+            .is_err());
+        }
+        for cidr in ["", "127.0.0.1", "127.0.0.1/33", "::1/129", "not-a-cidr"] {
+            let mut config = config();
+            config.egress_subnets = vec![cidr.into()];
+            let result = OutboundProxy::new(config, handshake.clone(), policy.clone());
+            let error = result.err().expect("malformed CIDR must fail").to_string();
+            assert!(error.contains(&format!("{cidr:?}")), "{error}");
+        }
+        assert!(OutboundProxy::new(config(), handshake, policy).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+    use crate::proxy::test_support::*;
+
+    #[tokio::test]
+    async fn outbound_hostname_endpoint_keeps_explicit_port_for_discovery() {
+        let (handshake, _) = handshake(false);
+        let discovery = Arc::new(ServiceDiscovery::with_resolver(
+            Arc::new(ExpectedEndpoint),
+            std::time::Duration::from_secs(30),
+        ));
+        let proxy = OutboundProxy::new_with_discovery(
+            config(),
+            4140,
+            handshake,
+            Arc::new(PolicyEngine::new()),
+            Some(discovery),
+        )
+        .unwrap();
+        let target = UpstreamTarget::from_config(Some("backend.test:8443".into())).unwrap();
+        let resolved = tokio::time::timeout(WAIT, proxy.resolve_upstream(&target))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved, "192.0.2.7:8443".parse().unwrap());
+    }
+
+    #[test]
+    fn outbound_rejects_zero_tunnel_limits() {
+        let (handshake, _) = handshake(false);
+        for (age, streams) in [(0, 64), (3600, 0)] {
+            let mut config = config();
+            config.tunnel_max_age_secs = age;
+            config.mux_max_streams_per_tunnel = streams;
+            assert!(
+                OutboundProxy::new(config, handshake.clone(), Arc::new(PolicyEngine::new()))
+                    .is_err()
+            );
+        }
+    }
 }

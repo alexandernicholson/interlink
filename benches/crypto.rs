@@ -6,7 +6,7 @@ use std::sync::Arc;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use interlink::common::error::InterlinkError;
 use interlink::common::identity::{IdentityProvider, SpiffeId, TrustDomain};
-use interlink::identity::ca::CertificateAuthority;
+use interlink_test_support::CertificateAuthority;
 use interlink::proxy::handshake::{TlsClient, TlsServer};
 use interlink::proxy::TlsHandshake;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -36,6 +36,9 @@ struct TlsFixture {
     client_cert: Vec<u8>,
     client_key: Vec<u8>,
     trusted_root: Vec<u8>,
+    foreign_client_identity: SpiffeId,
+    foreign_client_cert: Vec<u8>,
+    foreign_client_key: Vec<u8>,
 }
 
 impl TlsFixture {
@@ -73,6 +76,13 @@ impl TlsFixture {
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(wrong_key)),
         )
         .unwrap();
+        // Client certificate that chains to the trusted CA but carries a
+        // foreign-trust-domain SPIFFE SAN: isolates the inbound trust-domain
+        // check (M4) from chain validation.
+        let foreign_client_identity = SpiffeId::try_new("foreign.local", "default", "client").unwrap();
+        let (foreign_client_cert, foreign_client_key) = ca
+            .issue_leaf_with_key(&foreign_client_identity, &["localhost"])
+            .unwrap();
 
         Self {
             server: Arc::new(server),
@@ -81,6 +91,9 @@ impl TlsFixture {
             client_cert: client_cert.as_ref().to_vec(),
             client_key,
             trusted_root,
+            foreign_client_identity,
+            foreign_client_cert: foreign_client_cert.as_ref().to_vec(),
+            foreign_client_key,
         }
     }
 
@@ -97,6 +110,20 @@ impl TlsFixture {
             }),
             CertificateDer::from(self.client_cert.clone()),
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.client_key.clone())),
+        )
+        .unwrap()
+    }
+
+    /// Chains to the trusted root but presents a foreign trust domain — the
+    /// inbound verifier must reject it after successful path validation.
+    fn foreign_client(&self) -> TlsClient {
+        TlsClient::with_client_auth(
+            Arc::new(Provider {
+                identity: self.foreign_client_identity.clone(),
+                trust_domain: TrustDomain::new("bench.local").with_ca(self.trusted_root.clone()),
+            }),
+            CertificateDer::from(self.foreign_client_cert.clone()),
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.foreign_client_key.clone())),
         )
         .unwrap()
     }
@@ -169,7 +196,6 @@ fn bench_certificate_paths(c: &mut Criterion) {
     let ca = CertificateAuthority::new("bench.local").unwrap();
     let identity = SpiffeId::try_new("bench.local", "default", "service").unwrap();
 
-    let non_ascii = SpiffeId::try_new("bench.local", "default", "servicé").unwrap();
     let mut group = c.benchmark_group("certificate");
     group.bench_function("new_ca", |b| {
         b.iter(|| black_box(CertificateAuthority::new(black_box("bench.local")).unwrap()))
@@ -190,7 +216,11 @@ fn bench_certificate_paths(c: &mut Criterion) {
     });
     group.bench_function("reject_non_ascii_identity", |b| {
         b.iter(|| {
-            let result = ca.issue_leaf(black_box(&non_ascii));
+            let result = SpiffeId::try_new(
+                black_box("bench.local"),
+                black_box("default"),
+                black_box("servicé"),
+            );
             assert!(result.is_err());
             black_box(result)
         })
@@ -300,6 +330,19 @@ fn bench_tls_paths(c: &mut Criterion) {
         b.to_async(&runtime).iter(|| async {
             let client = fixture.client();
             let result = client.connect(wrong_domain_addr).await;
+            assert!(result.is_err());
+            black_box(result)
+        })
+    });
+    group.bench_function("inbound_rejects_foreign_trust_domain", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let client = fixture.foreign_client();
+            // The server-side rejection (foreign SPIFFE trust domain in the
+            // client certificate) surfaces as a handshake alert; in TLS 1.3
+            // the client may observe it only on the first exchange after its
+            // Finished flight — drive the full echo round-trip, and fail if
+            // any byte ever flows.
+            let result = exchange(&client, ipv4_addr).await;
             assert!(result.is_err());
             black_box(result)
         })

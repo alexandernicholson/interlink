@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use interlink::common::identity::{IdentityProvider, SpiffeId, TrustDomain};
-use interlink::identity::ca::CertificateAuthority;
+use interlink_test_support::CertificateAuthority;
 use interlink::policy::PolicyEngine;
 use interlink::proxy::config::ProxyConfig;
 use interlink::proxy::handshake::TlsServer;
@@ -48,8 +48,9 @@ fn make_proxy(port: u16) -> TcpProxy {
         default_upstream: Some("127.0.0.1:9".into()),
         max_connections: Some(4),
         mux: true,
+        ..Default::default()
     };
-    TcpProxy::new_with_port(config, port, tls_server, Arc::new(PolicyEngine::new()))
+    TcpProxy::new_with_port(config, port, tls_server, Arc::new(PolicyEngine::new())).unwrap()
 }
 
 /// R27: sending on the watch channel passed to `with_shutdown` must terminate

@@ -14,7 +14,7 @@ echo "==> clippy (all targets, warnings are errors)"
 cargo clippy --all-targets -- -D warnings
 
 echo "==> tests"
-cargo test --quiet
+cargo test --workspace --quiet
 
 echo "==> microbenchmark semantic paths and coverage floors"
 ./scripts/verify-microbench-paths.py

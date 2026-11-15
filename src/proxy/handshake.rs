@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, ServerConfig};
 use std::sync::LazyLock;
 use tokio::net::TcpStream;
@@ -12,7 +12,7 @@ use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 
-use crate::common::constants::timeouts;
+use crate::common::constants::{cert, timeouts};
 use crate::common::error::InterlinkError;
 use crate::common::identity::{IdentityProvider, SpiffeId};
 use crate::proxy::configure_socket;
@@ -218,12 +218,12 @@ impl TlsServer {
 
         // RFC 8446 §4.4.2: Server must send Certificate message
         // The resolver provides our cert when clients connect
+        let verifier = crate::proxy::verify::SpiffeClientVerifier::new(
+            root_store,
+            provider.get_trust_domain().name.clone(),
+        )?;
         let mut config = ServerConfig::builder()
-            .with_client_cert_verifier(
-                rustls::server::WebPkiClientVerifier::builder(root_store.into())
-                    .build()
-                    .map_err(|e| InterlinkError::Tls(rustls::Error::General(format!("{:?}", e))))?,
-            )
+            .with_client_cert_verifier(Arc::new(verifier))
             .with_single_cert(vec![server_cert], server_key)
             .map_err(InterlinkError::Tls)?;
         config.alpn_protocols = alpn;
@@ -273,20 +273,43 @@ impl TlsHandshake for TlsServer {
 
 /// The OID for the Subject Alternative Name extension (2.5.29.17).
 /// Constructed once at startup — never in the per-connection hot path (C4).
+// The constant ASN.1 OID arcs are valid by construction; no runtime input.
 #[cfg_attr(not(test), allow(clippy::unwrap_used))]
 static SAN_OID: LazyLock<x509_parser::asn1_rs::Oid<'static>> =
     LazyLock::new(|| x509_parser::asn1_rs::Oid::from(&[2u64, 5, 29, 17]).unwrap());
 
-/// Concurrent LRU cache keyed by leaf-cert DER bytes.
-/// Capacity: 1024 entries. Peak mesh deployments commonly have 50–500 peers,
-/// so this avoids re-parsing X.509 certs on repeated connections from the
-/// same identity.
-static IDENTITY_CACHE: LazyLock<moka::sync::Cache<Vec<u8>, Arc<SpiffeId>>> = LazyLock::new(|| {
-    moka::sync::Cache::builder()
-        .max_capacity(1024)
-        .name("identity-cache")
-        .build()
-});
+/// Cache identity and immutable validity bounds together: cache hits must still
+/// enforce expiry, including when rustls restores the chain from a session ticket.
+struct CachedIdentity {
+    identity: Arc<SpiffeId>,
+    validity: CertificateValidity,
+}
+
+struct CertificateValidity {
+    not_before: i64,
+    not_after: i64,
+}
+
+impl CertificateValidity {
+    fn validate_at(&self, now: UnixTime) -> Result<(), InterlinkError> {
+        let now = i128::from(now.as_secs());
+        let skew = i128::from(cert::CLOCK_SKEW_TOLERANCE.as_secs());
+        if i128::from(self.not_before) > now + skew || i128::from(self.not_after) < now - skew {
+            return Err(InterlinkError::Identity(
+                "peer certificate outside validity window".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+static IDENTITY_CACHE: LazyLock<moka::sync::Cache<Vec<u8>, Arc<CachedIdentity>>> =
+    LazyLock::new(|| {
+        moka::sync::Cache::builder()
+            .max_capacity(1024)
+            .name("identity-cache")
+            .build()
+    });
 
 /// Extract the SPIFFE identity from a peer's X.509 certificate SAN.
 ///
@@ -295,24 +318,35 @@ static IDENTITY_CACHE: LazyLock<moka::sync::Cache<Vec<u8>, Arc<SpiffeId>>> = Laz
 pub(crate) fn extract_identity_from_tls_stream(
     stream: &tokio_rustls::TlsStream<TcpStream>,
 ) -> Result<Arc<SpiffeId>, InterlinkError> {
+    extract_identity_at(stream, UnixTime::now())
+}
+
+fn extract_identity_at(
+    stream: &tokio_rustls::TlsStream<TcpStream>,
+    now: UnixTime,
+) -> Result<Arc<SpiffeId>, InterlinkError> {
     let (_io, state) = stream.get_ref();
     let certs = state
         .peer_certificates()
         .ok_or_else(|| InterlinkError::Identity("no peer certificate".into()))?;
 
-    if certs.is_empty() {
-        return Err(InterlinkError::Identity("empty certificate chain".into()));
-    }
-
-    // Fast path: check LRU cache using the leaf certificate DER bytes.
-    let leaf_der: &[u8] = certs[0].as_ref();
+    let leaf_der = certs
+        .first()
+        .ok_or_else(|| InterlinkError::Identity("empty certificate chain".into()))?
+        .as_ref();
     if let Some(cached) = IDENTITY_CACHE.get(leaf_der) {
-        return Ok(cached);
+        cached.validity.validate_at(now)?;
+        return Ok(cached.identity.clone());
     }
 
-    let id = Arc::new(spiffe_id_from_cert_der(leaf_der)?);
-    IDENTITY_CACHE.insert(leaf_der.to_vec(), id.clone());
-    Ok(id)
+    let (identity, validity) = parse_peer_identity(leaf_der)?;
+    validity.validate_at(now)?;
+    let cached = Arc::new(CachedIdentity {
+        identity: Arc::new(identity),
+        validity,
+    });
+    IDENTITY_CACHE.insert(leaf_der.to_vec(), cached.clone());
+    Ok(cached.identity.clone())
 }
 
 /// Extract the SPIFFE identity from a leaf certificate's SAN URI
@@ -320,25 +354,40 @@ pub(crate) fn extract_identity_from_tls_stream(
 /// Shared by post-handshake identity extraction and the handshake-time
 /// SPIFFE server verifier. Uncached — callers cache as appropriate.
 pub(crate) fn spiffe_id_from_cert_der(leaf_der: &[u8]) -> Result<SpiffeId, InterlinkError> {
+    let (identity, validity) = parse_peer_identity(leaf_der)?;
+    validity.validate_at(UnixTime::now())?;
+    Ok(identity)
+}
+
+fn parse_peer_identity(leaf_der: &[u8]) -> Result<(SpiffeId, CertificateValidity), InterlinkError> {
     let leaf = x509_parser::parse_x509_certificate(leaf_der)
         .map_err(|e| InterlinkError::Identity(format!("cert parse: {}", e)))?
         .1;
-
-    for ext in leaf.extensions().iter() {
+    let mut uri = None;
+    for ext in leaf.extensions() {
         if ext.oid == *SAN_OID {
             if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
-                for gn in san.general_names.iter() {
-                    if let GeneralName::URI(uri) = gn {
-                        if let Ok(id) = SpiffeId::from_uri(uri) {
-                            return Ok(id);
+                for name in &san.general_names {
+                    if let GeneralName::URI(value) = name {
+                        if uri.replace(*value).is_some() {
+                            return Err(InterlinkError::Identity(
+                                "certificate must contain exactly one URI SAN".into(),
+                            ));
                         }
                     }
                 }
             }
         }
     }
-    Err(InterlinkError::Identity(
-        "no SPIFFE URI in SAN extension".to_string(),
+    let uri = uri.ok_or_else(|| {
+        InterlinkError::Identity("certificate must contain exactly one URI SAN".into())
+    })?;
+    Ok((
+        SpiffeId::from_uri(uri)?,
+        CertificateValidity {
+            not_before: leaf.validity().not_before.timestamp(),
+            not_after: leaf.validity().not_after.timestamp(),
+        },
     ))
 }
 
@@ -347,58 +396,105 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_identity_rejects_empty_certs() {
-        let err = extract_spiffe_id_from_certs(&[]);
-        assert!(err.is_err());
+    fn malformed_certificate_is_rejected() {
+        assert!(spiffe_id_from_cert_der(&[]).is_err());
     }
 
-    fn extract_spiffe_id_from_certs(certs: &[CertificateDer]) -> Result<SpiffeId, InterlinkError> {
-        if certs.is_empty() {
-            return Err(InterlinkError::Identity("empty certificate chain".into()));
+    // Expired-by-design fixture CA/leaf/private key, valid Jan 1–2, 2020.
+    // Public test data only: NEVER use these bytes as production trust material.
+    const ROOT: &[u8] = include_bytes!("testdata/expired-identity/ca.der");
+    const LEAF: &[u8] = include_bytes!("testdata/expired-identity/leaf.der");
+    const KEY: &[u8] = include_bytes!("testdata/expired-identity/key.der");
+
+    #[derive(Debug)]
+    struct FixtureTime;
+    impl rustls::time_provider::TimeProvider for FixtureTime {
+        fn current_time(&self) -> Option<UnixTime> {
+            Some(at(1_577_880_000)) // 2020-01-01 12:00 UTC
         }
-        let leaf = x509_parser::parse_x509_certificate(certs[0].as_ref())
-            .map_err(|e| InterlinkError::Identity(format!("cert parse: {}", e)))?
-            .1;
-        for ext in leaf.extensions().iter() {
-            if format!("{}", ext.oid) == "2.5.29.17" {
-                let parsed = ext.parsed_extension();
-                if let ParsedExtension::SubjectAlternativeName(san) = parsed {
-                    for gn in san.general_names.iter() {
-                        if let GeneralName::URI(uri) = gn {
-                            return SpiffeId::from_uri(uri);
-                        }
-                    }
+    }
+
+    fn at(seconds: u64) -> UnixTime {
+        UnixTime::since_unix_epoch(std::time::Duration::from_secs(seconds))
+    }
+
+    #[tokio::test]
+    async fn resumed_handshake_rechecks_cached_certificate_validity() {
+        use rustls::pki_types::PrivatePkcs8KeyDer;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        timeout(std::time::Duration::from_secs(10), async {
+            assert!(
+                spiffe_id_from_cert_der(LEAF).is_err(),
+                "expired fixture must fail the production wall-clock check"
+            );
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(CertificateDer::from(ROOT)).unwrap();
+            let crypto = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+            let server_config =
+                ServerConfig::builder_with_details(crypto.clone(), Arc::new(FixtureTime))
+                    .with_protocol_versions(&[&rustls::version::TLS13])
+                    .unwrap()
+                    .with_client_cert_verifier(
+                        rustls::server::WebPkiClientVerifier::builder(Arc::new(roots.clone()))
+                            .build()
+                            .unwrap(),
+                    )
+                    .with_single_cert(
+                        vec![CertificateDer::from(LEAF)],
+                        PrivatePkcs8KeyDer::from(KEY).into(),
+                    )
+                    .unwrap();
+            let client_config = ClientConfig::builder_with_details(crypto, Arc::new(FixtureTime))
+                .with_protocol_versions(&[&rustls::version::TLS13])
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_client_auth_cert(
+                    vec![CertificateDer::from(LEAF)],
+                    PrivatePkcs8KeyDer::from(KEY).into(),
+                )
+                .unwrap();
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+            let connector = TlsConnector::from(Arc::new(client_config));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let task = tokio::spawn(async move {
+                for expected in [rustls::HandshakeKind::Full, rustls::HandshakeKind::Resumed] {
+                    let (socket, _) = listener.accept().await.unwrap();
+                    let mut tls = acceptor.accept(socket).await.unwrap();
+                    assert_eq!(tls.get_ref().1.handshake_kind(), Some(expected));
+                    tls.write_all(b"x").await.unwrap();
+                    let mut byte = [0];
+                    tls.read_exact(&mut byte).await.unwrap();
                 }
+            });
+            IDENTITY_CACHE.invalidate(LEAF);
+            for expected in [rustls::HandshakeKind::Full, rustls::HandshakeKind::Resumed] {
+                let socket = TcpStream::connect(address).await.unwrap();
+                let mut tls: tokio_rustls::TlsStream<_> = connector
+                    .connect(ServerName::try_from("localhost").unwrap(), socket)
+                    .await
+                    .unwrap()
+                    .into();
+                assert_eq!(tls.get_ref().1.handshake_kind(), Some(expected));
+                let skew = cert::CLOCK_SKEW_TOLERANCE.as_secs();
+                let inside = extract_identity_at(&tls, at(1_577_880_000)).unwrap();
+                assert_eq!(
+                    inside.to_uri(),
+                    "spiffe://fixture.local/ns/default/sa/proxy"
+                );
+                assert!(IDENTITY_CACHE.get(LEAF).is_some());
+                assert!(extract_identity_at(&tls, at(1_577_836_800 - skew - 1)).is_err());
+                assert!(extract_identity_at(&tls, at(1_577_923_200 + skew + 1)).is_err());
+                assert!(extract_identity_at(&tls, at(1_577_836_800 - skew)).is_ok());
+                assert!(extract_identity_at(&tls, at(1_577_923_200 + skew)).is_ok());
+                let mut byte = [0];
+                // RFC 8446 §4.6.1: process the post-handshake session tickets.
+                tls.read_exact(&mut byte).await.unwrap();
+                tls.write_all(b"x").await.unwrap();
             }
-        }
-        Err(InterlinkError::Identity("no URI in SAN".into()))
-    }
-
-    #[test]
-    fn test_extract_identity_from_real_cert() {
-        let ca = crate::identity::ca::CertificateAuthority::new("test.local").unwrap();
-        let id = SpiffeId::new("test.local", "ns1", "sa1");
-        let cert = ca.issue_leaf(&id).unwrap();
-
-        let result = extract_spiffe_id_from_certs(&[cert]);
-        assert_eq!(result.unwrap(), id);
-    }
-
-    #[test]
-    fn test_extract_identity_rejects_wrong_oid() {
-        let ca = crate::identity::ca::CertificateAuthority::new("test.local").unwrap();
-        let id = SpiffeId::new("test.local", "ns1", "sa1");
-        let cert = ca.issue_leaf(&id).unwrap();
-        let parsed = x509_parser::parse_x509_certificate(cert.as_ref())
-            .unwrap()
-            .1;
-
-        // Should find exactly one SAN
-        let san_count = parsed
-            .extensions()
-            .iter()
-            .filter(|e| format!("{}", e.oid) == "2.5.29.17")
-            .count();
-        assert_eq!(san_count, 1);
+            task.await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 }

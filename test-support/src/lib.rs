@@ -1,3 +1,8 @@
+//! Certificate issuance for tests, benchmarks, and local bootstrap examples only.
+//! Never link this crate into the production proxy.
+
+pub use rcgen;
+
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
     ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, SanType, SerialNumber,
@@ -5,9 +10,9 @@ use rcgen::{
 use rustls::pki_types::CertificateDer;
 use time::OffsetDateTime;
 
-use crate::common::constants::cert;
-use crate::common::error::InterlinkError;
-use crate::common::identity::SpiffeId;
+use interlink::common::constants::cert;
+use interlink::common::error::InterlinkError;
+pub use interlink::common::identity::SpiffeId;
 
 /// RFC 5280 recommends serial numbers be at least 20 octets (160 bits)
 /// to minimize collision probability.
@@ -166,6 +171,7 @@ impl CertificateAuthority {
         &self.root_cert_der
     }
 
+    /// Signing-key access for test tooling and benchmarks only.
     pub fn root_key(&self) -> &KeyPair {
         &self.root_key
     }
@@ -189,7 +195,7 @@ mod tests {
     #[test]
     fn test_debug_leaf() {
         let ca = CertificateAuthority::new("td.local").unwrap();
-        let id = SpiffeId::new("td.local", "ns", "sa");
+        let id = SpiffeId::try_new("td.local", "ns", "sa").unwrap();
         let cert_der = ca.issue_leaf(&id).unwrap();
         let parsed = parse_x509_certificate(&cert_der).unwrap().1;
         eprintln!("subject: {:?}", parsed.subject());
@@ -225,7 +231,7 @@ mod tests {
     #[test]
     fn test_issue_leaf() {
         let ca = CertificateAuthority::new("td.local").unwrap();
-        let id = SpiffeId::new("td.local", "ns", "sa");
+        let id = SpiffeId::try_new("td.local", "ns", "sa").unwrap();
         let cert = ca.issue_leaf(&id).unwrap();
         assert!(cert.len() > 100);
         let parsed = parse_x509_certificate(cert.as_ref()).unwrap().1;
@@ -235,7 +241,7 @@ mod tests {
     #[test]
     fn test_leaf_san() {
         let ca = CertificateAuthority::new("td.local").unwrap();
-        let id = SpiffeId::new("td.local", "ns", "sa");
+        let id = SpiffeId::try_new("td.local", "ns", "sa").unwrap();
         let cert_der = ca.issue_leaf(&id).unwrap();
         let parsed = parse_x509_certificate(&cert_der).unwrap().1;
 
@@ -258,7 +264,7 @@ mod tests {
     #[test]
     fn test_leaf_extensions() {
         let ca = CertificateAuthority::new("td.local").unwrap();
-        let id = SpiffeId::new("td.local", "ns", "sa");
+        let id = SpiffeId::try_new("td.local", "ns", "sa").unwrap();
         let cert_der = ca.issue_leaf(&id).unwrap();
         let parsed = parse_x509_certificate(&cert_der).unwrap().1;
 
@@ -286,7 +292,7 @@ mod tests {
     #[test]
     fn test_leaf_ttl_24h() {
         let ca = CertificateAuthority::new("td.local").unwrap();
-        let id = SpiffeId::new("td.local", "ns", "sa");
+        let id = SpiffeId::try_new("td.local", "ns", "sa").unwrap();
         let cert_der = ca.issue_leaf(&id).unwrap();
         let parsed = parse_x509_certificate(&cert_der).unwrap().1;
         let ttl =
@@ -300,12 +306,7 @@ mod tests {
         );
     }
     #[test]
-    fn issue_leaf_reports_non_ascii_uri_instead_of_panicking() {
-        let ca = CertificateAuthority::new("td.local").unwrap();
-        let id = SpiffeId::try_new("td.local", "ns", "servicé").unwrap();
-
-        let result = ca.issue_leaf(&id);
-
-        assert!(result.is_err(), "non-IA5 SAN input must return an error");
+    fn invalid_identity_is_rejected_before_issuance() {
+        assert!(SpiffeId::try_new("td.local", "ns", "servicé").is_err());
     }
 }

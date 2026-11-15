@@ -3,7 +3,7 @@ use std::sync::Arc;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use interlink::admin::AdminServer;
@@ -35,23 +35,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "starting interlinkd"
     );
 
-    // 3. Initialize metrics exporter.
-    if let Err(e) = metrics::init_metrics_exporter() {
+    // 3. Require a configured, valid identity before starting any listeners.
+    let identity = configured_identity(config.identity.as_deref())?;
+
+    // 4. Bind the exporter to the configured address, loopback by default.
+    let metrics_bind = std::net::SocketAddr::new(config.metrics_bind.parse()?, config.metrics_port);
+    if let Err(e) = metrics::init_metrics_exporter(metrics_bind) {
         error!("failed to start metrics exporter: {}", e);
         // Non-fatal: the proxy can still serve traffic without metrics.
     }
 
-    // 4. Derive the expected SPIFFE identity and load the first TLS generation.
-    let identity = config
-        .identity
-        .as_ref()
-        .and_then(|s| SpiffeId::from_uri(s).ok())
-        .unwrap_or_else(|| {
-            SpiffeId::try_new(&config.trust_domain, "default", "proxy")
-                .expect("trust_domain must not be empty in config")
-        });
-
-    let credential_paths = TlsCredentialPaths::from_config(&config);
+    let credential_paths = TlsCredentialPaths::from_config(&config)?;
     info!(
         ca_bundle = %credential_paths.ca_bundle().display(),
         certificate = %credential_paths.certificate().display(),
@@ -69,21 +63,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tls_server: Arc<dyn TlsHandshake> = tls.clone();
     let tls_client: Arc<dyn TlsHandshake> = tls.clone();
 
-    // 5. Default-deny except for peers presenting this workload's exact
-    // SPIFFE identity. Cluster replicas intentionally share one service
-    // identity; a certificate signed by the trust bundle is still required.
-    let mut policy_engine = PolicyEngine::new();
-    let identity_uri = identity.to_uri();
-    policy_engine.set_global_policies(vec![interlink::policy::patterns::allow(
-        &identity_uri,
-        &identity_uri,
-        "allow replicas of this workload identity",
-    )]);
-    // Explicit benchmark escape hatch; never set this in a workload manifest.
-    if std::env::var("INTERLINK_ALLOW_ALL").as_deref() == Ok("true") {
-        policy_engine.set_default_decision(interlink::policy::Decision::Allow);
-    }
-    let policy = Arc::new(policy_engine);
+    // 5. Require the exact workload identity unless the operator explicitly
+    // enables (and receives a warning for) the default-deny escape hatch.
+    let policy = Arc::new(workload_policy(
+        &identity,
+        std::env::var("INTERLINK_ALLOW_ALL").as_deref() == Ok("true"),
+    )?);
     let discovery = Arc::new(ServiceDiscovery::new()?);
 
     // 6. Build shutdown signalling.
@@ -94,13 +79,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 7. Build and start the admin server.
     let admin = Arc::new(
         AdminServer::new()
+            .with_bind(config.admin_bind.parse()?)
+            .with_token(config.admin_token.clone())
             .with_shutdown(admin_shutdown)
             .with_reload_handler(tls),
     );
-    let admin_handle = admin.spawn();
+    let admin_handle = admin.clone().spawn();
 
     // 8. Build and start the inbound TCP proxy.
-    let inbound_config = config.to_proxy_config();
+    let inbound_config = config.to_proxy_config()?;
     let inbound_proxy = TcpProxy::new_with_discovery(
         inbound_config,
         config.proxy_inbound_port,
@@ -111,21 +98,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             Some(discovery.clone())
         },
-    )
+    )?
     .with_shutdown(inbound_shutdown);
     let inbound_handle = Arc::new(inbound_proxy).spawn();
 
     // 9. Build and start the outbound TCP proxy.
-    let outbound_config = config.to_proxy_config();
+    let outbound_config = config.to_proxy_config()?;
     let outbound_proxy = OutboundProxy::new_with_discovery(
         outbound_config,
         config.proxy_outbound_port,
         tls_client,
         policy,
         Some(discovery),
-    )
+    )?
     .with_shutdown(outbound_shutdown);
     let outbound_handle = Arc::new(outbound_proxy).spawn();
+    admin.set_ready(true);
 
     info!("interlinkd ready");
 
@@ -136,12 +124,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Signal proxies and admin server to stop accepting.
+    admin.set_ready(false);
     let _ = shutdown_tx.send(true);
     let _ = inbound_handle.await;
     let _ = outbound_handle.await;
     let _ = admin_handle.await;
     info!("interlinkd shutdown complete");
     Ok(())
+}
+
+fn configured_identity(
+    identity: Option<&str>,
+) -> Result<SpiffeId, interlink::common::error::InterlinkError> {
+    use interlink::common::error::InterlinkError;
+    let identity =
+        identity.ok_or_else(|| InterlinkError::Config("INTERLINK_IDENTITY must be set".into()))?;
+    SpiffeId::from_uri(identity)
+        .map_err(|error| InterlinkError::Config(format!("invalid INTERLINK_IDENTITY: {error}")))
+}
+
+fn workload_policy(
+    identity: &SpiffeId,
+    allow_all: bool,
+) -> Result<PolicyEngine, interlink::common::error::InterlinkError> {
+    let mut policy = PolicyEngine::new();
+    let identity_uri = identity.to_uri();
+    policy.set_global_policies(vec![interlink::policy::patterns::allow(
+        &identity_uri,
+        &identity_uri,
+        "allow replicas of this workload identity",
+    )?]);
+    if allow_all {
+        warn!("INTERLINK_ALLOW_ALL=true: default-deny authorization is DISABLED; all authenticated mesh identities are allowed");
+        metrics::record_allow_all_enabled();
+        policy.set_default_decision(interlink::policy::Decision::Allow);
+    }
+    Ok(policy)
 }
 
 async fn wait_for_shutdown_signal() -> std::io::Result<()> {
@@ -158,5 +176,45 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
     #[cfg(not(unix))]
     {
         tokio::signal::ctrl_c().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_allow_all_requires_explicit_enable() {
+        let identity =
+            configured_identity(Some("spiffe://example.local/ns/apps/sa/proxy")).unwrap();
+        let outsider =
+            configured_identity(Some("spiffe://example.local/ns/apps/sa/outsider")).unwrap();
+        let policy = workload_policy(&identity, false).unwrap();
+        assert!(matches!(
+            policy.evaluate(&outsider, &identity),
+            interlink::policy::Decision::Deny(_)
+        ));
+        assert!(matches!(
+            policy.evaluate(&identity, &identity),
+            interlink::policy::Decision::Allow
+        ));
+        let policy = workload_policy(&identity, true).unwrap();
+        assert!(matches!(
+            policy.evaluate(&outsider, &identity),
+            interlink::policy::Decision::Allow
+        ));
+    }
+
+    #[test]
+    fn startup_requires_explicit_valid_identity() {
+        for identity in [None, Some(""), Some("not-a-spiffe-id")] {
+            let error = configured_identity(identity).unwrap_err();
+            assert!(error.to_string().contains("INTERLINK_IDENTITY"));
+        }
+        let identity = "spiffe://example.local/ns/production/sa/proxy";
+        assert_eq!(
+            configured_identity(Some(identity)).unwrap().to_uri(),
+            identity
+        );
     }
 }

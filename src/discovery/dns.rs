@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use tokio::sync::Semaphore;
 
+use crate::common::constants::timeouts;
 use crate::common::error::InterlinkError;
 use crate::common::identity::SpiffeId;
 
@@ -42,12 +43,22 @@ pub struct HickoryResolver {
 #[async_trait::async_trait]
 impl DnsResolver for HickoryResolver {
     async fn lookup(&self, name: &str) -> Result<Vec<SocketAddr>, InterlinkError> {
+        let (host, port) = name
+            .rsplit_once(':')
+            .and_then(|(host, port)| port.parse::<u16>().ok().map(|port| (host, port)))
+            .filter(|(host, port)| !host.is_empty() && *port != 0)
+            .ok_or_else(|| {
+                InterlinkError::DnsResolution(
+                    "DNS endpoint requires an explicit nonzero port; SRV discovery is unsupported"
+                        .into(),
+                )
+            })?;
         let addrs = self
             .inner
-            .lookup_ip(name)
+            .lookup_ip(host)
             .await
             .map_err(|e| InterlinkError::DnsResolution(format!("lookup failed: {}", e)))?;
-        Ok(addrs.iter().map(|ip| SocketAddr::new(ip, 0)).collect())
+        Ok(addrs.iter().map(|ip| SocketAddr::new(ip, port)).collect())
     }
 }
 
@@ -67,12 +78,28 @@ impl HickoryResolver {
 /// | Empty (no entry) | → leader election, lookup | Fresh or Error |
 /// | Fresh (expires_at > now) | return cached endpoints | Expired (after TTL) |
 /// | Expired (expires_at ≤ now) | fall through → leader election, lookup | Fresh or Error |
-/// | In-flight (leader resolving) | waiter blocks on semaphore | Fresh (leader done) |
+/// | In-flight (leader resolving) | waiter blocks on semaphore | Fresh, Error, or retry after cancellation |
 pub struct ServiceDiscovery {
     resolver: Arc<dyn DnsResolver>,
     cache: DashMap<String, CacheEntry>,
     in_flight: DashMap<String, Arc<Semaphore>>,
     ttl: Duration,
+}
+
+/// Removing the exact election entry on every exit (including cancellation)
+/// allows a new leader; closing its semaphore wakes all existing followers.
+struct FlightGuard<'a> {
+    flights: &'a DashMap<String, Arc<Semaphore>>,
+    name: &'a str,
+    semaphore: Arc<Semaphore>,
+}
+
+impl Drop for FlightGuard<'_> {
+    fn drop(&mut self) {
+        self.flights
+            .remove_if(self.name, |_, sem| Arc::ptr_eq(sem, &self.semaphore));
+        self.semaphore.close();
+    }
 }
 
 impl ServiceDiscovery {
@@ -100,55 +127,67 @@ impl ServiceDiscovery {
     /// * Single-flight — at most one DNS lookup per name at a time.
     /// * Stale entries trigger a refresh on the next caller.
     pub async fn resolve(&self, name: &str) -> Result<ResolvedEndpoints, InterlinkError> {
-        // Fast path: valid cached entry.
-        if let Some(entry) = self.cache.get(name) {
-            if !entry.is_expired() {
-                if let Some(ref ep) = entry.endpoints {
-                    return Ok(ep.clone());
+        loop {
+            if let Some(entry) = self.cache.get(name) {
+                if !entry.is_expired() {
+                    if let Some(ep) = &entry.endpoints {
+                        return Ok(ep.clone());
+                    }
                 }
             }
-            // Expired: fall through to leader election (triggers refresh).
+
+            // One permit per election, held by the leader until completion or
+            // cancellation. FlightGuard closes/removes the election and wakes
+            // followers on either exit; followers retry against the cache/map.
+            let sem = self
+                .in_flight
+                .entry(name.to_string())
+                .or_insert_with(|| Arc::new(Semaphore::new(1)))
+                .value()
+                .clone();
+            if let Ok(_permit) = sem.try_acquire() {
+                let _flight = FlightGuard {
+                    flights: &self.in_flight,
+                    name,
+                    semaphore: sem.clone(),
+                };
+                // An earlier leader may have populated the cache between the
+                // initial cache read and this election.
+                if let Some(entry) = self.cache.get(name) {
+                    if !entry.is_expired() {
+                        if let Some(ep) = &entry.endpoints {
+                            return Ok(ep.clone());
+                        }
+                    }
+                }
+                let result = tokio::time::timeout(timeouts::DNS_RESOLVE, self.resolve_inner(name))
+                    .await
+                    .map_err(|_| InterlinkError::DnsResolution("lookup timed out".into()))?;
+                if let Ok(ep) = &result {
+                    self.cache.insert(
+                        name.to_string(),
+                        CacheEntry {
+                            endpoints: Some(ep.clone()),
+                            expires_at: Instant::now() + self.ttl,
+                        },
+                    );
+                }
+                return result;
+            }
+            // Closed means the leader completed or was cancelled, not failure
+            // of this request. Re-elect if no successful result was cached.
+            let _waiter_permit = sem.acquire().await;
         }
-
-        // Leader election: Semaphore(1).
-        // B9: early returns — no laundering control flow through a binding.
-        let sem = self
-            .in_flight
-            .entry(name.to_string())
-            .or_insert_with(|| Arc::new(Semaphore::new(1)))
-            .value()
-            .clone();
-
-        if let Ok(_permit) = sem.try_acquire() {
-            let result = self.resolve_inner(name).await;
-            let endpoints = match &result {
-                Ok(ep) => Some(ep.clone()),
-                Err(_) => None,
-            };
-            self.cache.insert(
-                name.to_string(),
-                CacheEntry {
-                    endpoints,
-                    expires_at: Instant::now() + self.ttl,
-                },
-            );
-            self.in_flight.remove(name);
-            return result;
-        }
-
-        // Waiter: wait for leader to finish.
-        let _waiter_permit = sem
-            .acquire()
-            .await
-            .map_err(|_| InterlinkError::DnsResolution("semaphore closed during resolve".into()))?;
-        self.cache
-            .get(name)
-            .and_then(|e| e.endpoints.clone())
-            .ok_or_else(|| InterlinkError::DnsResolution("lookup failed".into()))
     }
 
     async fn resolve_inner(&self, name: &str) -> Result<ResolvedEndpoints, InterlinkError> {
-        let addrs: Arc<[SocketAddr]> = self.resolver.lookup(name).await?.into();
+        let resolved = self.resolver.lookup(name).await?;
+        if resolved.iter().any(|addr| addr.port() == 0) {
+            return Err(InterlinkError::DnsResolution(
+                "DNS returned an endpoint without a nonzero port".into(),
+            ));
+        }
+        let addrs: Arc<[SocketAddr]> = resolved.into();
         Ok(ResolvedEndpoints {
             addrs,
             spiffe_id: None,
@@ -385,5 +424,116 @@ mod tests {
             let _ = rx.changed().await;
             Ok(vec!["127.0.0.1:8080".parse().unwrap()])
         }
+    }
+
+    /// Gate the first lookup so aborting the leader leaves a real follower
+    /// able to acquire a fresh election and complete.
+    struct CancelResolver {
+        calls: AtomicUsize,
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl DnsResolver for CancelResolver {
+        async fn lookup(&self, _name: &str) -> Result<Vec<SocketAddr>, InterlinkError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            Ok(vec!["127.0.0.1:8080".parse().unwrap()])
+        }
+    }
+
+    #[tokio::test]
+    async fn leader_cancel_removes_election_and_waiter_reresolves() {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let resolver = Arc::new(CancelResolver {
+                calls: AtomicUsize::new(0),
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Notify::new(),
+            });
+            let sd = Arc::new(ServiceDiscovery::with_resolver(
+                resolver.clone(),
+                DNS_CACHE_TTL,
+            ));
+            let leader_sd = sd.clone();
+            let leader = tokio::spawn(async move { leader_sd.resolve("cancel.example").await });
+            resolver.entered.notified().await;
+            let waiter_sd = sd.clone();
+            let waiter = tokio::spawn(async move { waiter_sd.resolve("cancel.example").await });
+            // Map + leader sem + flight guard + waiter sem proves the follower
+            // is parked on this exact election, rather than hitting the cache.
+            while Arc::strong_count(sd.in_flight.get("cancel.example").unwrap().value()) < 4 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+            leader.abort();
+            assert!(leader.await.unwrap_err().is_cancelled());
+            let result = waiter.await.unwrap().unwrap();
+            assert_eq!(result.addrs[0].port(), 8080);
+            assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+            assert!(sd.in_flight.is_empty());
+            assert!(sd.resolve("cancel.example").await.is_ok());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn actual_lookup_timeout_cleans_election_and_allows_retry() {
+        tokio::time::timeout(timeouts::DNS_RESOLVE + Duration::from_secs(3), async {
+            let resolver = Arc::new(CancelResolver {
+                calls: AtomicUsize::new(0),
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Notify::new(),
+            });
+            let sd = ServiceDiscovery::with_resolver(resolver.clone(), DNS_CACHE_TTL);
+            let error = sd.resolve("timeout.example").await.unwrap_err();
+            assert!(error.to_string().contains("timed out"));
+            assert!(sd.in_flight.is_empty());
+            assert!(sd.resolve("timeout.example").await.is_ok());
+            assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+        })
+        .await
+        .unwrap();
+    }
+
+    struct ZeroPortResolver;
+
+    #[async_trait::async_trait]
+    impl DnsResolver for ZeroPortResolver {
+        async fn lookup(&self, _name: &str) -> Result<Vec<SocketAddr>, InterlinkError> {
+            Ok(vec!["127.0.0.1:0".parse().unwrap()])
+        }
+    }
+
+    #[tokio::test]
+    async fn zero_port_endpoints_are_rejected() {
+        let sd = ServiceDiscovery::with_resolver(Arc::new(ZeroPortResolver), DNS_CACHE_TTL);
+        let error = tokio::time::timeout(Duration::from_secs(1), sd.resolve("bare.example"))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("nonzero port"));
+        assert!(sd.cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hickory_rejects_bare_hostname_and_accepts_explicit_port() {
+        let resolver = HickoryResolver::new().unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(1), resolver.lookup("localhost"))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("explicit nonzero port"));
+        assert!(resolver.lookup("localhost:0").await.is_err());
+        let endpoints =
+            tokio::time::timeout(Duration::from_secs(3), resolver.lookup("localhost:8080"))
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(!endpoints.is_empty());
+        assert!(endpoints.iter().all(|addr| addr.port() == 8080));
     }
 }

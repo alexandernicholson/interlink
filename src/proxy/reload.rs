@@ -1,4 +1,4 @@
-use std::io::{BufReader, Error as IoError, ErrorKind};
+use std::io::{Error as IoError, ErrorKind};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use rustls::client::danger::ServerCertVerifier;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::RootCertStore;
+use rustls_pki_types::pem::PemObject;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
@@ -41,27 +42,47 @@ impl TlsCredentialPaths {
         }
     }
 
-    pub fn from_config(config: &Config) -> Self {
-        let default_directory = std::env::var_os("INTERLINK_CERT_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::temp_dir().join("interlink-demo"));
-        Self::new(
-            config
-                .ca_bundle_path
-                .as_deref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| default_directory.join("ca.der")),
-            config
-                .cert_path
-                .as_deref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| default_directory.join("server.der")),
-            config
-                .key_path
-                .as_deref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| default_directory.join("server.key")),
+    pub fn from_config(config: &Config) -> Result<Self, InterlinkError> {
+        // Config::with_env layers per-file environment overrides first.
+        Self::resolve(
+            config,
+            std::env::var_os("INTERLINK_CERT_DIR").map(PathBuf::from),
         )
+    }
+
+    fn resolve(config: &Config, directory: Option<PathBuf>) -> Result<Self, InterlinkError> {
+        let resolve = |value: &Option<String>, file: &str| {
+            value
+                .as_ref()
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| {
+                    directory
+                        .as_ref()
+                        .filter(|path| !path.as_os_str().is_empty())
+                        .map(|directory| directory.join(file))
+                })
+        };
+        let ca_bundle = resolve(&config.ca_bundle_path, "ca.der");
+        let certificate = resolve(&config.cert_path, "server.der");
+        let private_key = resolve(&config.key_path, "server.key");
+        match (ca_bundle, certificate, private_key) {
+            (Some(ca), Some(cert), Some(key)) => Ok(Self::new(ca, cert, key)),
+            (ca, cert, key) => {
+                let missing = [
+                    ca.is_none().then_some("ca_bundle_path"),
+                    cert.is_none().then_some("cert_path"),
+                    key.is_none().then_some("key_path"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", ");
+                Err(InterlinkError::Config(format!(
+                    "missing TLS credential paths: {missing}; set each path or INTERLINK_CERT_DIR"
+                )))
+            }
+        }
     }
 
     pub fn ca_bundle(&self) -> &Path {
@@ -168,6 +189,18 @@ fn build_generation(
     let intermediates: Vec<_> = certificates.collect();
     let private_key = parse_private_key(read_file(paths.private_key(), "private key")?)?;
 
+    // Use rustls's SPKI comparison, but unlike from_der do not accept Unknown.
+    // A generation must prove possession of the leaf's key before publication.
+    let crypto = rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
+    let certified_key = rustls::sign::CertifiedKey::from_der(
+        vec![certificate.clone()],
+        private_key.clone_key(),
+        &crypto,
+    )?;
+    certified_key.keys_match()?;
+
     let actual_identity = spiffe_id_from_cert_der(certificate.as_ref())?;
     if &actual_identity != expected_identity {
         return Err(InterlinkError::Identity(format!(
@@ -248,8 +281,10 @@ fn parse_certificates(bytes: Vec<u8>) -> Result<Vec<CertificateDer<'static>>, In
         return Ok(vec![CertificateDer::from(bytes)]);
     }
 
-    let certificates = rustls_pemfile::certs(&mut BufReader::new(bytes.as_slice()))
-        .collect::<Result<Vec<_>, _>>()?;
+    // PemObject preserves typed-section filtering and bundle order.
+    let certificates = CertificateDer::pem_slice_iter(&bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| InterlinkError::Config(format!("certificate PEM: {error}")))?;
     if certificates.is_empty() {
         return Err(InterlinkError::Io(IoError::new(
             ErrorKind::InvalidData,
@@ -270,12 +305,10 @@ fn parse_private_key(bytes: Vec<u8>) -> Result<PrivateKeyDer<'static>, Interlink
         return Ok(PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(bytes)));
     }
 
-    rustls_pemfile::private_key(&mut BufReader::new(bytes.as_slice()))?.ok_or_else(|| {
-        InterlinkError::Io(IoError::new(
-            ErrorKind::InvalidData,
-            "PEM file contains no supported private key",
-        ))
-    })
+    // Like rustls-pemfile::private_key, select the first supported key section
+    // (PKCS#1, PKCS#8, or SEC1), skipping other section kinds.
+    PrivateKeyDer::from_pem_slice(&bytes)
+        .map_err(|error| InterlinkError::Config(format!("private-key PEM: {error}")))
 }
 
 fn contains_pem_header(bytes: &[u8]) -> bool {
@@ -286,6 +319,122 @@ fn contains_pem_header(bytes: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use interlink_test_support::rcgen;
+
+    #[test]
+    fn missing_credential_paths_fail_closed_and_name_only_unresolved_paths() {
+        let mut config = Config::default();
+        let error = TlsCredentialPaths::resolve(&config, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ca_bundle_path, cert_path, key_path"));
+        config.cert_path = Some("explicit-cert".into());
+        let error = TlsCredentialPaths::resolve(&config, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ca_bundle_path, key_path;"));
+        assert!(!error.contains("cert_path,"));
+    }
+
+    #[test]
+    fn credential_directory_resolves_all_paths_and_explicit_paths_win() {
+        let mut config = Config::default();
+        let directory = PathBuf::from("/operator/credentials");
+        assert_eq!(
+            TlsCredentialPaths::resolve(&config, Some(directory.clone())).unwrap(),
+            TlsCredentialPaths::new(
+                directory.join("ca.der"),
+                directory.join("server.der"),
+                directory.join("server.key")
+            ),
+        );
+        config.ca_bundle_path = Some("explicit-ca".into());
+        config.cert_path = Some("explicit-cert".into());
+        config.key_path = Some("explicit-key".into());
+        assert_eq!(
+            TlsCredentialPaths::resolve(&config, Some(directory)).unwrap(),
+            TlsCredentialPaths::new("explicit-ca", "explicit-cert", "explicit-key"),
+        );
+        assert!(TlsCredentialPaths::resolve(&config, None).is_ok());
+    }
+
+    #[test]
+    fn cert_directory_environment_is_used_without_mutating_parent_environment() {
+        const CHILD: &str = "INTERLINK_TEST_CREDENTIAL_PATH_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let paths = TlsCredentialPaths::from_config(&Config::default()).unwrap();
+            assert_eq!(
+                paths,
+                TlsCredentialPaths::new(
+                    "/operator/certs/ca.der",
+                    "/operator/certs/server.der",
+                    "/operator/certs/server.key",
+                )
+            );
+            return;
+        }
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "proxy::reload::tests::cert_directory_environment_is_used_without_mutating_parent_environment"])
+            .env(CHILD, "1").env("INTERLINK_CERT_DIR", "/operator/certs")
+            .status().unwrap();
+        assert!(result.success());
+    }
+
+    #[test]
+    fn pem_filtering_first_key_der_and_malformed_inputs_preserve_semantics() {
+        let first = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let second = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let mixed = format!(
+            "{}\n{}\n{}",
+            first.cert.pem(),
+            first.key_pair.serialize_pem(),
+            second.key_pair.serialize_pem()
+        );
+        let key = parse_private_key(mixed.as_bytes().to_vec()).unwrap();
+        assert_eq!(key.secret_der(), first.key_pair.serialize_der());
+        let certs = parse_certificates(mixed.into_bytes()).unwrap();
+        assert_eq!(certs.len(), 1);
+        assert_eq!(certs[0], *first.cert.der());
+        assert!(parse_private_key(first.cert.pem().into_bytes()).is_err());
+        assert!(parse_certificates(first.key_pair.serialize_pem().into_bytes()).is_err());
+        for malformed in [
+            b"-----BEGIN CERTIFICATE-----\n%%%\n-----END CERTIFICATE-----".as_slice(),
+            b"-----BEGIN CERTIFICATE-----\nYQ==",
+        ] {
+            assert!(parse_certificates(malformed.to_vec()).is_err());
+        }
+        assert!(parse_private_key(
+            b"-----BEGIN PRIVATE KEY-----\n%%%\n-----END PRIVATE KEY-----".to_vec()
+        )
+        .is_err());
+        assert_eq!(
+            parse_certificates(first.cert.der().to_vec()).unwrap(),
+            vec![first.cert.der().clone()]
+        );
+        assert_eq!(
+            parse_private_key(first.key_pair.serialize_der())
+                .unwrap()
+                .secret_der(),
+            first.key_pair.serialize_der()
+        );
+        assert!(parse_certificates(Vec::new()).is_err());
+        assert!(parse_private_key(Vec::new()).is_err());
+        assert!(matches!(
+            parse_private_key(
+                b"-----BEGIN RSA PRIVATE KEY-----\nYWJj\n-----END RSA PRIVATE KEY-----".to_vec()
+            )
+            .unwrap(),
+            PrivateKeyDer::Pkcs1(_),
+        ));
+        assert!(matches!(
+            parse_private_key(
+                b"-----BEGIN EC PRIVATE KEY-----\nYWJj\n-----END EC PRIVATE KEY-----".to_vec()
+            )
+            .unwrap(),
+            PrivateKeyDer::Sec1(_),
+        ));
+    }
     use std::path::Path;
 
     use super::{parse_certificates, parse_private_key, TlsCredentialPaths};

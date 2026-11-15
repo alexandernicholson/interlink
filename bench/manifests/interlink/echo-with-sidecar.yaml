@@ -1,6 +1,8 @@
 # interlink in its intended deployment model: a per-pod sidecar. No iptables,
 # no privileged init containers, no host networking. The Service targets the
 # sidecar's inbound mTLS port; the sidecar forwards to the app over localhost.
+# Both benchmark sidecars present the generated proxy identity, exercising the
+# normal replica allow policy without disabling default-deny authorization.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,7 +40,7 @@ spec:
             - name: INTERLINK_TRUST_DOMAIN
               value: "bench.local"
             - name: INTERLINK_IDENTITY
-              value: "spiffe://bench.local/ns/bench/sa/echo-server"
+              value: "spiffe://bench.local/ns/bench/sa/proxy"
             - name: INTERLINK_PROXY_INBOUND_PORT
               value: "8080"
             - name: INTERLINK_PROXY_OUTBOUND_PORT
@@ -51,8 +53,6 @@ spec:
               value: "/etc/interlink/certs/server.der"
             - name: INTERLINK_KEY_PATH
               value: "/etc/interlink/certs/server.key"
-            - name: INTERLINK_ALLOW_ALL
-              value: "true"
             - name: INTERLINK_MUX
               value: "${INTERLINK_MUX}"
             - name: INTERLINK_LOG_LEVEL

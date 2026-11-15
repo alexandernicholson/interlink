@@ -5,7 +5,7 @@
 //! complete (C7). A custom copy_bidirectional without shutdown propagation
 //! hangs this test at the 5 s timeout.
 use interlink::common::identity::{IdentityProvider, SpiffeId, TrustDomain};
-use interlink::identity::ca::CertificateAuthority;
+use interlink_test_support::CertificateAuthority;
 use interlink::policy::PolicyEngine;
 use interlink::proxy::config::ProxyConfig;
 use interlink::proxy::handshake::TlsServer;
@@ -73,7 +73,7 @@ async fn proxy_propagates_half_close() {
             "spiffe://halfclose.local/ns/default/sa/*",
             "spiffe://halfclose.local/ns/default/sa/*",
             "probe",
-        ),
+        ).unwrap(),
     );
 
     let proxy_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -85,8 +85,9 @@ async fn proxy_propagates_half_close() {
         default_upstream: Some(format!("127.0.0.1:{}", backend_addr.port())),
         max_connections: Some(10),
         mux: true,
+        ..Default::default()
     };
-    let proxy = TcpProxy::new_with_port(config, proxy_port, tls_server, policy);
+    let proxy = TcpProxy::new_with_port(config, proxy_port, tls_server, policy).unwrap();
     let _h = Arc::new(proxy).spawn();
     tokio::time::sleep(Duration::from_millis(300)).await;
 

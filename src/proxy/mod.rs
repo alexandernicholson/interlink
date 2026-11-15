@@ -18,16 +18,58 @@ pub use reload::{TlsCredentialPaths, TlsCredentialReloader};
 pub use tcp::TcpProxy;
 
 use std::fmt;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
+/// Injectable upstream I/O (B11); deadlines apply to production TCP dials.
+#[async_trait::async_trait]
+pub(crate) trait UpstreamDialer: Send + Sync {
+    async fn connect(&self, addr: SocketAddr) -> std::io::Result<TcpStream>;
+}
+
+struct TcpDialer;
+
+#[async_trait::async_trait]
+impl UpstreamDialer for TcpDialer {
+    async fn connect(&self, addr: SocketAddr) -> std::io::Result<TcpStream> {
+        tcp_connect(TcpStream::connect(addr)).await
+    }
+}
+
+async fn tcp_connect(
+    connect: impl Future<Output = std::io::Result<TcpStream>>,
+) -> std::io::Result<TcpStream> {
+    tokio::time::timeout(crate::common::constants::timeouts::TCP_CONNECT, connect)
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "upstream TCP connect timed out",
+            )
+        })?
+}
+
+pub(crate) trait OriginalDestination: Send + Sync {
+    fn get(&self, stream: &TcpStream) -> Option<SocketAddr>;
+}
+
+struct NetfilterDestination;
+
+impl OriginalDestination for NetfilterDestination {
+    fn get(&self, stream: &TcpStream) -> Option<SocketAddr> {
+        get_original_dst(stream)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum UpstreamTarget {
     Socket(SocketAddr),
-    Host { name: Arc<str>, port: Option<u16> },
+    /// Keep hostname:port intact so discovery never fabricates a service port.
+    Host(Arc<str>),
 }
 
 impl UpstreamTarget {
@@ -37,17 +79,7 @@ impl UpstreamTarget {
             return Some(Self::Socket(addr));
         }
 
-        let (name, port) = match value.rsplit_once(':') {
-            Some((name, port)) => match port.parse::<u16>() {
-                Ok(port) => (name, Some(port)),
-                Err(_) => (value.as_str(), None),
-            },
-            None => (value.as_str(), None),
-        };
-        Some(Self::Host {
-            name: Arc::from(name),
-            port,
-        })
+        Some(Self::Host(Arc::from(value)))
     }
 }
 
@@ -55,11 +87,7 @@ impl fmt::Display for UpstreamTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Socket(addr) => addr.fmt(f),
-            Self::Host {
-                name,
-                port: Some(port),
-            } => write!(f, "{name}:{port}"),
-            Self::Host { name, port: None } => name.fmt(f),
+            Self::Host(name) => name.fmt(f),
         }
     }
 }
@@ -187,11 +215,170 @@ pub(crate) fn configure_socket(stream: &TcpStream) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use crate::common::error::InterlinkError;
+    use crate::common::identity::SpiffeId;
+    use crate::proxy::handshake::{TlsHandshake, TlsStream};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Semaphore;
+
+    pub(crate) const WAIT: Duration = Duration::from_secs(3);
+
+    pub(crate) fn config() -> config::ProxyConfig {
+        config::ProxyConfig {
+            identity: Some("spiffe://test.local/ns/default/sa/proxy".into()),
+            max_connections: Some(4),
+            ..Default::default()
+        }
+    }
+
+    pub(crate) struct ExpectedEndpoint;
+
+    #[async_trait::async_trait]
+    impl crate::discovery::dns::DnsResolver for ExpectedEndpoint {
+        async fn lookup(&self, name: &str) -> Result<Vec<SocketAddr>, InterlinkError> {
+            assert_eq!(name, "backend.test:8443");
+            Ok(vec!["192.0.2.7:8443".parse().unwrap()])
+        }
+    }
+
+    pub(crate) struct DirectDestination;
+
+    impl OriginalDestination for DirectDestination {
+        fn get(&self, stream: &TcpStream) -> Option<SocketAddr> {
+            // Model non-redirected SO_ORIGINAL_DST on every test platform.
+            stream.local_addr().ok()
+        }
+    }
+
+    pub(crate) struct GateDialer {
+        pub calls: AtomicUsize,
+        pub release: Semaphore,
+    }
+
+    impl GateDialer {
+        pub(crate) fn new() -> Arc<Self> {
+            Arc::new(Self {
+                calls: AtomicUsize::new(0),
+                release: Semaphore::new(0),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl UpstreamDialer for GateDialer {
+        async fn connect(&self, addr: SocketAddr) -> std::io::Result<TcpStream> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let _gate = self.release.acquire().await.unwrap();
+            TcpDialer.connect(addr).await
+        }
+    }
+
+    pub(crate) struct GateHandshake {
+        pub calls: AtomicUsize,
+        pub release: Semaphore,
+        acceptor: Option<tokio_rustls::TlsAcceptor>,
+    }
+
+    #[async_trait::async_trait]
+    impl TlsHandshake for GateHandshake {
+        async fn connect(&self, _addr: SocketAddr) -> Result<TlsStream, InterlinkError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let _gate = self.release.acquire().await.unwrap();
+            Err(InterlinkError::Protocol(
+                "injected handshake failure".into(),
+            ))
+        }
+
+        async fn accept(&self, stream: TcpStream) -> Result<TlsStream, InterlinkError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let _gate = self.release.acquire().await.unwrap();
+            let Some(acceptor) = &self.acceptor else {
+                return Err(InterlinkError::Protocol(
+                    "injected handshake failure".into(),
+                ));
+            };
+            Ok(TlsStream {
+                inner: acceptor.accept(stream).await?.into(),
+                peer_identity: Arc::new(SpiffeId::from_uri(
+                    "spiffe://test.local/ns/default/sa/client",
+                )?),
+            })
+        }
+    }
+
+    pub(crate) fn handshake(success: bool) -> (Arc<GateHandshake>, Arc<rustls::ClientConfig>) {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let certified =
+            interlink_test_support::rcgen::generate_simple_self_signed(vec!["localhost".into()])
+                .unwrap();
+        let cert = certified.cert.der().clone();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert.clone()).unwrap();
+        let client = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![cert],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der())
+                    .into(),
+            )
+            .unwrap();
+        (
+            Arc::new(GateHandshake {
+                calls: AtomicUsize::new(0),
+                release: Semaphore::new(0),
+                acceptor: success.then(|| tokio_rustls::TlsAcceptor::from(Arc::new(server))),
+            }),
+            Arc::new(client),
+        )
+    }
+
+    pub(crate) async fn pair() -> (TcpStream, TcpStream, SocketAddr) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TcpDialer
+            .connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server, peer) = listener.accept().await.unwrap();
+        (client, server, peer)
+    }
+
+    pub(crate) async fn wait_for(mut ready: impl FnMut() -> bool) {
+        tokio::time::timeout(WAIT, async {
+            while !ready() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn relay_metrics_distinguish_success_from_failure() {
+        // INTERLINK_METRICS binds handles on first use. Other proxy tests can
+        // initialize it without a recorder; isolate this recorder assertion.
+        const CHILD: &str = "INTERLINK_RELAY_METRICS_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "proxy::tests::relay_metrics_distinguish_success_from_failure",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let handle = recorder.handle();
 
@@ -226,5 +413,35 @@ mod tests {
                 "missing `{expected}` in:\n{rendered}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod connect_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn upstream_tcp_connect_deadline_cancels_pending_dial() {
+        struct Cancelled(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Cancelled {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let pending_dial = async move {
+            let _guard = Cancelled(flag);
+            std::future::pending().await
+        };
+        let error = tokio::time::timeout(
+            crate::common::constants::timeouts::TCP_CONNECT + test_support::WAIT,
+            tcp_connect(pending_dial),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(cancelled.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

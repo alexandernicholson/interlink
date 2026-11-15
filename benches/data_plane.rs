@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use interlink::common::error::InterlinkError;
 use interlink::common::identity::{IdentityProvider, SpiffeId, TrustDomain};
-use interlink::identity::ca::CertificateAuthority;
+use interlink_test_support::CertificateAuthority;
 use interlink::policy::{patterns, PolicyEngine};
 use interlink::proxy::config::ProxyConfig;
 use interlink::proxy::handshake::{
@@ -119,10 +119,15 @@ struct ProxyHarness {
 
 impl ProxyHarness {
     async fn start(mux: bool, allow: bool) -> Self {
-        Self::start_with_backend(mux, allow, BackendMode::Echo).await
+        Self::start_with_backend(mux, allow, BackendMode::Echo, Vec::new()).await
     }
 
-    async fn start_with_backend(mux: bool, allow: bool, backend_mode: BackendMode) -> Self {
+    async fn start_with_backend(
+        mux: bool,
+        allow: bool,
+        backend_mode: BackendMode,
+        inbound_egress: Vec<String>,
+    ) -> Self {
         let echo_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let echo_addr = echo_listener.local_addr().unwrap();
         let echo_task = tokio::spawn(async move {
@@ -210,7 +215,7 @@ impl ProxyHarness {
         if allow {
             policy.add_namespace_rule(
                 "default",
-                patterns::allow_same_namespace(trust_domain_name, "default"),
+                patterns::allow_same_namespace(trust_domain_name, "default").unwrap(),
             );
         }
 
@@ -223,11 +228,14 @@ impl ProxyHarness {
                     default_upstream: Some(echo_addr.to_string()),
                     max_connections: Some(1024),
                     mux,
+                    egress_subnets: inbound_egress,
+                    ..Default::default()
                 },
                 inbound_port,
                 server,
                 policy.clone(),
             )
+            .unwrap()
             .with_shutdown(inbound_shutdown_rx),
         );
 
@@ -242,11 +250,13 @@ impl ProxyHarness {
                     ),
                     max_connections: Some(1024),
                     mux,
+                    ..Default::default()
                 },
                 outbound_port,
                 client,
                 policy,
             )
+            .unwrap()
             .with_shutdown(outbound_shutdown_rx),
         );
 
@@ -338,11 +348,13 @@ impl OutboundHarness {
                     default_upstream,
                     max_connections: Some(max_connections),
                     mux: false,
+                    ..Default::default()
                 },
                 port,
                 handshake,
                 Arc::new(PolicyEngine::new()),
             )
+            .unwrap()
             .with_shutdown(shutdown_rx),
         );
         let task = proxy.spawn();
@@ -433,25 +445,35 @@ fn bench_proxy_paths(c: &mut Criterion) {
     let mux = runtime.block_on(ProxyHarness::start(true, true));
     let legacy = runtime.block_on(ProxyHarness::start(false, true));
     let denied = runtime.block_on(ProxyHarness::start(true, false));
+    let egress_denied = runtime.block_on(ProxyHarness::start_with_backend(
+        true,
+        true,
+        BackendMode::Echo,
+        vec!["10.0.0.0/8".into()],
+    ));
     let halfclose_mux = runtime.block_on(ProxyHarness::start_with_backend(
         true,
         true,
         BackendMode::ReplyAfterEof,
+        Vec::new(),
     ));
     let halfclose_legacy = runtime.block_on(ProxyHarness::start_with_backend(
         false,
         true,
         BackendMode::ReplyAfterEof,
+        Vec::new(),
     ));
     let reset_mux = runtime.block_on(ProxyHarness::start_with_backend(
         true,
         true,
         BackendMode::Reset,
+        Vec::new(),
     ));
     let reset_legacy = runtime.block_on(ProxyHarness::start_with_backend(
         false,
         true,
         BackendMode::Reset,
+        Vec::new(),
     ));
     let unused_upstream = SocketAddr::from(([127, 0, 0, 1], reserve_port())).to_string();
     let handshake_failure = runtime.block_on(OutboundHarness::start(
@@ -526,6 +548,52 @@ fn bench_proxy_paths(c: &mut Criterion) {
             black_box(result)
         })
     });
+    group.bench_function("egress_denied", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let result = egress_denied.denied().await;
+            assert_closed(&result, "egress denial");
+            black_box(result)
+        })
+    });
+    group.bench_function("constructor_rejects_invalid_config", |b| {
+        b.iter(|| {
+            let outbound = OutboundProxy::new_with_port(
+                ProxyConfig {
+                    trust_domain: "bench.local".into(),
+                    identity: None,
+                    ..Default::default()
+                },
+                1,
+                Arc::new(FailingHandshake),
+                Arc::new(PolicyEngine::new()),
+            );
+            assert!(outbound.is_err());
+            let bad_cidr = OutboundProxy::new_with_port(
+                ProxyConfig {
+                    trust_domain: "bench.local".into(),
+                    identity: Some("spiffe://bench.local/ns/default/sa/outbound".into()),
+                    egress_subnets: vec!["10.0.0.0/99".into()],
+                    ..Default::default()
+                },
+                1,
+                Arc::new(FailingHandshake),
+                Arc::new(PolicyEngine::new()),
+            );
+            assert!(bad_cidr.is_err());
+            let inbound = TcpProxy::new_with_port(
+                ProxyConfig {
+                    trust_domain: "bench.local".into(),
+                    identity: None,
+                    ..Default::default()
+                },
+                1,
+                Arc::new(FailingHandshake),
+                Arc::new(PolicyEngine::new()),
+            );
+            assert!(inbound.is_err());
+            black_box((outbound, bad_cidr, inbound))
+        })
+    });
     group.bench_function("mux_half_close", |b| {
         b.to_async(&runtime).iter(|| async {
             let response = halfclose_mux.half_close().await.unwrap();
@@ -587,6 +655,7 @@ fn bench_proxy_paths(c: &mut Criterion) {
     handshake_failure.stop();
     no_upstream.stop();
     saturation.stop();
+    egress_denied.stop();
 }
 
 criterion_group!(
