@@ -18,10 +18,14 @@ pub use reload::{TlsCredentialPaths, TlsCredentialReloader};
 pub use tcp::TcpProxy;
 
 use std::fmt;
-use std::future::Future;
+use std::future::{poll_fn, Future};
+use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::task::{ready, Context, Poll};
 use std::time::{Duration, Instant};
+use bytes::{BufMut, BytesMut};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
@@ -111,18 +115,304 @@ pub(crate) fn copy_buf_size() -> usize {
 
 pub(crate) const DEFAULT_COPY_BUF_SIZE: usize = 65536;
 
-/// Bidirectional copy with `copy_buf_size()` buffers.
+/// Bidirectional copy with pooled, un-zeroed `copy_buf_size()` buffers.
 ///
-/// Delegates to tokio's `copy_bidirectional_with_sizes`, which propagates
-/// half-close: when one side reaches EOF, the other side is shut down
-/// (FIN / TLS close_notify), per C7 — protocols that read-to-EOF depend on it.
-pub(crate) async fn copy_bidirectional<A, B>(a: &mut A, b: &mut B) -> std::io::Result<(u64, u64)>
+/// A faithful port of tokio's `copy_bidirectional_with_sizes` state machine:
+/// the same half-close propagation (C7 — when one side reaches EOF the other
+/// side is shut down: FIN / TLS close_notify; `tests/halfclose_propagation.rs`
+/// drives this), the same flush-before-Pending and flush-before-finish
+/// ordering, and the same write-top-up behavior. One difference, on purpose:
+/// the two per-connection buffers come from a bounded pool of `BytesMut` and
+/// are never zeroed — tokio's `CopyBuffer` starts as `vec![0; n]`, costing a
+/// full 64 KiB memset plus first-touch page faults on every connection (the
+/// round-18 churn RSS-ratchet root cause).
+///
+/// Buffers return to the pool when the future is dropped — success, error, or
+/// cancellation — so every exit recycles (B10).
+pub(crate) async fn copy_bidirectional<A, B>(a: &mut A, b: &mut B) -> io::Result<(u64, u64)>
 where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
     let n = copy_buf_size();
-    tokio::io::copy_bidirectional_with_sizes(a, b, n, n).await
+    copy_bidirectional_pooled(a, b, RelayBuffer::new(n), RelayBuffer::new(n)).await
+}
+
+/// Free-list of relay buffers. Lifecycle (B10): acquired by a connection,
+/// returned on drop, reused after `clear()`; over-capacity and stale-sized
+/// buffers are dropped. 128 × 64 KiB = 8 MiB retained ceiling — connections
+/// beyond the pool still get un-zeroed `BytesMut` (the memset elimination
+/// holds on every path; the pool additionally avoids allocator churn and
+/// first-touch page faults).
+const MAX_POOLED_RELAY_BUFFERS: usize = 128;
+
+struct RelayBufferPool {
+    available: Mutex<Vec<BytesMut>>,
+}
+
+static RELAY_BUFFER_POOL: LazyLock<RelayBufferPool> =
+    LazyLock::new(|| RelayBufferPool {
+        available: Mutex::new(Vec::new()),
+    });
+
+impl RelayBufferPool {
+    fn acquire(&self, size: usize) -> BytesMut {
+        // Poisoning only follows a panic, which aborts this process; taking
+        // the data back is strictly better than failing here (B8).
+        let mut available = self
+            .available
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while let Some(mut buf) = available.pop() {
+            if buf.capacity() >= size {
+                buf.clear();
+                return buf;
+            }
+            // Stale size class. The knob is process-constant so this cannot
+            // happen within one process; drop and try the next.
+        }
+        BytesMut::with_capacity(size)
+    }
+
+    fn release(&self, buf: &mut BytesMut) {
+        let mut available = self
+            .available
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if available.len() < MAX_POOLED_RELAY_BUFFERS && buf.capacity() >= copy_buf_size() {
+            available.push(std::mem::take(buf));
+        }
+    }
+}
+
+/// One direction's copy state — tokio `CopyBuffer` semantics over a pooled
+/// `BytesMut` (`len` is the fill level, `pos` the write cursor).
+struct RelayBuffer {
+    buf: BytesMut,
+    pos: usize,
+    read_done: bool,
+    need_flush: bool,
+    amt: u64,
+}
+
+impl RelayBuffer {
+    fn new(size: usize) -> Self {
+        Self {
+            buf: RELAY_BUFFER_POOL.acquire(size),
+            pos: 0,
+            read_done: false,
+            need_flush: false,
+            amt: 0,
+        }
+    }
+
+    /// Fill from `reader` directly into the buffer's spare capacity.
+    ///
+    /// This is tokio's own fill (io/util/read_buf.rs, the `ReadBuf` future's
+    /// `poll`) lifted with its invariants: the pointer-stability check and
+    /// the `advance_mut` length are upstream's, so the un-zeroed
+    /// spare-capacity semantics are the ones tokio maintains. The pointer
+    /// check returns an error instead of asserting (B12: panic paths in
+    /// connection handling become `Result`s; the move it guards is
+    /// impossible with a fixed-capacity `BytesMut`).
+    fn poll_fill<R>(&mut self, cx: &mut Context<'_>, reader: Pin<&mut R>) -> Poll<io::Result<()>>
+    where
+        R: AsyncRead + ?Sized,
+    {
+        use tokio::io::ReadBuf as IoReadBuf;
+
+        if !self.buf.has_remaining_mut() {
+            // Callers only fill while len < capacity; unreachable safety net.
+            return Poll::Ready(Ok(()));
+        }
+        let n = {
+            let dst = self.buf.chunk_mut();
+            let dst = unsafe { dst.as_uninit_slice_mut() };
+            let mut buf = IoReadBuf::uninit(dst);
+            let ptr = buf.filled().as_ptr();
+            ready!(reader.poll_read(cx, &mut buf)?);
+
+            // Ensure the pointer does not change from under us
+            if ptr != buf.filled().as_ptr() {
+                return Poll::Ready(Err(io::Error::other("copy buffer moved during read")));
+            }
+            buf.filled().len()
+        };
+
+        // Safety: the number of initialized (and read) bytes is guaranteed by
+        // `ReadBuf::filled`'s invariants (upstream comment, io/util/read_buf.rs).
+        unsafe {
+            self.buf.advance_mut(n);
+        }
+        self.read_done = n == 0;
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_write_buf<R, W>(
+        &mut self,
+        cx: &mut Context<'_>,
+        mut reader: Pin<&mut R>,
+        mut writer: Pin<&mut W>,
+    ) -> Poll<io::Result<usize>>
+    where
+        R: AsyncRead + ?Sized,
+        W: AsyncWrite + ?Sized,
+    {
+        match writer
+            .as_mut()
+            .poll_write(cx, &self.buf[self.pos..self.buf.len()])
+        {
+            Poll::Pending => {
+                // Top up the buffer towards full if we can read a bit more
+                // data - this should improve the chances of a large write
+                if !self.read_done && self.buf.len() < self.buf.capacity() {
+                    ready!(self.poll_fill(cx, reader.as_mut()))?;
+                }
+                Poll::Pending
+            }
+            res => res,
+        }
+    }
+
+    /// Port of tokio `CopyBuffer::poll_copy` (io/util/copy.rs): read into
+    /// spare capacity, write out in slices, flush when the writer stalls,
+    /// finish by flushing once the reader hit EOF. Task-budget bookkeeping
+    /// (tokio's `coop::poll_proceed`) is omitted: the socket-level
+    /// `poll_read`/`poll_write` implementations still consume the budget
+    /// themselves, so this loop cannot monopolize a worker.
+    fn poll_copy<R, W>(
+        &mut self,
+        cx: &mut Context<'_>,
+        mut reader: Pin<&mut R>,
+        mut writer: Pin<&mut W>,
+    ) -> Poll<io::Result<u64>>
+    where
+        R: AsyncRead + ?Sized,
+        W: AsyncWrite + ?Sized,
+    {
+        loop {
+            // If there is some space left in our buffer, then we try to read some
+            // data to continue, thus maximizing the chances of a large write.
+            if self.buf.len() < self.buf.capacity() && !self.read_done {
+                match self.poll_fill(cx, reader.as_mut()) {
+                    Poll::Ready(Ok(())) => {}
+                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                    Poll::Pending => {
+                        // Ignore pending reads when our buffer is not empty, because
+                        // we can try to write data immediately.
+                        if self.pos == self.buf.len() {
+                            // Try flushing when the reader has no progress to avoid deadlock
+                            // when the reader depends on buffered writer.
+                            if self.need_flush {
+                                ready!(writer.as_mut().poll_flush(cx))?;
+                                self.need_flush = false;
+                            }
+
+                            return Poll::Pending;
+                        }
+                    }
+                }
+            }
+
+            // If our buffer has some data, let's write it out!
+            while self.pos < self.buf.len() {
+                let i = ready!(self.poll_write_buf(cx, reader.as_mut(), writer.as_mut()))?;
+                if i == 0 {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "write zero byte into writer",
+                    )));
+                } else {
+                    self.pos += i;
+                    self.amt += i as u64;
+                    self.need_flush = true;
+                }
+            }
+
+            debug_assert!(
+                self.pos <= self.buf.len(),
+                "writer returned length larger than input slice"
+            );
+
+            // All data has been written, the buffer can be considered empty again
+            self.pos = 0;
+            self.buf.clear();
+
+            // If we've written all the data and we've seen EOF, flush out the
+            // data and finish the transfer.
+            if self.read_done {
+                ready!(writer.as_mut().poll_flush(cx))?;
+                return Poll::Ready(Ok(self.amt));
+            }
+        }
+    }
+}
+
+impl Drop for RelayBuffer {
+    fn drop(&mut self) {
+        RELAY_BUFFER_POOL.release(&mut self.buf);
+    }
+}
+
+enum TransferState {
+    Running(RelayBuffer),
+    ShuttingDown(u64),
+    Done(u64),
+}
+
+fn transfer_one_direction<A, B>(
+    cx: &mut Context<'_>,
+    state: &mut TransferState,
+    r: &mut A,
+    w: &mut B,
+) -> Poll<io::Result<u64>>
+where
+    A: AsyncRead + AsyncWrite + Unpin + ?Sized,
+    B: AsyncRead + AsyncWrite + Unpin + ?Sized,
+{
+    let mut r = Pin::new(r);
+    let mut w = Pin::new(w);
+
+    loop {
+        match state {
+            TransferState::Running(buf) => {
+                let count = ready!(buf.poll_copy(cx, r.as_mut(), w.as_mut()))?;
+                *state = TransferState::ShuttingDown(count);
+            }
+            TransferState::ShuttingDown(count) => {
+                ready!(w.as_mut().poll_shutdown(cx))?;
+
+                *state = TransferState::Done(*count);
+            }
+            TransferState::Done(count) => return Poll::Ready(Ok(*count)),
+        }
+    }
+}
+
+async fn copy_bidirectional_pooled<A, B>(
+    a: &mut A,
+    b: &mut B,
+    a_to_b_buffer: RelayBuffer,
+    b_to_a_buffer: RelayBuffer,
+) -> io::Result<(u64, u64)>
+where
+    A: AsyncRead + AsyncWrite + Unpin + ?Sized,
+    B: AsyncRead + AsyncWrite + Unpin + ?Sized,
+{
+    let mut a_to_b = TransferState::Running(a_to_b_buffer);
+    let mut b_to_a = TransferState::Running(b_to_a_buffer);
+    poll_fn(|cx| {
+        let a_to_b = transfer_one_direction(cx, &mut a_to_b, a, b)?;
+        let b_to_a = transfer_one_direction(cx, &mut b_to_a, b, a)?;
+
+        // It is not a problem if ready! returns early because transfer_one_direction for the
+        // other direction will keep returning TransferState::Done(count) in future calls to poll
+        let a_to_b = ready!(a_to_b);
+        let b_to_a = ready!(b_to_a);
+
+        Poll::Ready(Ok((a_to_b, b_to_a)))
+    })
+    .await
 }
 
 /// Record a relay's metrics without turning failures into zero-valued latency
@@ -413,6 +703,128 @@ mod tests {
                 "missing `{expected}` in:\n{rendered}"
             );
         }
+    }
+
+    #[test]
+    fn relay_buffer_pool_recycles_within_its_cap() {
+        // Isolated pool instance: the global free-list is shared with every
+        // concurrently-running test, so exact assertions need their own.
+        let pool = RelayBufferPool {
+            available: Mutex::new(Vec::new()),
+        };
+        fn len(pool: &RelayBufferPool) -> usize {
+            pool.available
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len()
+        }
+        let size = copy_buf_size();
+        assert_eq!(len(&pool), 0);
+
+        // Releasing beyond the cap retains at most MAX_POOLED_RELAY_BUFFERS.
+        let mut held: Vec<BytesMut> = (0..MAX_POOLED_RELAY_BUFFERS + 2)
+            .map(|_| pool.acquire(size))
+            .collect();
+        for buf in held.iter_mut() {
+            pool.release(buf);
+        }
+        assert_eq!(len(&pool), MAX_POOLED_RELAY_BUFFERS);
+
+        // A recycled buffer comes back cleared, in the same size class.
+        let recycled = pool.acquire(size);
+        assert_eq!(len(&pool), MAX_POOLED_RELAY_BUFFERS - 1);
+        assert!(recycled.is_empty());
+        assert!(recycled.capacity() >= size);
+
+        // Stale size classes are dropped, not pooled (B10: every state has
+        // an exit — the wrong-class buffer is deallocated, not retained).
+        let mut stale = BytesMut::with_capacity(64);
+        pool.release(&mut stale);
+        assert_eq!(len(&pool), MAX_POOLED_RELAY_BUFFERS - 1);
+
+        // A stale-class buffer in the stack is skipped and dropped on
+        // acquire, yielding a fresh correctly-sized buffer.
+        pool.available
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(BytesMut::with_capacity(64));
+        assert_eq!(len(&pool), MAX_POOLED_RELAY_BUFFERS);
+        let fresh = pool.acquire(size);
+        // The stale top-of-stack entry was skipped and dropped; a real
+        // buffer came off the stack behind it (127 real - 1 popped).
+        assert_eq!(len(&pool), MAX_POOLED_RELAY_BUFFERS - 2);
+        assert!(fresh.capacity() >= size);
+    }
+
+    #[tokio::test]
+    async fn copy_bidirectional_round_trips_multi_buffer_payload() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // 16-byte duplex halves force short reads and writes, driving the
+        // fill, partial-drain, top-up, and flush paths of the relay loop.
+        //
+        // Payload bound (validated against stock tokio, R31): a strict echo
+        // with a write-then-read client completes only while in-flight
+        // bytes fit both copy buffers plus the pipe buffers (~133 KiB at
+        // the 64 KiB default; stock tokio's 8 KiB buffers deadlock this
+        // exact topology at 32 KiB). 96 KiB spans multiple buffer cycles
+        // with margin — 300 KiB deadlocks by construction and is not a
+        // valid payload for this topology.
+        assert_eq!(
+            copy_buf_size(),
+            DEFAULT_COPY_BUF_SIZE,
+            "test assumes the default copy buffer size"
+        );
+        let (mut relay_a, echo_side) = tokio::io::duplex(16);
+        let (mut relay_b, mut client) = tokio::io::duplex(16);
+
+        let echo = tokio::spawn(async move {
+            let mut echo_side = echo_side;
+            let mut buf = vec![0u8; 4096];
+            loop {
+                let n = match echo_side.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                if echo_side.write_all(&buf[..n]).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        const TOTAL: usize = 96 * 1024;
+        let payload: Vec<u8> = (0..TOTAL).map(|i| (i % 251) as u8).collect();
+        let expected = payload.clone();
+        let writer = tokio::spawn(async move {
+            client.write_all(&payload).await?;
+            client.shutdown().await?;
+            let mut got = Vec::with_capacity(TOTAL);
+            client.read_to_end(&mut got).await?;
+            Ok::<_, std::io::Error>(got)
+        });
+
+        // The echo topology deadlocks by construction past the absorption
+        // bound, so every stage is deadline-bounded: a stall must fail the
+        // test, not hang it (A2/A6).
+        let (a_to_b, b_to_a, got) = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            async {
+                let (a_to_b, b_to_a) =
+                    copy_bidirectional(&mut relay_a, &mut relay_b).await?;
+                let got = writer.await.unwrap()?;
+                echo.await.unwrap();
+                Ok::<_, std::io::Error>((a_to_b, b_to_a, got))
+            },
+        )
+        .await
+        .expect("relay stalled: payload over the absorption bound, or a copy-loop regression")
+        .unwrap();
+
+        // Byte counts are the loop's own accounting, not a proxy metric.
+        assert_eq!(a_to_b, TOTAL as u64);
+        assert_eq!(b_to_a, TOTAL as u64);
+        assert_eq!(got, expected);
     }
 }
 

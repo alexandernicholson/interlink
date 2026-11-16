@@ -43,7 +43,12 @@ struct TlsFixture {
 
 impl TlsFixture {
     fn new() -> Self {
-        let ca = CertificateAuthority::new("bench.local").unwrap();
+        Self::with_ca(CertificateAuthority::new("bench.local").unwrap())
+    }
+
+    /// Same mesh fixture built on a caller-chosen CA — the P-256 bench
+    /// arms use it to quantify the ECDSA family against Ed25519 (R31).
+    fn with_ca(ca: CertificateAuthority) -> Self {
         let server_identity = SpiffeId::try_new("bench.local", "default", "server").unwrap();
         let client_identity = SpiffeId::try_new("bench.local", "default", "client").unwrap();
         let (server_cert, server_key) = ca
@@ -180,6 +185,26 @@ async fn exchange(
         .read_exact(&mut byte)
         .await
         .map_err(InterlinkError::Io)?;
+    // RFC 8446 §4.6.1: TLS 1.3 session tickets are post-handshake records,
+    // and they are single-use — rustls drops the cache entry when it offers
+    // the PSK and relies on the replacement ticket from the resumed
+    // connection. TCP ordering puts the ticket bytes before the echo byte,
+    // but `read_exact(1)` alone can return with the ticket record still
+    // buffered-unprocessed; dropping the stream then loses it and the next
+    // connect is a Full handshake (observed as a flaky `resumed` arm).
+    // Draining to EOF processes every remaining record deterministically.
+    // Bounded: a server that never closes would otherwise hang the arm;
+    // the timeout turns that into a loud kind-assertion failure instead.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        let mut sink = [0u8; 64];
+        loop {
+            match tls.inner.read(&mut sink).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => continue,
+            }
+        }
+    })
+    .await;
     Ok(kind)
 }
 
@@ -202,6 +227,16 @@ fn bench_certificate_paths(c: &mut Criterion) {
     });
     group.bench_function("issue_leaf", |b| {
         b.iter(|| black_box(ca.issue_leaf(black_box(&identity)).unwrap()))
+    });
+    // P-256 comparison arms (R31): identical issuance path on an ECDSA
+    // P-256 root — quantifies the SVID-family choice for operators.
+    // Deltas are recorded in docs/performance-plan.md.
+    group.bench_function("new_ca_p256", |b| {
+        b.iter(|| black_box(CertificateAuthority::new_p256(black_box("bench.local")).unwrap()))
+    });
+    group.bench_function("issue_leaf_p256", |b| {
+        let ca_p256 = CertificateAuthority::new_p256("bench.local").unwrap();
+        b.iter(|| black_box(ca_p256.issue_leaf(black_box(&identity)).unwrap()))
     });
     group.bench_function("issue_leaf_with_dns_and_ip", |b| {
         b.iter(|| {
@@ -265,6 +300,24 @@ fn bench_tls_paths(c: &mut Criterion) {
         "benchmark fixture must positively verify TLS resumption"
     );
 
+    let p256_fixture =
+        TlsFixture::with_ca(CertificateAuthority::new_p256("bench.local").unwrap());
+    let (p256_addr, p256_server) = runtime.block_on(spawn_server(
+        p256_fixture.server.clone(),
+        SocketAddr::from(([127, 0, 0, 1], 0)),
+    ));
+    let p256_resumed_client = p256_fixture.client();
+    runtime
+        .block_on(exchange(&p256_resumed_client, p256_addr))
+        .unwrap();
+    assert_eq!(
+        runtime
+            .block_on(exchange(&p256_resumed_client, p256_addr))
+            .unwrap(),
+        Some(rustls::HandshakeKind::Resumed),
+        "P-256 fixture must positively verify TLS resumption"
+    );
+
     let ipv6_client = fixture.client();
     runtime.block_on(exchange(&ipv6_client, ipv6_addr)).unwrap();
 
@@ -309,8 +362,42 @@ fn bench_tls_paths(c: &mut Criterion) {
         })
     });
     group.bench_function("resumed", |b| {
+        // A preceding `full` arm's per-iteration client churn invalidates
+        // this long-lived client's cached ticket (bench fixture only: the
+        // mesh path shares one client and resumes at 99.96 % in
+        // production). Re-prime inside the first warmup call — criterion
+        // discards warmup iterations, so priming never reaches the
+        // reported samples, and every measured iteration asserts Resumed.
+        static PRIMED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
         b.to_async(&runtime).iter(|| async {
+            if !PRIMED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                exchange(&resumed_client, ipv4_addr).await.unwrap();
+            }
             let kind = exchange(&resumed_client, ipv4_addr).await.unwrap();
+            assert_eq!(kind, Some(rustls::HandshakeKind::Resumed));
+            black_box(kind)
+        })
+    });
+    group.bench_function("full_p256", |b| {
+        b.to_async(&runtime).iter(|| {
+            let client = p256_fixture.client();
+            async move {
+                let kind = exchange(&client, p256_addr).await.unwrap();
+                assert_eq!(kind, Some(rustls::HandshakeKind::Full));
+                black_box(kind)
+            }
+        })
+    });
+    group.bench_function("resumed_p256", |b| {
+        // Same re-priming as `resumed` above — see the comment there.
+        static PRIMED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        b.to_async(&runtime).iter(|| async {
+            if !PRIMED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                exchange(&p256_resumed_client, p256_addr).await.unwrap();
+            }
+            let kind = exchange(&p256_resumed_client, p256_addr).await.unwrap();
             assert_eq!(kind, Some(rustls::HandshakeKind::Resumed));
             black_box(kind)
         })
@@ -352,6 +439,7 @@ fn bench_tls_paths(c: &mut Criterion) {
     ipv4_server.abort();
     ipv6_server.abort();
     wrong_domain_task.abort();
+    p256_server.abort();
 }
 
 criterion_group!(

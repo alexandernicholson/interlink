@@ -29,16 +29,34 @@ pub struct CertificateAuthority {
     root_key: KeyPair,
     root_cert: Certificate,
     root_cert_der: Vec<u8>,
+    algorithm: &'static rcgen::SignatureAlgorithm,
     _trust_domain: String,
 }
 
 impl CertificateAuthority {
     /// Generate a new Ed25519 root key and self-signed CA certificate.
     pub fn new(trust_domain: impl Into<String>) -> Result<Self, InterlinkError> {
+        Self::new_for(trust_domain, &rcgen::PKCS_ED25519)
+    }
+
+    /// Generate an ECDSA P-256 root key and self-signed CA certificate.
+    ///
+    /// The proxy verifies either family (both are in the aws-lc-rs
+    /// provider's set); this constructor exists so benchmarks can quantify
+    /// the handshake and issuance cost of the ECDSA SVID family against
+    /// Ed25519. Nothing else about the CA differs — same PKI profile, same
+    /// SPIFFE SAN layout, same TTLs.
+    pub fn new_p256(trust_domain: impl Into<String>) -> Result<Self, InterlinkError> {
+        Self::new_for(trust_domain, &rcgen::PKCS_ECDSA_P256_SHA256)
+    }
+
+    fn new_for(
+        trust_domain: impl Into<String>,
+        algorithm: &'static rcgen::SignatureAlgorithm,
+    ) -> Result<Self, InterlinkError> {
         let td = trust_domain.into();
 
-        // Generate Ed25519 key pair via rcgen
-        let root_key = KeyPair::generate_for(&rcgen::PKCS_ED25519)
+        let root_key = KeyPair::generate_for(algorithm)
             .map_err(|e| InterlinkError::Identity(format!("root keygen: {}", e)))?;
 
         let mut params = CertificateParams::new(Vec::<String>::new())
@@ -68,6 +86,7 @@ impl CertificateAuthority {
             root_key,
             root_cert_der: root_cert.der().to_vec(),
             root_cert,
+            algorithm,
             _trust_domain: td,
         })
     }
@@ -101,7 +120,7 @@ impl CertificateAuthority {
 
         params.serial_number = Some(generate_serial_number()?);
 
-        let leaf_key = KeyPair::generate_for(&rcgen::PKCS_ED25519)
+        let leaf_key = KeyPair::generate_for(self.algorithm)
             .map_err(|e| InterlinkError::Identity(format!("leaf keygen: {}", e)))?;
 
         let cert = params
@@ -156,7 +175,7 @@ impl CertificateAuthority {
 
         params.serial_number = Some(generate_serial_number()?);
 
-        let leaf_key = KeyPair::generate_for(&rcgen::PKCS_ED25519)
+        let leaf_key = KeyPair::generate_for(self.algorithm)
             .map_err(|e| InterlinkError::Identity(format!("leaf keygen: {}", e)))?;
 
         let cert = params

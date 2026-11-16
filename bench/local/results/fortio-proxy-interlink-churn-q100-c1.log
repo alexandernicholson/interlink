@@ -1,39 +1,74 @@
-{"ts":1783489565.374448,"level":"info","r":1,"file":"scli.go","line":125,"msg":"Starting","command":"Φορτίο","version":"1.66.0 h1:9F/200qIu136z847bxs/NeAoYdJaQlVofYlppi3qwcw= go1.22.5 amd64 linux","go-max-procs":16}
-Fortio 1.66.0 running at 100 queries per second, 16->16 procs, for 30s: https://localhost:14443/echo
-{"ts":1783489565.374810,"level":"info","r":1,"file":"httprunner.go","line":121,"msg":"Starting http test","run":0,"url":"https://localhost:14443/echo","threads":1,"qps":"100.0","warmup":"parallel","conn-reuse":""}
-Starting at 100 qps with 1 thread(s) [gomax 16] for 30s : 3000 calls each (total 3000)
-{"ts":1783489595.378443,"level":"info","r":1,"file":"periodic.go","line":851,"msg":"T000 ended after 30.001449672s : 3000 calls. qps=99.99516799349415"}
-Ended after 30.001487782s : 3000 calls. qps=99.995
-{"ts":1783489595.378502,"level":"info","r":1,"file":"periodic.go","line":581,"msg":"Run ended","run":0,"elapsed":30001487782,"calls":3000,"qps":99.99504097259839}
-Sleep times : count 2999 avg 0.0085470411 +/- 0.0003331 min 0.007334291 max 0.009280455 sum 25.6325761
-Aggregated Function Time : count 3000 avg 0.00087978843 +/- 0.000154 min 0.000643548 max 0.002076683 sum 2.63936529
+{"ts":1794817175.186107,"level":"info","r":1,"file":"scli.go","line":125,"msg":"Starting","command":"Φορτίο","version":"1.66.0 h1:9F/200qIu136z847bxs/NeAoYdJaQlVofYlppi3qwcw= go1.26.5 arm64 darwin","go-max-procs":16}
+Fortio 1.66.0 running at 100 queries per second, 16->16 procs, for 1m0s: https://localhost:14443/echo
+{"ts":1794817175.186500,"level":"info","r":1,"file":"httprunner.go","line":121,"msg":"Starting http test","run":0,"url":"https://localhost:14443/echo","threads":1,"qps":"100.0","warmup":"parallel","conn-reuse":""}
+Starting at 100 qps with 1 thread(s) [gomax 16] for 1m0s : 6000 calls each (total 6000)
+{"ts":1794817235.196159,"level":"info","r":1,"file":"periodic.go","line":851,"msg":"T000 ended after 1m0.0040125s : 6000 calls. qps=99.99331294719666"}
+Ended after 1m0.004378792s : 6000 calls. qps=99.993
+{"ts":1794817235.196545,"level":"info","r":1,"file":"periodic.go","line":581,"msg":"Run ended","run":0,"elapsed":60004378792,"calls":6000,"qps":99.99270254590057}
+Sleep times : count 5999 avg 0.004743944 +/- 0.01399 min -0.279378268 max 0.009126783 sum 28.4589201
+Aggregated Function Time : count 6000 avg 0.003045017 +/- 0.00293 min 0.000696375 max 0.123203708 sum 18.2701021
 # range, mid point, percentile, count
->= 0.000643548 <= 0.001 , 0.000821774 , 81.80, 2454
-> 0.001 <= 0.002 , 0.0015 , 99.97, 545
-> 0.002 <= 0.00207668 , 0.00203834 , 100.00, 1
-# target 50% 0.000861372
-# target 75% 0.000970356
-# target 90% 0.00145138
-# target 99% 0.00194679
-# target 99.9% 0.00199633
+>= 0.000696375 <= 0.001 , 0.000848187 , 0.95, 57
+> 0.001 <= 0.002 , 0.0015 , 21.83, 1253
+> 0.002 <= 0.003 , 0.0025 , 68.80, 2818
+> 0.003 <= 0.004 , 0.0035 , 86.25, 1047
+> 0.004 <= 0.005 , 0.0045 , 92.80, 393
+> 0.005 <= 0.006 , 0.0055 , 95.27, 148
+> 0.006 <= 0.007 , 0.0065 , 96.72, 87
+> 0.007 <= 0.008 , 0.0075 , 97.55, 50
+> 0.008 <= 0.009 , 0.0085 , 98.27, 43
+> 0.009 <= 0.01 , 0.0095 , 98.58, 19
+> 0.01 <= 0.011 , 0.0105 , 98.77, 11
+> 0.011 <= 0.012 , 0.0115 , 99.03, 16
+> 0.012 <= 0.014 , 0.013 , 99.30, 16
+> 0.014 <= 0.016 , 0.015 , 99.43, 8
+> 0.016 <= 0.018 , 0.017 , 99.60, 10
+> 0.018 <= 0.02 , 0.019 , 99.62, 1
+> 0.02 <= 0.025 , 0.0225 , 99.78, 10
+> 0.025 <= 0.03 , 0.0275 , 99.87, 5
+> 0.03 <= 0.035 , 0.0325 , 99.88, 1
+> 0.045 <= 0.05 , 0.0475 , 99.95, 4
+> 0.05 <= 0.06 , 0.055 , 99.98, 2
+> 0.12 <= 0.123204 , 0.121602 , 100.00, 1
+# target 50% 0.00259972
+# target 75% 0.0033553
+# target 90% 0.00457252
+# target 99% 0.011875
+# target 99.9% 0.04625
 Error cases : no data
 # Socket and IP used for each connection:
-[0] 3001 socket used, resolved to 127.0.0.1:14443, connection timing : count 3001 avg 0.0005037169 +/- 0.0001167 min 0.000361889 max 0.001549085 sum 1.51165443
-Connection time histogram (s) : count 3001 avg 0.0005037169 +/- 0.0001167 min 0.000361889 max 0.001549085 sum 1.51165443
+[0] 6001 socket used, resolved to 127.0.0.1:14443, connection timing : count 6001 avg 0.0015185036 +/- 0.001326 min 0.000318541 max 0.026373583 sum 9.11254006
+Connection time histogram (s) : count 6001 avg 0.0015185036 +/- 0.001326 min 0.000318541 max 0.026373583 sum 9.11254006
 # range, mid point, percentile, count
->= 0.000361889 <= 0.001 , 0.000680945 , 99.27, 2979
-> 0.001 <= 0.00154908 , 0.00127454 , 100.00, 22
-# target 50% 0.000683194
-# target 75% 0.000843954
-# target 90% 0.00094041
-# target 99% 0.000998284
-# target 99.9% 0.00147418
-Sockets used: 3001 (for perfect keepalive, would be 1)
+>= 0.000318541 <= 0.001 , 0.00065927 , 18.23, 1094
+> 0.001 <= 0.002 , 0.0015 , 85.55, 4040
+> 0.002 <= 0.003 , 0.0025 , 95.82, 616
+> 0.003 <= 0.004 , 0.0035 , 97.55, 104
+> 0.004 <= 0.005 , 0.0045 , 98.40, 51
+> 0.005 <= 0.006 , 0.0055 , 98.95, 33
+> 0.006 <= 0.007 , 0.0065 , 99.12, 10
+> 0.007 <= 0.008 , 0.0075 , 99.33, 13
+> 0.008 <= 0.009 , 0.0085 , 99.43, 6
+> 0.009 <= 0.01 , 0.0095 , 99.55, 7
+> 0.01 <= 0.011 , 0.0105 , 99.63, 5
+> 0.011 <= 0.012 , 0.0115 , 99.67, 2
+> 0.012 <= 0.014 , 0.013 , 99.75, 5
+> 0.014 <= 0.016 , 0.015 , 99.82, 4
+> 0.016 <= 0.018 , 0.017 , 99.83, 1
+> 0.018 <= 0.02 , 0.019 , 99.88, 3
+> 0.02 <= 0.025 , 0.0225 , 99.97, 5
+> 0.025 <= 0.0263736 , 0.0256868 , 100.00, 2
+# target 50% 0.00147191
+# target 75% 0.00184325
+# target 90% 0.00243328
+# target 99% 0.006299
+# target 99.9% 0.020999
+Sockets used: 6001 (for perfect keepalive, would be 1)
 Uniform: false, Jitter: false, Catchup allowed: true
 IP addresses distribution:
-127.0.0.1:14443: 3001
-Code 200 : 3000 (100.0 %)
-Response Header Sizes : count 3000 avg 137 +/- 0 min 137 max 137 sum 411000
-Response Body/Total Sizes : count 3000 avg 1161 +/- 0 min 1161 max 1161 sum 3483000
-All done 3000 calls (plus 1 warmup) 0.880 ms avg, 100.0 qps
-Successfully wrote 5214 bytes of Json data to /results/fortio-proxy-interlink-churn-q100-c1.json
+127.0.0.1:14443: 6001
+Code 200 : 6000 (100.0 %)
+Response Header Sizes : count 6000 avg 137 +/- 0 min 137 max 137 sum 822000
+Response Body/Total Sizes : count 6000 avg 1161 +/- 0 min 1161 max 1161 sum 6966000
+All done 6000 calls (plus 1 warmup) 3.045 ms avg, 100.0 qps
+Successfully wrote 9683 bytes of Json data to /Users/alexandernicholson/Documents/alexandernicholson/interlink/bench/local/results/fortio-proxy-interlink-churn-q100-c1.json

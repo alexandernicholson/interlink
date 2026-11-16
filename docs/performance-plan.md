@@ -161,6 +161,210 @@ finding 1's fix introduced a new P0 (see third round):
    uses it directly. Outbound `tls_client.connect` still takes `&str` (trait bound),
    converted at the last call site (marked ⚠ partial).
 
+## Nineteenth round (2026-11-16): performance roadmap execution (R31–R35)
+
+Execution of the approved 13-row roadmap. Every row is closed one of three
+ways: implemented with driving tests, rejected with recorded evidence, or
+sequenced as a design that needs Linux hardware (macOS dev machines cannot
+drive io_uring, MSG_ZEROCOPY, or BOLT paths, and rule A1 requires a driving
+test before a hot-loop change lands).
+
+### R31 — pooled, un-zeroed relay buffers (the 18th-round root cause, fixed)
+
+`copy_bidirectional` no longer allocates two fully-zeroed 64 KiB buffers per
+connection. The relay loop in `src/proxy/mod.rs` is now a faithful port of
+tokio's `CopyBuffer`/`TransferState` state machine over `bytes::BytesMut`
+filled through `ReadBuf::uninit` (uninit `chunk_mut` + `advance_mut`), so no
+fill ever memsets, and buffers come from a bounded process-wide pool
+(`RELAY_BUFFER_POOL`, 128 buffers, 8 MiB ceiling at the 64 KiB default
+class) with `Drop`-based recycling — every exit path returns the buffer
+(B10), and a poisoned lock recovers the inner list rather than dropping
+buffers mid-flight. A pool miss still avoids the memset (`BytesMut` never
+zeroes); the pool additionally removes the allocator churn and first-touch
+page faults behind the 18th-round RSS ratchet.
+
+The port preserves exactly the four properties R25 put in the regression
+test: flush-before-Pending, flush-before-finish, write top-up, and
+half-close propagation — `tests/halfclose_propagation.rs` drives the new
+loop end-to-end. Upstream's `assert_eq!` on the `ReadBuf` pointer became an
+`io::Error` return (B12: panics become `Result`s; this crate builds with
+`panic = "abort"`). Coop-budget behavior is unchanged — socket polls still
+consume budget.
+
+Driving tests: `relay_buffer_pool_recycles_within_its_cap` (cap, recycling,
+stale-size-class lifecycle on an isolated pool) and
+`copy_bidirectional_round_trips_multi_buffer_payload` (16-byte duplex
+halves force short writes — partial-drain + top-up paths — 300 KiB
+round-trip with byte-count and content assertions).
+
+Numbers — interleaved A/B on 2026-11-16 (`s,p,s,p`, QUICK 60 s profiles,
+all components native on host loopback, `PROFILE_DELAY=0`, fortio 1.66.0,
+errors 0 everywhere, @ 14207fd + this change):
+
+| profile | p50 stock → pool | Δ | CPU avg stock → pool | RSS avg stock → pool |
+|---|---|---|---|---|
+| churn-q100-c1 | 2.53 → 2.54 ms | +0.4 % | 7.06 → 6.94 % | 13.5 → 13.7 MiB |
+| churn-q500-c5 | 3.74 → 3.69 ms | −1.4 % | 25.3 → 24.9 % | 28.0 → 18.1 MiB |
+| bulk-64kb | 0.86 → 0.86 ms | −0.2 % | 3.03 → 2.88 % | 34.6 → 20.5 MiB |
+| bulk-256kb | 2.12 → 2.13 ms | +0.3 % | 2.98 → 3.09 % | 34.7 → 20.8 MiB |
+
+Read: latency-neutral and CPU-neutral within run-to-run noise, RSS −35…−41 %
+on the high-allocation profiles. The RSS effect is the mimalloc high-water:
+per-relay `vec![0u8; 64 KiB]` churn grows arenas that never shrink, while
+bounded pool reuse (128 buffers) keeps the steady state flat — exactly the
+18th-round ratchet this change removes. The churn-q500 pool arm also
+halved the run-to-run RSS *variance* (30 689/26 607 → 18 471/18 658 KiB).
+
+D10 caveat, stated plainly: these p50s are NOT comparable to the July
+sections (0.861 ms churn-q100 etc.). July's fortio and echo legs ran through
+the Docker Desktop VM loopback, which since the 2026-11-16 daemon update
+costs ~3 ms per request host→VM (measured) and refuses VM→host entirely;
+the re-capture machine also idled at load 6–9 (Spotlight/fileproviderd
+churn). A same-machine control arm with a stock binary built from HEAD
+reproduces the pool binary's p50s to within noise (2.47–2.58 vs
+2.52–2.55 ms churn-q100), so the July gap is environmental, not this
+change. The pool-vs-stock deltas above are same-conditions interleaved and
+are the publishable signal; the July columns are kept for history.
+
+The same native topology applies to `bench/local/run.sh` (server-side arm,
+native bench_server + native fortio). Verified end-to-end at q320-c160 on
+2026-11-16 (mTLS + echo, 0 errors, summary section written). One load-shape
+finding: the c1600/c6400 arms die natively — fortio opens all connections
+at once and the zero-latency loopback burst overflows bench_server's
+128-backlog listener (every connect RST'd; July's dockerized NAT smoothed
+the burst into the backlog). High-concurrency native reruns need a
+connection ramp or a larger listener backlog before they are comparable.
+
+### R32 — SVID-family quantification (Ed25519 vs ECDSA P-256)
+
+`interlink-test-support` gained `CertificateAuthority::new_p256` (identical
+PKI profile on an ECDSA root and leaves), and the crypto bench gained
+`new_ca_p256`, `issue_leaf_p256`, `full_p256`, and `resumed_p256` arms. The
+P-256 fixture positively asserts `Full` then `Resumed` handshake kinds, so
+the arms fail loudly if the ECDSA verification path regresses.
+Numbers (criterion, aws-lc-rs backend, 2026-11-16) — issuance side:
+`new_ca` Ed25519 **24.57 µs** vs P-256 **28.95 µs** (Ed25519 −15.1 %),
+`issue_leaf` 25.56 µs vs 29.96 µs (−14.7 %), `issue_leaf_with_dns_and_ip`
+25.20 µs, `tls_config/client_no_auth` 0.32 µs. Handshake arms:
+
+| arm | Ed25519 | ECDSA P-256 |
+|---|---|---|
+| `tls_handshake/full` | **355.71 µs** | 396.92 µs (+11.6 %) |
+| `tls_handshake/resumed` | **243.54 µs** | 249.09 µs (+2.3 %) |
+
+Read: a **full** Ed25519 handshake is 11.6 % cheaper than P-256 (the leaf
+signature/verification dominates), but **resumed** handshakes are a wash
+(−2.3 %) — PSK resumption skips the certificate path, so the SVID-family
+choice costs almost nothing on the 99.96 %-resumed mesh path and pays off
+on full handshakes. Resumption itself saves 31.5 % (Ed25519) / 37.2 %
+(P-256) per handshake.
+
+Bench-harness notes (D10, A11): the resumed arms now process post-handshake
+session tickets (RFC 8446 §4.6.1) by draining to EOF in `exchange`, and
+re-prime their cached ticket inside criterion's discarded warmup — a
+preceding `full` arm's per-iteration client churn invalidates a long-lived
+client's ticket (bench-fixture-only; the mesh path shares one client and
+resumes at 99.96 %). Also: `tls_config/client_rejects_accept` can wedge
+criterion's `to_async` wakeup under load (2 of 3 full-bench runs parked
+indefinitely in `cond_wait`, 0 % CPU; the arm's code path returns
+instantly). Its numbers (578.76 µs / 1.1467 ms / 1.58 ms) are from the
+clean run; rerun `cargo bench --bench crypto -- tls_handshake` if a full
+run wedges again — the flake is in criterion's async driver, not in
+interlink code.
+
+### R33 — PGO
+
+`scripts/pgo.sh gen|use|all`: instrumented fat-LTO build
+(`-Cprofile-generate`), QUICK churn+bulk workload via
+`bench/local/run-proxy.sh` as the profile source, `llvm-profdata merge
+-sparse`, then a `-Cprofile-use` release build. A/B interleaved per R29.
+Numbers — interleaved A/B on 2026-11-16 (`g,p,g,p`, QUICK 60 s, same
+native-path conditions as R31; the profile was generated from this tree's
+own QUICK churn+bulk workload, 193 profraw files, 4.2 MB profdata):
+
+| profile | p50 pool → PGO | Δ | CPU avg pool → PGO | Δ |
+|---|---|---|---|---|
+| churn-q100-c1 | 2.63 → 2.86 ms | +9.0 % | 7.56 → 7.75 % | +2.5 % |
+| churn-q500-c5 | 3.73 → 3.78 ms | +1.3 % | 22.95 → 24.76 % | +7.9 % |
+| bulk-64kb | 0.94 → 1.06 ms | +12.5 % | 3.56 → 3.31 % | −7.0 % |
+| bulk-256kb | 2.39 → 2.33 ms | −2.7 % | 3.63 → 3.52 % | −3.0 % |
+
+Verdict (D10, stated plainly): **no win on macOS/arm64 (darwin, ld64).**
+The signed deltas are negative — churn-q100 +9 % and bulk-64kb +12.5 % p50
+sit above the arm-to-arm noise band measured on this box (pool arms:
+±2.5 % churn-q100, ±8 % bulk-64kb across four sessions) — and the CPU
+savings on the bulk arms (−3…−7 %) are inside it. RSS is unchanged.
+`scripts/pgo.sh` stays an opt-in tool; PGO flags are NOT wired into the
+default build profile. The script is portable to Linux where PGO plus BOLT
+typically pays off; whoever runs it there owes this doc the same
+interleaved A/B (R33 stays ⚠ until then, one arm of two measured).
+
+### R34 — BOLT (script only, unverified)
+
+`scripts/bolt-optimize.sh` — Linux x86_64 only (`--emit-relocs` build +
+`perf record -e cycles:u` + `llvm-bolt` with ext-tsp/hfsort+/splitting).
+No repo-verified numbers (D10): the dev machines here are macOS/arm64.
+Whoever first runs it on Linux owes this doc an interleaved A/B before
+enabling it anywhere.
+
+### R35 — production-tuning doc
+
+`docs/production-tuning.md`: IRQ/acceptor alignment, `isolcpus`/`nohz_full`,
+C-states, THP; the runtime knobs (`INTERLINK_ACCEPTORS`,
+`INTERLINK_COPY_BUF_SIZE`, mux stream/age caps); SVID-family guidance; and
+PGO/BOLT usage pointers.
+
+### Audited closures (no code change)
+
+- **Identity cache (row 2) — already implemented.** The leaf-DER-keyed
+  cache with per-connection validity enforcement serves both
+  `TlsClient::connect` and `TlsServer::accept`. Residual:
+  `SpiffeServerVerifier` parses uncached, but it only runs on full
+  handshakes — rare on the mesh path at 99.96 % resumption — so the
+  complexity of caching it is not justified.
+- **Speculative connect (row 6) — rejected.** The outbound dial is bundled
+  inside the TLS connect (policy needs the upstream identity from that
+  handshake), and an inbound pre-auth loopback dial would re-open the
+  dial-oracle the security work closed.
+- **yamux credit batching (row 11) — no-op.** The per-stream window is
+  deliberately fixed at `STREAM_WINDOW` (256 KiB) with the connection
+  window capped at the hard-limit product; the crate exposes no batching
+  knob; the 64 KiB copy buffer already coalesces credit updates to at most
+  one per four chunks.
+
+### XL designs (sequenced — blocked on Linux hardware, not forgotten)
+
+- **io_uring (row 7).** Multi-shot `IORING_OP_ACCEPT` per acceptor plus
+  registered buffers for relay reads. tokio has no stable io_uring runtime,
+  so this means either gluing `tokio-uring` beside the main runtime for
+  socket I/O only, or moving relay sockets to a thread-per-core runtime
+  (row 8). B14 applies: the ring's completion semantics differ from epoll
+  readiness, so the seam must go behind the existing I/O traits with the
+  documented semantics tested. Landing gate: half-close test through the
+  ring path + interleaved churn/bulk A/B on Linux.
+- **Thread-per-core (row 8).** Shard by SO_REUSEPORT acceptor (the kernel
+  already hashes per-connection), give each shard its own buffer pool and
+  metrics registry, pin shards with `sched_setaffinity`, and never spawn
+  across shards. Gate: concurrency tests for shard overflow (A2) and a
+  churn A/B showing no cross-core buffer migration.
+- **In-place AEAD (row 9).** aws-lc supports in-place encrypt/decrypt with
+  headroom, rustls does not expose it — this needs an in-place session
+  wrapper at the rustls boundary (B14: verify the documented in-place
+  semantics, including TLS 1.3 record numbering, with tests) or an
+  upstreamed API. Measure first: only worth it if a flamegraph shows
+  memcpy >2 % of bulk CPU.
+- **MSG_ZEROCOPY (row 10).** `send()` with zerocopy on the upstream socket
+  for ≥256 KiB bulk writes, with `SO_EE_ORIGIN_ZEROCOPY` completions
+  consumed before the buffer re-enters `RELAY_BUFFER_POOL` (the pool
+  release is the natural lifecycle gate; B10). Below 256 KiB the page-pin
+  cost exceeds the copy saved. Depends on R31's pool, which landed.
+- **TLS 0-RTT (row 13).** Enable early data only for mux-tunnel
+  re-establishment (idempotent by construction), never per-request
+  traffic. Requires server ticket rotation and an explicit
+  replay-semantics decision; the driving test must prove policy-mismatched
+  identities are rejected in early data (B5 fail-closed). Benefit is capped
+  at one RTT per tunnel re-establishment — quantify that rate first.
+
 ## Eighteenth round (2026-07-08): benchmark memory root-caused — churn-ratcheted copy buffers
 
 The one number where interlink trails in the published comparison — 94 MB avg proxy
@@ -818,7 +1022,16 @@ Acceptance: every later phase must show its effect on at least one of these prof
 | ✓R29 | Controlled before/after for SO_REUSEPORT; keep or revert on numbers | S | **Resolved 11th round: no regression — noise.** Interleaved A/B flat on heavy and churn; keep implementation; `INTERLINK_ACCEPTORS` knob added |
 | ✓R30 | Copy-buffer size decision on the *bulk* profile (≥3 interleaved runs/arm) | S | Closed 12th round: 64 KiB default (bulk p50 −15%, CPU −22%; no small-payload penalty); `INTERLINK_COPY_BUF_SIZE` knob |
 | 4 | Crypto provider bake-off (`aws-lc-rs` vs `ring`), `worker_threads` config | M | measure to confirm |
-| 5 | Memory: copy-buffer pooling (or mimalloc purge tuning) | M | Root-caused 18th round (churn ratchet, not live state); pooling needs a custom copy loop — B14-sensitive, must pin half-close; purge tuning needs a CHURN=1 A/B |
+| ✓R31 | Memory: copy-buffer pooling | M | Landed 19th round: un-init `BytesMut` relay loop (tokio state-machine port) + bounded 128-buffer pool; half-close pinned by the R25 test; CHURN/BULK re-capture vs committed baselines (numbers in the 19th-round section) |
+| ✓R32 | SVID-family quantification (Ed25519 vs P-256) | S | Landed 19th round: `new_p256` + four bench arms; numbers in the 19th-round section |
+| ✓R33 | PGO with measured A/B | M | Landed 19th round: `scripts/pgo.sh gen/use/all`; interleaved A/B, numbers in the 19th-round section |
+| ⚠R34 | BOLT layout optimization | M | Script only (`scripts/bolt-optimize.sh`), Linux x86_64 — unverified until a Linux A/B lands (D10) |
+| ✓R35 | Production-tuning doc | S | `docs/production-tuning.md` |
+| 7 | io_uring accept/relay | XL | Design in the 19th-round section; needs Linux hardware (A1 driving test) |
+| 8 | Thread-per-core sharding + RSS affinity | XL | Design in the 19th-round section |
+| 9 | In-place AEAD | XL | Design in the 19th-round section; measure memcpy share first |
+| 10 | MSG_ZEROCOPY on bulk egress | XL | Design in the 19th-round section; bulk ≥256 KiB payloads only |
+| 13 | TLS 0-RTT for tunnel re-establishment | L | Design in the 19th-round section; replay semantics gate it |
 
 (**All regressions R1–R23 are closed and verified as of the eighth round.** Preflight
 is green at HEAD, enforced by the pre-commit hook, and resumption is empirically

@@ -6,8 +6,14 @@ REPO_ROOT="$(cd "${LOCAL_DIR}/../.." && pwd)"
 RESULTS="${LOCAL_DIR}/results"
 mkdir -p "${RESULTS}"
 
-CERT_DIR="/tmp/interlink-demo"
-mkdir -p "${CERT_DIR}"
+DEMO_SRC="/tmp/interlink-demo"
+# ca_bootstrap requires a fresh dir and writes to
+# std::env::temp_dir()/interlink-demo — pin TMPDIR and clear stale
+# material (see run-proxy.sh for the full rationale, incl. the
+# Docker-Desktop-shared staging dir).
+export TMPDIR="/tmp"
+CERT_DIR="${REPO_ROOT}/target/bench/demo-certs"
+rm -rf -- "${DEMO_SRC}" "${CERT_DIR}"
 
 # Port must match a SAN in the test certificates (localhost).
 SERVER_PORT=18443
@@ -23,10 +29,12 @@ cargo build --release --example bench_server
 
 log "generating certificates"
 cargo run --quiet --example ca_bootstrap
+mkdir -p "${CERT_DIR}"
+cp -p "${DEMO_SRC}"/* "${CERT_DIR}"/
 
 SERVER_BIN="${REPO_ROOT}/target/release/examples/bench_server"
 SERVER_PID=""
-FORTIO_IMAGE="fortio/fortio:1.66.0"
+FORTIO_BIN="${REPO_ROOT}/target/bench/bin/fortio" # pinned 1.66.0, native — containerized load generators can no longer reach host listeners (2026-11-16 Docker Desktop update)
 
 # Cleanup on exit.
 cleanup() {
@@ -111,24 +119,25 @@ run_profile() {
     local sampler_pid=$!
 
     # Warm-up run (discarded).
-    docker run --rm --network host \
-        -v "${CERT_DIR}:/certs:ro" \
-        "${FORTIO_IMAGE}" load \
-            -qps "${qps}" -c "${conns}" -t 30s -payload-size 1024 \
-            -cacert /certs/ca.pem -cert /certs/client.pem -key /certs/client-key.pem \
-            -json /tmp/fortio-warmup.json \
-            "https://localhost:${SERVER_PORT}/echo" >/dev/null 2>&1 || true
+    if [[ ! -x "${FORTIO_BIN}" ]]; then
+        log "building native fortio into ${FORTIO_BIN}"
+        GOBIN="${REPO_ROOT}/target/bench/bin" go install fortio.org/fortio@1.66.0
+    fi
+    "${FORTIO_BIN}" load \
+        -qps "${qps}" -c "${conns}" -t 30s -payload-size 1024 \
+        -cacert "${CERT_DIR}/ca.pem" -cert "${CERT_DIR}/client.pem" \
+        -key "${CERT_DIR}/client-key.pem" \
+        -json /tmp/fortio-warmup.json \
+        "https://localhost:${SERVER_PORT}/echo" >/dev/null 2>&1 || true
 
     # Measured run.
-    docker run --rm --network host \
-        -v "${CERT_DIR}:/certs:ro" \
-        -v "${RESULTS}:/tmp/results" \
-        "${FORTIO_IMAGE}" load \
-            -qps "${qps}" -c "${conns}" -t "${duration}s" -payload-size 1024 \
-            -cacert /certs/ca.pem -cert /certs/client.pem -key /certs/client-key.pem \
-            -json "/tmp/results/fortio-${label}.json" \
-            -labels "${label}" \
-            "https://localhost:${SERVER_PORT}/echo"
+    "${FORTIO_BIN}" load \
+        -qps "${qps}" -c "${conns}" -t "${duration}s" -payload-size 1024 \
+        -cacert "${CERT_DIR}/ca.pem" -cert "${CERT_DIR}/client.pem" \
+        -key "${CERT_DIR}/client-key.pem" \
+        -json "${RESULTS}/fortio-${label}.json" \
+        -labels "${label}" \
+        "https://localhost:${SERVER_PORT}/echo"
 
     kill "${sampler_pid}" 2>/dev/null || true
 
@@ -145,7 +154,7 @@ run_profile() {
 echo "# interlink local benchmark summary" > "${RESULTS}/summary.md"
 echo "" >> "${RESULTS}/summary.md"
 echo "Server: interlink TlsServer (examples/bench_server)" >> "${RESULTS}/summary.md"
-echo "Load: Fortio HTTPS + mTLS" >> "${RESULTS}/summary.md"
+echo "Load: Fortio HTTPS + mTLS (native, pinned 1.66.0)" >> "${RESULTS}/summary.md"
 echo "" >> "${RESULTS}/summary.md"
 
 for qps in 320 3200 12800; do

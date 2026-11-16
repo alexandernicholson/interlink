@@ -2,7 +2,11 @@
 set -euo pipefail
 
 # interlink proxy benchmark — measures the full proxy path:
-#   Fortio → HTTPS/mTLS → interlinkd → HTTP → echo-server (200 ms delay)
+#   Fortio → HTTPS/mTLS → interlinkd → HTTP → echo-server (PROFILE_DELAY delay)
+# All three components run natively on the host: the 2026-11-16 Docker
+# Desktop update broke VM→host reachability and made the host→VM loopback
+# tunnel cost ~3 ms per request (measured), so the July-era containerized
+# legs are unreproducible. Deltas vs July sections include this path change.
 # Set QUICK=1 for short profiles (60 s each, default 30 s).
 
 LOCAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,21 +14,35 @@ REPO_ROOT="$(cd "${LOCAL_DIR}/../.." && pwd)"
 RESULTS="${LOCAL_DIR}/results"
 mkdir -p "${RESULTS}"
 
-CERT_DIR="/tmp/interlink-demo"
-mkdir -p "${CERT_DIR}"
+DEMO_SRC="/tmp/interlink-demo"
+# ca_bootstrap refuses to touch an existing directory (fresh-material
+# contract, symlink safety) and writes to std::env::temp_dir()/interlink-demo
+# — pin TMPDIR so that resolves to DEMO_SRC, and clear stale material
+# instead of pre-creating the dir the bootstrap must create itself.
+export TMPDIR="/tmp"
+# Docker Desktop's file sharing does not cover the RAM-backed /tmp —
+# bind mounts from there surface empty inside containers (broke the
+# fortio cert load on 2026-11-16). Stage the material into the repo's
+# build tree, which lives on a shared path.
+CERT_DIR="${REPO_ROOT}/target/bench/demo-certs"
+rm -rf -- "${DEMO_SRC}" "${CERT_DIR}"
 
+FORTIO_BIN="${REPO_ROOT}/target/bench/bin/fortio" # pinned 1.66.0, native (see run_profile)
+ECHO_BIN="${REPO_ROOT}/target/bench/bin/echo-server" # native (see below)
 INBOUND_PORT="${INBOUND_PORT:-14443}"
 ECHO_PORT="${ECHO_PORT:-18080}"
-FORTIO_IMAGE="fortio/fortio:1.66.0"
 # Build on disk, never tmpfs: the LTO release build needs several GB of
 # intermediate artifacts and /tmp is a RAM-backed tmpfs (caused ENOSPC).
 CARGO_TARGET="${CARGO_TARGET:-${REPO_ROOT}/target/bench}"
-INTERLINK_BIN="${CARGO_TARGET}/release/interlinkd"
+INTERLINK_BIN="${INTERLINK_BIN:-${CARGO_TARGET}/release/interlinkd}" # override to A/B a different build
 
 log() { echo "[$(date -Iseconds)] $*" >&2; }
 cleanup() {
     log "cleaning up"
-    docker kill echo-server 2>/dev/null || true
+    if [[ -n "${ECHO_PID:-}" ]] && kill -0 "${ECHO_PID}" 2>/dev/null; then
+        kill "${ECHO_PID}" 2>/dev/null || true
+        wait "${ECHO_PID}" 2>/dev/null || true
+    fi
     if [[ -n "${INTERLINK_PID:-}" ]] && kill -0 "${INTERLINK_PID}" 2>/dev/null; then
         kill "${INTERLINK_PID}" 2>/dev/null || true
         wait "${INTERLINK_PID}" 2>/dev/null || true
@@ -36,6 +54,8 @@ trap cleanup EXIT
 log "generating certificates"
 cargo build --quiet --example ca_bootstrap --release 2>&1
 cargo run --quiet --example ca_bootstrap 2>&1
+mkdir -p "${CERT_DIR}"
+cp -p "${DEMO_SRC}"/* "${CERT_DIR}"/
 
 # Build interlinkd if missing.
 if [[ ! -x "${INTERLINK_BIN}" ]]; then
@@ -44,12 +64,19 @@ if [[ ! -x "${INTERLINK_BIN}" ]]; then
 fi
 
 PROFILE_DELAY="${PROFILE_DELAY:-200ms}"
+ECHO_SRC="${REPO_ROOT}/bench/workloads"
+if [[ ! -x "${ECHO_BIN}" ]]; then
+    log "building native echo-server"
+    (cd "${ECHO_SRC}" && go build -o "${ECHO_BIN}" .)
+fi
 log "starting echo-server (plain HTTP, port ${ECHO_PORT}, delay ${PROFILE_DELAY})"
-docker rm -f echo-server 2>/dev/null || true
-docker run -d --rm --network host --name echo-server \
-    interlink-bench/echo-server:latest \
-    -addr ":${ECHO_PORT}" -delay "${PROFILE_DELAY}" >/dev/null
-sleep 1
+"${ECHO_BIN}" -addr ":${ECHO_PORT}" -delay "${PROFILE_DELAY}" &
+ECHO_PID=$!
+# Wait for the listener, bounded (the proxy dials it lazily per connection).
+for _ in $(seq 1 50); do
+    nc -z 127.0.0.1 "${ECHO_PORT}" 2>/dev/null && break
+    sleep 0.1
+done
 
 log "starting interlinkd proxy on port ${INBOUND_PORT}"
 INTERLINK_ALLOW_ALL=true \
@@ -57,7 +84,7 @@ INTERLINK_DEFAULT_UPSTREAM="127.0.0.1:${ECHO_PORT}" \
 INTERLINK_PROXY_INBOUND_PORT="${INBOUND_PORT}" \
 INTERLINK_PROXY_OUTBOUND_PORT=0 \
 INTERLINK_TRUST_DOMAIN="example.local" \
-INTERLINK_IDENTITY="spiffe://example.local/ns/default/sa/proxy" \
+INTERLINK_IDENTITY="spiffe://example.local/ns/default/sa/backend" \
 INTERLINK_CA_BUNDLE_PATH="${CERT_DIR}/ca.der" \
 INTERLINK_CERT_PATH="${CERT_DIR}/server.der" \
 INTERLINK_KEY_PATH="${CERT_DIR}/server.key" \
@@ -184,31 +211,36 @@ run_profile() {
     sample_interlink_metrics "${metrics_out}" "${duration}" &
     local sampler_pid=$!
 
+    # Fortio runs natively (pinned 1.66.0, same as the retired container
+    # image): since the 2026-11-16 Docker daemon update, containers can no
+    # longer reach host listeners (host networking, host-gateway and the
+    # LAN IP are all refused), so the load generator must live on the host.
+    # The proxy->echo leg is unchanged: Mac -> VM still works and echo
+    # stays in a --network host container, matching the July baselines.
+    if [[ ! -x "${FORTIO_BIN}" ]]; then
+        log "building native fortio into ${FORTIO_BIN}"
+        GOBIN="${REPO_ROOT}/target/bench/bin" go install fortio.org/fortio@1.66.0
+    fi
+
     # Warm-up (discarded).
-    docker run --rm --network host \
-        -v "${CERT_DIR}:/certs:ro" \
-        "${FORTIO_IMAGE}" load \
-            -qps "${qps}" -c "${conns}" -t 30s -payload-size 1024 \
-            ${extra_flags} \
-            -cacert /certs/ca.pem -cert /certs/client.pem -key /certs/client-key.pem \
-            -json /tmp/fortio-warmup.json \
-            "https://localhost:${INBOUND_PORT}/echo" >/dev/null 2>&1 || true
+    "${FORTIO_BIN}" load \
+        -qps "${qps}" -c "${conns}" -t 30s -payload-size 1024 \
+        ${extra_flags} \
+        -cacert "${CERT_DIR}/ca.pem" -cert "${CERT_DIR}/client.pem" \
+        -key "${CERT_DIR}/client-key.pem" \
+        -json /tmp/fortio-warmup.json \
+        "https://localhost:${INBOUND_PORT}/echo" >/dev/null 2>&1 || true
 
     # Measured run (Fortio defaults to HTTP/1.1 — proxy doesn't do h2→h1 conversion).
-    # JSON goes to its own file via the mounted results dir: mixing
-    # -json /dev/stdout with 2>&1 interleaves stderr log lines inside large
-    # JSON payloads and corrupts them (broke the bulk-256kb parse).
-    docker run --rm --network host \
-        -v "${CERT_DIR}:/certs:ro" \
-        -v "${RESULTS}:/results" \
-        "${FORTIO_IMAGE}" load \
-            -timeout 120s \
-            -qps "${qps}" -c "${conns}" -t "${duration}s" -payload-size 1024 \
-            ${extra_flags} \
-            -cacert /certs/ca.pem -cert /certs/client.pem -key /certs/client-key.pem \
-            -json "/results/fortio-${label}.json" \
-            -labels "${label}" \
-            "https://localhost:${INBOUND_PORT}/echo" > "${RESULTS}/fortio-${label}.log" 2>&1
+    "${FORTIO_BIN}" load \
+        -timeout 120s \
+        -qps "${qps}" -c "${conns}" -t "${duration}s" -payload-size 1024 \
+        ${extra_flags} \
+        -cacert "${CERT_DIR}/ca.pem" -cert "${CERT_DIR}/client.pem" \
+        -key "${CERT_DIR}/client-key.pem" \
+        -json "${RESULTS}/fortio-${label}.json" \
+        -labels "${label}" \
+        "https://localhost:${INBOUND_PORT}/echo" > "${RESULTS}/fortio-${label}.log" 2>&1
 
     kill "${sampler_pid}" 2>/dev/null || true
 
@@ -239,9 +271,9 @@ HEADER="${RESULTS}/section-00-header.md"
     echo "# interlink proxy benchmark summary"
     echo ""
     echo "Last run: $(date -Iseconds) @ $(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
-    echo "Server: Go echo-server (plain HTTP, ${PROFILE_DELAY:-200ms} delay)"
+    echo "Server: Go echo-server (native, plain HTTP, ${PROFILE_DELAY:-200ms} delay)"
+    echo "Load: Fortio HTTPS + mTLS (native, pinned 1.66.0)"
     echo "Proxy: interlinkd (inbound mTLS → plain TCP)"
-    echo "Load: Fortio HTTPS + mTLS"
     echo ""
 } > "${HEADER}"
 
