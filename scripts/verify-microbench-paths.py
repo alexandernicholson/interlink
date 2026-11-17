@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -24,8 +25,9 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
-def run(command: list[str]) -> str:
-    print("+", " ".join(command), flush=True)
+def run(command: list[str], *, overrides: dict[str, str] | None = None) -> str:
+    configured = " ".join(f"{name}={value}" for name, value in sorted((overrides or {}).items()))
+    print("+", configured, " ".join(command), flush=True)
     try:
         completed = subprocess.run(
             command,
@@ -34,6 +36,7 @@ def run(command: list[str]) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=None if overrides is None else {**os.environ, **overrides},
             timeout=600,
         )
     except subprocess.TimeoutExpired as error:
@@ -59,6 +62,15 @@ def load_inventory() -> dict[str, Any]:
         )
     if configured_budget >= 2_000:
         fail(f"configured per-case benchmark budget is not below 2 seconds: {configured_budget}ms")
+    for variant in inventory.get("coverage_variants", []):
+        if variant["target"] not in inventory["targets"]:
+            fail(f"unknown coverage variant target: {variant['target']}")
+        if not variant["env"] or any(
+            name not in {"INTERLINK_ACCEPTORS", "INTERLINK_COPY_BUF_SIZE"}
+            or not isinstance(value, str)
+            for name, value in variant["env"].items()
+        ):
+            fail("coverage variants must configure only the declared runtime knobs")
     return inventory
 
 
@@ -110,7 +122,10 @@ def normalize_source(filename: str) -> str | None:
 
 def collect_coverage() -> dict[str, dict[str, float | int]]:
     run(["rustup", "run", "stable", "cargo", "llvm-cov", "clean", "--workspace"])
-    for target in load_inventory()["targets"]:
+    inventory = load_inventory()
+    executions = [{"target": target, "env": None} for target in inventory["targets"]]
+    executions.extend(inventory.get("coverage_variants", []))
+    for execution in executions:
         run(
             [
                 "rustup",
@@ -120,10 +135,11 @@ def collect_coverage() -> dict[str, dict[str, float | int]]:
                 "llvm-cov",
                 "--no-report",
                 "--bench",
-                target,
+                execution["target"],
                 "--",
                 "--test",
-            ]
+            ],
+            overrides=execution["env"],
         )
     run(
         [
@@ -244,6 +260,10 @@ def verify_coverage(
                     f"the locked floor of {maximum_uncovered_functions}"
                 )
     if failures:
+        print(
+            run(["rustup", "run", "stable", "cargo", "llvm-cov", "report", "--show-missing-lines"]),
+            file=sys.stderr,
+        )
         fail("coverage floor failed:\n  " + "\n  ".join(failures))
 
 

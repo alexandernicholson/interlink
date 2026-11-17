@@ -146,8 +146,45 @@ impl ProxyHarness {
         backend_mode: BackendMode,
         inbound_egress: Vec<String>,
     ) -> Self {
-        let (harness, probe) =
+        let expect_closed = !allow
+            || (!inbound_egress.is_empty()
+                && !inbound_egress.iter().any(|subnet| {
+                    subnet
+                        .parse::<ipnet::IpNet>()
+                        .unwrap()
+                        .contains(&std::net::IpAddr::V4(Ipv4Addr::LOCALHOST))
+                }));
+        let (harness, mut probe) =
             Self::start_configured(mux, allow, backend_mode, inbound_egress, 64, None).await;
+        // A bare TCP readiness probe can close before a lazy mux stream sends
+        // SYN. Complete real application I/O and EOF before discarding it.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let write = probe.write_all(b"probe").await;
+            let expected: Option<&[u8]> = match backend_mode {
+                BackendMode::Echo => Some(b"probe"),
+                BackendMode::ReplyAfterEof => Some(b"half-close-ok"),
+                BackendMode::Reset => None,
+            };
+            if expect_closed || expected.is_none() {
+                if let Err(error) = write {
+                    assert_closed(&Err(error), "readiness probe write");
+                }
+                if let Err(error) = probe.shutdown().await {
+                    assert_closed(&Err(error), "readiness probe close");
+                }
+                let mut response = Vec::new();
+                let result = probe.read_to_end(&mut response).await;
+                assert_closed(&result, "readiness probe");
+            } else {
+                write.unwrap();
+                probe.shutdown().await.unwrap();
+                let mut response = Vec::new();
+                probe.read_to_end(&mut response).await.unwrap();
+                assert_eq!(Some(response.as_slice()), expected);
+            }
+        })
+        .await
+        .expect("readiness probe must finish application I/O and EOF");
         drop(probe);
         harness
     }
@@ -360,7 +397,7 @@ impl ProxyHarness {
         Ok(response)
     }
 
-    async fn stop(mut self) {
+    async fn stop(mut self, name: &str) {
         for shutdown in &self.shutdown {
             let _ = shutdown.send(true);
         }
@@ -374,8 +411,8 @@ impl ProxyHarness {
             task.abort();
         }
         result
-            .expect("outbound fixture must finish graceful shutdown")
-            .expect("outbound fixture must not panic");
+            .unwrap_or_else(|error| panic!("outbound fixture {name} shutdown timed out: {error}"))
+            .unwrap_or_else(|error| panic!("outbound fixture {name} panicked: {error}"));
     }
 }
 
@@ -469,15 +506,15 @@ impl OutboundHarness {
         result.map(|_| response.len())
     }
 
-    async fn stop(mut self) {
+    async fn stop(mut self, name: &str) {
         let _ = self.shutdown.send(true);
         let result = tokio::time::timeout(Duration::from_secs(1), &mut self.task).await;
         if result.is_err() {
             self.task.abort();
         }
         result
-            .expect("outbound fixture must finish graceful shutdown")
-            .expect("outbound fixture must not panic");
+            .unwrap_or_else(|error| panic!("outbound fixture {name} shutdown timed out: {error}"))
+            .unwrap_or_else(|error| panic!("outbound fixture {name} panicked: {error}"));
     }
 }
 
@@ -750,18 +787,18 @@ fn bench_proxy_paths(c: &mut Criterion) {
 
     drop(streams);
     runtime.block_on(async {
-        two_tunnel.stop().await;
-        mux.stop().await;
-        halfclose_mux.stop().await;
-        halfclose_legacy.stop().await;
-        reset_mux.stop().await;
-        reset_legacy.stop().await;
-        legacy.stop().await;
-        denied.stop().await;
-        handshake_failure.stop().await;
-        no_upstream.stop().await;
-        saturation.stop().await;
-        egress_denied.stop().await;
+        two_tunnel.stop("two_tunnel").await;
+        mux.stop("mux").await;
+        halfclose_mux.stop("halfclose_mux").await;
+        halfclose_legacy.stop("halfclose_legacy").await;
+        reset_mux.stop("reset_mux").await;
+        reset_legacy.stop("reset_legacy").await;
+        legacy.stop("legacy").await;
+        denied.stop("denied").await;
+        handshake_failure.stop("handshake_failure").await;
+        no_upstream.stop("no_upstream").await;
+        saturation.stop("saturation").await;
+        egress_denied.stop("egress_denied").await;
     });
 }
 

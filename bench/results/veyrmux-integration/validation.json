@@ -72,6 +72,27 @@
     "mux_uncovered_functions": 9,
     "mux_uncovered_lines": 95,
     "production_coverage_floors": "unchanged",
+    "runtime_configuration_coverage": {
+      "target": "data_plane",
+      "cases_per_process": 15,
+      "configured_environment": {
+        "INTERLINK_ACCEPTORS": "1",
+        "INTERLINK_COPY_BUF_SIZE": "4096"
+      },
+      "default_pass_preserved": true,
+      "separate_process": true,
+      "fresh_linux_relay": {
+        "source": "src/proxy/mod.rs",
+        "lines": 256,
+        "covered_lines": 224,
+        "uncovered_lines": 32,
+        "maximum_uncovered_lines": 33,
+        "failed_ci_uncovered_lines": 35,
+        "configured_line_execution_counts": {"109": 1, "464": 21, "466": 21}
+      },
+      "fixture_readiness": "Probe payload and EOF validated before timing; shutdown diagnostics identify the fixture.",
+      "failure_diagnostic_probe": "A temporary zero-uncovered-line limit failed and printed the actual missing-line report."
+    },
     "semantic_paths": {
       "crypto": 20,
       "data_plane": 15,
@@ -103,8 +124,9 @@
     "Cargo.lock": "4758c030cd95f1b9be30618178a119f75f65e0a1fa7c4874a5ef3fd8c906b3ac",
     "Cargo.toml": "c241098f19cbf62549f27745cbb97325bbff7a4b110acdc1aff66316cf61f2c4",
     "Dockerfile": "dfb01191c8157f99af7a2d5d20dc48e207402d52ee10df06c4807588263a55cb",
-    "benches/data_plane.rs": "a4ae281343d2fcb8ddc5eca5c6da494c62fd83e8e7d1e52cd659d1823aa58353",
-    "benches/path_inventory.json": "85220170a63b5e2624563b79b83b5e1d2b64376518f0bc283dbf817927648e00",
+    "benches/data_plane.rs": "fd2a01e36fac784b08a85ce9e6fe9da12f80b8c31bdeab928610d54f52556293",
+    "benches/path_inventory.json": "0cfd0823dbfa2a182dcd7a12fe8a78c4abc94ec188c3da6eedb83d50b6c5ba68",
+    "scripts/verify-microbench-paths.py": "77a05fc61a5d47943cf0e3deb2b261e8bd1daf44e670d5ef04e3524a89cd2b4f",
     "src/proxy/mux.rs": "12730519d829a307e65f9423b6b66824f699e2b59ad2d93c6321c7e2d6900e4e",
     "src/proxy/mux/interop_tests.rs": "ced5c01e53159c418d659b63f8f515bf6852726d34017f644ccb9f5f39d2582d"
   },

@@ -62,6 +62,13 @@ abort. A cap-one, two-stream case verifies two real handshakes and exact bytes;
 a cap-two mutation observed one handshake and failed. This explicitly drives
 pool growth instead of depending on startup-probe or shutdown scheduling.
 
+The coverage gate also replays all 15 data-plane cases in a separate process
+with `INTERLINK_ACCEPTORS=1` and `INTERLINK_COPY_BUF_SIZE=4096`. This drives
+the configured runtime paths: a fresh Linux coverage target reports 32 uncovered
+relay lines, below the unchanged limit of 33 (the failed CI run reported 35).
+Startup now validates the probe response and EOF before timing; shutdown errors
+identify the fixture. Coverage failures print the missing source lines.
+
 **⚠ Performance comparison incomplete.** Matching full-LTO two-proxy benchmark
 binaries built and exercised the existing mux/legacy paths. The measurement
 sequence stopped during a control run before completion; no end-to-end speedup
