@@ -525,10 +525,10 @@ async fn test_mux_high_concurrency() {
     );
 }
 
-/// >512 concurrent streams: a single yamux session caps at max_num_streams=512,
-/// so a single-tunnel-per-peer design fails opens beyond that. This drives 700
-/// concurrent connections through a briefly-held backend to force many streams
-/// live at once, exercising the tunnel pool.
+/// Exceed the default 64-stream application budget on one tunnel. This drives
+/// 700 concurrent connections through a briefly-held backend to keep streams
+/// live and require pool growth, rather than relying on a library's default
+/// protocol stream limit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_mux_beyond_single_session_cap() {
     let _burst_guard = BURST_SERIALIZATION.lock().await;

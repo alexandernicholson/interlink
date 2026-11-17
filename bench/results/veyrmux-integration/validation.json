@@ -1,0 +1,112 @@
+{
+  "change": "Native Tokio Veyrmux integration; no production compatibility adapter.",
+  "container": {
+    "linux_mtls_tests": {
+      "command": "cargo test --locked --test mux_tunnel",
+      "passed": 7,
+      "failed": 0,
+      "largest_concurrent_burst": 700,
+      "nofile_soft": 65536,
+      "nofile_hard": 65536,
+      "initial_resource_failure": "EMFILE with default container limits; descriptor budget corrected only in validation container, no test or production limits reduced"
+    },
+    "final_runtime_image": "passed",
+    "minimum_rust": "1.89",
+    "release_builder": "passed",
+    "runtime_architecture": "aarch64 Linux",
+    "runtime_startup": {
+      "expected_exit_code": 1,
+      "network": "disabled",
+      "observed": "daemon starts and fails closed without configured identity before listeners",
+      "status": "passed"
+    }
+  },
+  "dependency_boundary": {
+    "direct_development_only": [
+      "yamux",
+      "tokio-util compat"
+    ],
+    "normal_dependency_tree_checked": true,
+    "production": "veyrmux native API"
+  },
+  "focused_checks": {
+    "mux_unit_tests_passed": 17,
+    "real_mtls_integration_tests_passed": 7,
+    "rolling_tests": {
+      "concurrent_data_streams": 2,
+      "directions": [
+        "actual outbound pool to stock server",
+        "stock client to actual inbound relay"
+      ],
+      "omitted_requester_shutdown_mutation": "both tests failed at 10-second deadlines in isolated snapshot",
+      "payload_bytes_per_stream": 524288,
+      "verified": [
+        "byte-exact reply and EOF",
+        "independent half-close with live sibling",
+        "acknowledged reset isolation",
+        "same-session follow-up"
+      ]
+    }
+  },
+  "performance": {
+    "baseline_and_candidate_binaries_built": true,
+    "claim": "No interlink end-to-end speedup or regression estimate published. Standalone Veyrmux measurements are not substituted.",
+    "comparison_complete": false,
+    "failure": "measurement sequence exited 101 during control run; diagnostics unavailable; no cause inferred",
+    "method": "existing real two-proxy mux/legacy Criterion cases; matching full LTO, codegen-units=1, mimalloc",
+    "status": "not_established"
+  },
+  "preflight": {
+    "clippy": "all targets; warnings denied",
+    "command": "./scripts/preflight.sh",
+    "deterministic_lifecycle_probe": {
+      "case": "proxy_relay/mux_two_tunnel_concurrent_streams",
+      "live_streams": 2,
+      "per_tunnel_cap": 1,
+      "asserted_tls_connects": 2,
+      "byte_validation": "distinct 64-byte payloads on both held streams",
+      "mutation_proof": "cap two produced one TLS connect and failed the two-connect assertion",
+      "shutdown": "outbound fixture completion awaited before remaining tasks are aborted"
+    },
+    "mux_line_percent": 76.13065326633166,
+    "mux_uncovered_functions": 9,
+    "mux_uncovered_lines": 95,
+    "production_coverage_floors": "unchanged",
+    "semantic_paths": {
+      "crypto": 20,
+      "data_plane": 15,
+      "proxy": 88,
+      "runtime": 63,
+      "total": 186
+    },
+    "status": "passed",
+    "workspace_tests": "passed"
+  },
+  "preserved_contract": {
+    "admission_grace": "unchanged",
+    "alpn": "il/mux/1",
+    "data_split_bytes": 16384,
+    "legacy_non_mux_fallback": "unchanged",
+    "per_stream_authorization": "before outbound open and before inbound relay",
+    "receive_window_bytes": 262144,
+    "stream_count_limits": "existing per-tunnel and global semaphore limits",
+    "wire": "Yamux v0"
+  },
+  "publication_boundary": "Execution endpoints, private paths, raw operational traces and incomplete timing samples are excluded.",
+  "queued_wire_budget": {
+    "behavior": "backpressure; in-progress bytes counted; reset cleanup may add one header per active stream",
+    "bytes": 1048576
+  },
+  "schema_version": 1,
+  "source_file_sha256": {
+    ".dockerignore": "81271c8a293fb6c814227a2d3b8a8b2cdc43f602f35bc4a6c4ecfbd0c3e7f18f",
+    "Cargo.lock": "4758c030cd95f1b9be30618178a119f75f65e0a1fa7c4874a5ef3fd8c906b3ac",
+    "Cargo.toml": "c241098f19cbf62549f27745cbb97325bbff7a4b110acdc1aff66316cf61f2c4",
+    "Dockerfile": "dfb01191c8157f99af7a2d5d20dc48e207402d52ee10df06c4807588263a55cb",
+    "benches/data_plane.rs": "a4ae281343d2fcb8ddc5eca5c6da494c62fd83e8e7d1e52cd659d1823aa58353",
+    "benches/path_inventory.json": "85220170a63b5e2624563b79b83b5e1d2b64376518f0bc283dbf817927648e00",
+    "src/proxy/mux.rs": "12730519d829a307e65f9423b6b66824f699e2b59ad2d93c6321c7e2d6900e4e",
+    "src/proxy/mux/interop_tests.rs": "ced5c01e53159c418d659b63f8f515bf6852726d34017f644ccb9f5f39d2582d"
+  },
+  "veyrmux_revision": "6a3e9f66fb896cc56dc60696d14f774657f1cd04"
+}

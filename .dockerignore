@@ -7,3 +7,5 @@
 !benches/**
 !examples/
 !examples/**
+!test-support/
+!test-support/**

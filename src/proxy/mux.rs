@@ -4,7 +4,7 @@
 //! Multiplexed mTLS tunnels between interlink proxies ("handshake avoidance").
 //!
 //! One mTLS connection per upstream peer carries many application connections
-//! as yamux streams, so the full-handshake crypto (x25519 + ed25519 — ~25 % of
+//! as Yamux v0 streams, so the full-handshake crypto (x25519 + ed25519 — ~25 % of
 //! proxy CPU under churn per the committed flamegraph) is paid once per peer
 //! instead of once per connection.
 //!
@@ -19,11 +19,9 @@
 //! the tunnel's TCP connection (SO_ORIGINAL_DST / default_upstream). Streams
 //! therefore need no per-stream address header.
 //!
-//! Multiplexer: the libp2p-maintained `yamux` crate. (`tokio-yamux` was tried
-//! first and rejected by a size-sweep probe: it deadlocks flow control at
-//! exactly >256 KiB per stream even with an actively reading peer — B14's
-//! "test the documented semantics" check.) The crate is futures-io based;
-//! `tokio_util::compat` bridges to tokio traits at both edges.
+//! Multiplexer: Veyrmux, using the existing Yamux v0 wire format. The transport
+//! and logical streams both implement Tokio I/O directly, without compatibility
+//! adapters on the per-stream relay path.
 //!
 //! Lifecycle (B10):
 //! | state | reader/opener action | exit |
@@ -49,9 +47,8 @@ use dashmap::DashMap;
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
-use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 use tracing::{debug, info, warn};
-use yamux::{Config as YamuxConfig, Connection, Mode};
+use veyrmux::{Config as MuxConfig, Connection, ConnectionError, Mode, Stream};
 
 use crate::common::identity::SpiffeId;
 use crate::common::{constants::mux, error::InterlinkError};
@@ -62,10 +59,10 @@ pub(crate) const ALPN_MUX: &[u8] = b"il/mux/1";
 
 /// A mux stream with tokio I/O traits (what the relay code consumes),
 /// carrying a guard that decrements its tunnel's live-stream counter on drop
-/// so the pool can load-balance and grow. `yamux::Stream` is `Unpin`, so the
+/// so the pool can load-balance and grow. `veyrmux::Stream` is `Unpin`, so the
 /// wrapper delegates without pin projection.
 pub(crate) struct MuxStream {
-    inner: Compat<yamux::Stream>,
+    inner: Stream,
     _guard: LiveGuard,
     _permit: OwnedSemaphorePermit,
 }
@@ -117,16 +114,13 @@ const TUNNEL_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const ADMISSION_GRACE: Duration = Duration::from_millis(250);
 const MAX_PENDING_ADMISSIONS: usize = 64;
 
-/// Fix each stream's receive credit at STREAM_WINDOW. Yamux reserves the
-/// default credit for every possible stream before allocating auto-tune credit;
-/// setting the connection budget to exactly that reservation disables growth.
-/// One extra protocol slot permits accepting and resetting an over-cap stream
-/// instead of triggering yamux's connection-fatal hard stream limit.
-fn yamux_config() -> YamuxConfig {
+/// Reserve fixed 256 KiB receive credit for each protocol stream slot.
+/// One extra slot permits accepting and resetting an over-cap stream instead
+/// of triggering the connection-fatal hard stream limit.
+fn mux_config() -> MuxConfig {
     let hard_cap = mux::TOTAL_STREAMS + 1;
-    let mut config = YamuxConfig::default();
+    let mut config = MuxConfig::default();
     config
-        .set_max_connection_receive_window(None)
         .set_max_num_streams(hard_cap)
         .set_max_connection_receive_window(Some(hard_cap * mux::STREAM_WINDOW as usize));
     config
@@ -139,7 +133,7 @@ pub(crate) fn negotiated_alpn(stream: &tokio_rustls::TlsStream<TcpStream>) -> Op
 
 static TUNNEL_IDS: AtomicU64 = AtomicU64::new(0);
 
-type OpenRequest = oneshot::Sender<Result<yamux::Stream, yamux::ConnectionError>>;
+type OpenRequest = oneshot::Sender<Result<Stream, ConnectionError>>;
 
 /// A live client-side tunnel to one upstream peer.
 #[derive(Clone)]
@@ -207,7 +201,7 @@ impl ReservedTunnel {
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "tunnel closed"))?;
         match rx.await {
             Ok(Ok(stream)) => Ok(MuxStream {
-                inner: stream.compat(),
+                inner: stream,
                 _guard: guard,
                 _permit: permit,
             }),
@@ -326,7 +320,7 @@ impl MuxPool {
     }
 
     /// Register a freshly established client session, add it to the peer's
-    /// pool, and spawn its driver. The driver owns the yamux connection;
+    /// pool, and spawn its driver. The driver owns the mux connection;
     /// its exit (peer closed / I/O error) evicts the tunnel.
     pub(crate) fn register(
         self: &Arc<Self>,
@@ -352,7 +346,7 @@ impl MuxPool {
                 "invalid mux stream cap",
             ));
         }
-        let conn = Connection::new(io.compat(), yamux_config(), Mode::Client);
+        let conn = Connection::new(io, mux_config(), Mode::Client);
         let (open_tx, open_rx) = mpsc::channel::<OpenRequest>(256);
         let tunnel = Tunnel {
             id: TUNNEL_IDS.fetch_add(1, Ordering::Relaxed),
@@ -389,7 +383,7 @@ impl MuxPool {
     }
 }
 
-/// Drive a client-mode yamux connection: serve open requests and pump I/O.
+/// Drive a client-mode mux connection: serve open requests and pump I/O.
 ///
 /// One future polls both the open-request queue and `poll_next_inbound` (the
 /// connection's engine — it must be polled continuously to move any data).
@@ -401,7 +395,7 @@ async fn drive_client<T>(
     live: Arc<std::sync::atomic::AtomicUsize>,
     idle_timeout: Duration,
 ) where
-    T: futures_util::io::AsyncRead + futures_util::io::AsyncWrite + Unpin,
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let mut pending_open: Option<OpenRequest> = None;
     let mut open_queue_closed = false;
@@ -481,7 +475,7 @@ pub(crate) struct TunnelLimits {
 }
 
 /// Reauthorize and reserve both stream budgets before spawning a relay.
-/// On age expiry, reject new streams while continuing to pump yamux until all
+/// On age expiry, reject new streams while continuing to pump the mux until all
 /// existing relays finish, then send GOAWAY via the library's close primitive.
 pub(crate) async fn serve_tunnel(
     tls: tokio_rustls::TlsStream<TcpStream>,
@@ -511,7 +505,7 @@ where
             "invalid per-tunnel stream limit".into(),
         ));
     }
-    let mut conn = Connection::new(io.compat(), yamux_config(), Mode::Server);
+    let mut conn = Connection::new(io, mux_config(), Mode::Server);
     let per_tunnel = Arc::new(Semaphore::new(limits.max_streams_per_tunnel));
     // Each admitted relay owns one permit from each budget. Both guards are
     // moved into its task and released on completion/cancellation; no waiting
@@ -555,7 +549,7 @@ where
                     Some(Err(e)) => return Err(InterlinkError::Protocol(e.to_string())),
                     None => return Ok(()),
                 };
-                // Dropping an open yamux stream sends RST (yamux on_drop_stream).
+                // Dropping an unfinished stream sends RST without closing the tunnel.
                 if draining {
                     drop(stream);
                     continue;
@@ -569,7 +563,7 @@ where
                 // relay. Permits gate RELAY SPAWNING, not the already-created
                 // stream: briefly queue contention rather than reset a valid
                 // replacement while its predecessor's close is in flight.
-                // Keep pumping yamux during this wait so that close can arrive.
+                // Keep pumping the mux during this wait so that close can arrive.
                 match (
                     per_tunnel.clone().try_acquire_owned(),
                     limits.total_streams.clone().try_acquire_owned(),
@@ -601,13 +595,13 @@ where
 }
 
 struct AdmittedStream {
-    stream: yamux::Stream,
+    stream: Stream,
     tunnel_permit: OwnedSemaphorePermit,
     total_permit: OwnedSemaphorePermit,
 }
 
 async fn wait_for_admission(
-    stream: yamux::Stream,
+    stream: Stream,
     per_tunnel: Arc<Semaphore>,
     total_streams: Arc<Semaphore>,
 ) -> Option<AdmittedStream> {
@@ -636,11 +630,11 @@ fn spawn_relay(
     relays.spawn(async move {
         let _tunnel_permit = admitted.tunnel_permit;
         let _total_permit = admitted.total_permit;
-        relay_stream_to_upstream(admitted.stream.compat(), upstream).await;
+        relay_stream_to_upstream(admitted.stream, upstream).await;
     });
 }
 
-async fn relay_stream_to_upstream(mut stream: Compat<yamux::Stream>, upstream: SocketAddr) {
+async fn relay_stream_to_upstream(mut stream: Stream, upstream: SocketAddr) {
     let start = std::time::Instant::now();
     crate::metrics::record_connection_start();
 
@@ -759,13 +753,18 @@ mod tests {
         (stream, backend)
     }
 
-    async fn raw_open(h: &Harness, payload: &[u8]) -> Compat<yamux::Stream> {
+    async fn raw_open(h: &Harness, payload: &[u8]) -> Stream {
         // Deliberately bypass the client budget to model a hostile peer and
         // drive the server's independent reset/policy/drain defenses.
         let (request, response) = oneshot::channel();
         h.tunnel.open_tx.send(request).await.unwrap();
-        let mut stream = response.await.unwrap().unwrap().compat();
-        stream.write_all(payload).await.unwrap();
+        let mut stream = response.await.unwrap().unwrap();
+        if let Err(error) = stream.write_all(payload).await {
+            // Native opens announce SYN eagerly, so a policy/cap rejection
+            // may reset this stream before its first payload write. Callers
+            // still verify EOF, live siblings and subsequent admission.
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        }
         stream
     }
 
@@ -995,7 +994,7 @@ mod tests {
             let live = Arc::new(std::sync::atomic::AtomicUsize::new(1));
             let driver_live = live.clone();
             let driver = tokio::spawn(drive_client(
-                Connection::new(io.compat(), yamux_config(), Mode::Client),
+                Connection::new(io, mux_config(), Mode::Client),
                 rx,
                 driver_live,
                 Duration::from_millis(20),
@@ -1016,12 +1015,12 @@ mod tests {
             let (client, server) = tokio::io::duplex(64 * 1024);
             let (accepted_tx, accepted_rx) = oneshot::channel();
             let server_driver = tokio::spawn(async move {
-                let mut conn = Connection::new(server.compat(), yamux_config(), Mode::Server);
+                let mut conn = Connection::new(server, mux_config(), Mode::Server);
                 let stream = futures_util::future::poll_fn(|cx| conn.poll_next_inbound(cx))
                     .await
                     .unwrap()
                     .unwrap();
-                accepted_tx.send(stream.compat()).unwrap();
+                accepted_tx.send(stream).unwrap();
                 let _next = futures_util::future::poll_fn(|cx| conn.poll_next_inbound(cx)).await;
             });
             let pool = MuxPool::new(64);
@@ -1049,7 +1048,7 @@ mod tests {
                 inbound.read_exact(&mut data).await.unwrap();
                 assert!(data[..window].iter().all(|byte| *byte == 7));
                 assert_eq!(data[window], 8);
-                // Exercise RTT/bandwidth auto-tuning before checking the cap
+                // Exercise repeated credit replenishment before checking the cap
                 // again; merely checking the initial default credit is weaker.
                 let mut training = vec![0; window * 8];
                 inbound.read_exact(&mut training).await.unwrap();
@@ -1064,9 +1063,9 @@ mod tests {
             stream.write_all(&[8]).await.unwrap();
             stream.write_all(&vec![7; window * 8]).await.unwrap();
             trained_rx.await.unwrap();
-            // The final training read may consume credit without polling
-            // again to replenish it. Fill whatever credit remains, rather
-            // than assuming a full window update has already been sent.
+            // A credit announcement can still be in flight when the reader
+            // pauses. Fill the credit currently visible to the sender rather
+            // than assuming the driver has delivered a full window update.
             let payload = vec![7; window * 4];
             let mut filled = 0;
             loop {
@@ -1195,7 +1194,7 @@ mod tests {
         .unwrap();
     }
     #[tokio::test]
-    async fn close_in_flight_is_admitted_within_grace_while_yamux_keeps_pumping() {
+    async fn close_in_flight_is_admitted_within_grace_while_mux_keeps_pumping() {
         timeout(TEST_TIMEOUT, async {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let global = Arc::new(Semaphore::new(1));
@@ -1218,7 +1217,7 @@ mod tests {
             assert_eq!(eof, 0);
             assert_eq!(global.available_permits(), 0);
             // Send FIN only after admission is provably waiting. Blocking the
-            // yamux driver on acquire_owned would prevent this close arriving.
+            // mux driver on acquire_owned would prevent this close arriving.
             finish(first, backend).await;
             let (replacement, backend) = confirm_admitted(replacement, &listener).await;
             finish(replacement, backend).await;
@@ -1374,3 +1373,6 @@ mod tests {
         .unwrap();
     }
 }
+
+#[cfg(test)]
+mod interop_tests;

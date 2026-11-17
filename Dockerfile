@@ -1,8 +1,9 @@
 # Build stage
-FROM rust:1.88-slim-bookworm AS builder
+FROM rust:1.89-slim-bookworm AS builder
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY test-support ./test-support
 # Declared in the manifest ([[bench]]/[[example]] paths) — cargo needs them to parse.
 COPY benches ./benches
 COPY examples ./examples

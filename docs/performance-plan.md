@@ -1,7 +1,12 @@
 # Performance Uplift Plan
 
-Status: **microbenchmark path and profiling pass complete (2026-07-22)** — 147
-declared semantic paths now run through a checked inventory and source-coverage floor;
+Status: **native Veyrmux integration verified (2026-11-17)** — the mux path uses
+Tokio I/O directly, with rolling Yamux compatibility and unchanged ALPN/policy
+boundaries. The current preflight verifies 186 semantic benchmark paths.
+An interlink end-to-end performance improvement has not been established.
+
+Previous milestone: **microbenchmark path and profiling pass complete (2026-07-22)** —
+147 declared semantic paths ran through a checked inventory and source-coverage floor;
 all checked-in Criterion cases use a 100 ms warm-up plus 500 ms measurement window.
 
 Prior status: **R29 resolved (2026-07-08, eleventh round)** — the reported `SO_REUSEPORT`
@@ -19,6 +24,51 @@ Grounded in a full read of the per-connection hot path
 (`src/proxy/tcp.rs`, `src/proxy/outbound.rs`, `src/proxy/handshake.rs`, `src/policy/mod.rs`,
 `src/common/identity.rs`, `src/discovery/dns.rs`, `src/metrics/mod.rs`) and the measured
 results in `bench/results/`.
+
+## Native Veyrmux integration (2026-11-17)
+
+**✓ Native cutover.** `Cargo.toml` pins Veyrmux at
+`6a3e9f66fb896cc56dc60696d14f774657f1cd04`. `src/proxy/mux.rs` now gives the
+connection its Tokio transport directly and relays native `veyrmux::Stream`s.
+Stock Yamux and `tokio-util::compat` are development-only dependencies for
+rolling-version tests; no compatibility adapter remains in the production mux
+path. ALPN `il/mux/1`, wire framing, authentication, per-stream authorization,
+pool reservations, admission grace, per-tunnel/global stream-count limits,
+idle/age drain and legacy fallback are unchanged. DATA splitting remains 16 KiB
+and receive credit 256 KiB. Veyrmux's 1 MiB pending-wire budget applies write
+backpressure rather than increasing credit; reset cleanup may temporarily add
+one header per active stream beyond that budget.
+
+**✓ Behavioral verification.** All 17 mux unit tests and seven two-proxy mTLS
+integration tests pass. The two new tests in `src/proxy/mux/interop_tests.rs`
+exercise the actual outbound pool against a stock Yamux server and a stock
+Yamux client against the actual inbound relay. Each direction covers concurrent
+512 KiB transfers, exact bytes and EOF, independent half-close, reset isolation
+and same-session reuse. Omitting requester shutdown in an isolated mutation made
+both tests fail at their deadlines (A6). Native eager SYN permits rejection
+before the first payload write; rejection tests still require EOF, live siblings
+and subsequent admission rather than requiring a successful rejected write.
+The seven mTLS tests also pass on Linux/AArch64, including the full 700-connection
+case, with a validation-container file-descriptor limit of 65,536; neither test
+concurrency nor production limits were reduced.
+
+**✓ Build and source gates.** The minimum compiler and container builder are
+Rust 1.89, and the container context includes the `test-support` workspace
+member. Full preflight passes strict Clippy, workspace tests and all 186
+microbenchmark paths, without relaxing production coverage floors. The new
+test-only module is explicitly classified as such.
+The data-plane fixture now awaits outbound shutdown instead of racing it with
+abort. A cap-one, two-stream case verifies two real handshakes and exact bytes;
+a cap-two mutation observed one handshake and failed. This explicitly drives
+pool growth instead of depending on startup-probe or shutdown scheduling.
+
+**⚠ Performance comparison incomplete.** Matching full-LTO two-proxy benchmark
+binaries built and exercised the existing mux/legacy paths. The measurement
+sequence stopped during a control run before completion; no end-to-end speedup
+is claimed and no incomplete timing table replaces the existing results.
+Standalone Veyrmux figures are not interlink measurements. Validation and the
+measurement boundary are recorded in
+`bench/results/veyrmux-integration/validation.json`.
 
 ## Microbenchmark path harness and hot-path pass (2026-07-22)
 
@@ -326,11 +376,10 @@ PGO/BOLT usage pointers.
   inside the TLS connect (policy needs the upstream identity from that
   handshake), and an inbound pre-auth loopback dial would re-open the
   dial-oracle the security work closed.
-- **yamux credit batching (row 11) — no-op.** The per-stream window is
-  deliberately fixed at `STREAM_WINDOW` (256 KiB) with the connection
-  window capped at the hard-limit product; the crate exposes no batching
-  knob; the 64 KiB copy buffer already coalesces credit updates to at most
-  one per four chunks.
+- **Credit batching (row 11) — no extra tuning applied.** The earlier Yamux audit
+  found no exposed batching knob with the fixed 256 KiB window. The Veyrmux
+  integration retains that window and its built-in half-window credit batching;
+  no new runtime tuning parameter is introduced.
 
 ### XL designs (sequenced — blocked on Linux hardware, not forgotten)
 

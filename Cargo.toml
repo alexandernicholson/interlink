@@ -6,6 +6,7 @@ resolver = "2"
 name = "interlink"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.89"
 description = "A lightweight, RFC-backed service mesh proxy for cloud-to-edge"
 license = "MIT"
 
@@ -47,8 +48,7 @@ tower = { version = "0.5", features = ["util"] }
 async-trait = "0.1"
 moka = { version = "0.12", features = ["sync"] }
 mimalloc = { version = "0.1", default-features = false }
-yamux = "0.13"
-tokio-util = { version = "0.7.18", features = ["compat"] }
+veyrmux = { git = "https://github.com/alexandernicholson/veyrmux", rev = "6a3e9f66fb896cc56dc60696d14f774657f1cd04" }
 bytes = "1"
 
 [dev-dependencies]
@@ -58,6 +58,8 @@ tokio-test = "0.4"
 quickcheck = "1"
 proptest = "1"
 socket2 = "0.5"
+yamux = "0.13"
+tokio-util = { version = "0.7.18", features = ["compat"] }
 
 [[bench]]
 name = "proxy"
