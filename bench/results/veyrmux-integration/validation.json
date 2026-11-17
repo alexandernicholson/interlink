@@ -50,11 +50,12 @@
   },
   "performance": {
     "baseline_and_candidate_binaries_built": true,
-    "claim": "No interlink end-to-end speedup or regression estimate published. Standalone Veyrmux measurements are not substituted.",
-    "comparison_complete": false,
-    "failure": "measurement sequence exited 101 during control run; diagnostics unavailable; no cause inferred",
-    "method": "existing real two-proxy mux/legacy Criterion cases; matching full LTO, codegen-units=1, mimalloc",
-    "status": "not_established"
+    "claim": "Controlled sequential loopback lifecycle latency measured; no maximum service throughput, cross-host latency or request-p99 claim.",
+    "comparison_artifact": "comparison.json",
+    "comparison_complete": true,
+    "excluded_attempts": "All pilots, shared-network-namespace timings and incomplete generations excluded; live diagnostics observed application-connect failure at the conntrack capacity.",
+    "method": "Fixed ABBAABBA order; four independent blocks per arm; identical full-lifecycle benchmark sources, full LTO, codegen-units=1 and mimalloc; fresh loopback-only network namespace per block.",
+    "status": "measured"
   },
   "preflight": {
     "clippy": "all targets; warnings denied",
@@ -83,6 +84,8 @@
       "separate_process": true,
       "fresh_linux_relay": {
         "source": "src/proxy/mod.rs",
+        "benchmark_harness_sha256": "fd2a01e36fac784b08a85ce9e6fe9da12f80b8c31bdeab928610d54f52556293",
+        "verified_ci_commit": "6d98211c303a76987058f9941f76d130944b7d17",
         "lines": 256,
         "covered_lines": 224,
         "uncovered_lines": 32,
@@ -90,7 +93,7 @@
         "failed_ci_uncovered_lines": 35,
         "configured_line_execution_counts": {"109": 1, "464": 21, "466": 21}
       },
-      "fixture_readiness": "Probe payload and EOF validated before timing; shutdown diagnostics identify the fixture.",
+      "fixture_readiness": "Both listener bindings awaited before application probe; probe payload and EOF validated before timing; shutdown diagnostics identify the fixture.",
       "failure_diagnostic_probe": "A temporary zero-uncovered-line limit failed and printed the actual missing-line report."
     },
     "semantic_paths": {
@@ -124,7 +127,7 @@
     "Cargo.lock": "4758c030cd95f1b9be30618178a119f75f65e0a1fa7c4874a5ef3fd8c906b3ac",
     "Cargo.toml": "c241098f19cbf62549f27745cbb97325bbff7a4b110acdc1aff66316cf61f2c4",
     "Dockerfile": "dfb01191c8157f99af7a2d5d20dc48e207402d52ee10df06c4807588263a55cb",
-    "benches/data_plane.rs": "fd2a01e36fac784b08a85ce9e6fe9da12f80b8c31bdeab928610d54f52556293",
+    "benches/data_plane.rs": "8a41dde42962b3daa5dfb92b179b869ebdf01d6ac4cad24be22e1cdff6c0d8b6",
     "benches/path_inventory.json": "0cfd0823dbfa2a182dcd7a12fe8a78c4abc94ec188c3da6eedb83d50b6c5ba68",
     "scripts/verify-microbench-paths.py": "77a05fc61a5d47943cf0e3deb2b261e8bd1daf44e670d5ef04e3524a89cd2b4f",
     "src/proxy/mux.rs": "12730519d829a307e65f9423b6b66824f699e2b59ad2d93c6321c7e2d6900e4e",

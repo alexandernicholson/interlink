@@ -1,0 +1,2460 @@
+{
+  "blocks": [
+    {
+      "arm": "baseline",
+      "block": "block-01",
+      "cases": {
+        "legacy_16kb": {
+          "largest_batch_mean_ns": 520612.13,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 502599.3444444444,
+              "upper_bound": 511421.3048245614
+            },
+            "point_estimate": 506918.4791666667,
+            "standard_error": 2051.935457039669
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2483581.0,
+            5060931.0,
+            7564763.0,
+            10367386.0,
+            12548765.0,
+            15189334.0,
+            17764153.0,
+            20772020.0,
+            22298839.0,
+            24856209.0,
+            27958282.0,
+            30686729.0,
+            32561937.0,
+            36391872.0,
+            37456624.0,
+            40602066.0,
+            43489738.0,
+            45292328.0,
+            48582727.0,
+            52061213.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "legacy_small": {
+          "largest_batch_mean_ns": 504408.65,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 479748.35,
+              "upper_bound": 488393.34534412954
+            },
+            "point_estimate": 484731.79000000004,
+            "standard_error": 2084.8894781810272
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2482112.0,
+            4841047.0,
+            7192503.0,
+            10088173.0,
+            11971412.0,
+            14399895.0,
+            16712552.0,
+            19434257.0,
+            21871000.0,
+            24965006.0,
+            26324678.0,
+            28630515.0,
+            31728811.0,
+            33844901.0,
+            35459489.0,
+            39499106.0,
+            40951218.0,
+            44094601.0,
+            46421858.0,
+            48535888.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "mux_16kb": {
+          "largest_batch_mean_ns": 280533.67320261436,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 267290.5253968254,
+              "upper_bound": 272621.4432870371
+            },
+            "point_estimate": 268871.5833333334,
+            "standard_error": 1646.5670519965931
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2360455.0,
+            4753990.0,
+            7472224.0,
+            10073615.0,
+            12066560.0,
+            14707216.0,
+            17089921.0,
+            19292082.0,
+            22252270.0,
+            24036941.0,
+            26261319.0,
+            29082003.0,
+            31758179.0,
+            33705495.0,
+            37433484.0,
+            39295733.0,
+            42921652.0,
+            43070730.0,
+            45215160.0,
+            48323765.0
+          ],
+          "raw_batch_iterations": [
+            9.0,
+            18.0,
+            27.0,
+            36.0,
+            45.0,
+            54.0,
+            63.0,
+            72.0,
+            81.0,
+            90.0,
+            99.0,
+            108.0,
+            117.0,
+            126.0,
+            135.0,
+            144.0,
+            153.0,
+            162.0,
+            171.0,
+            180.0
+          ]
+        },
+        "mux_small": {
+          "largest_batch_mean_ns": 299993.775,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 248116.86842105264,
+              "upper_bound": 258747.09460227273
+            },
+            "point_estimate": 252488.34333333332,
+            "standard_error": 3058.226841909429
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2491392.0,
+            4892835.0,
+            7569953.0,
+            10309387.0,
+            12101128.0,
+            14691997.0,
+            17968597.0,
+            19096607.0,
+            22118374.0,
+            25217698.0,
+            28367212.0,
+            35999253.0,
+            37881101.0,
+            38804366.0,
+            37586110.0,
+            41537671.0,
+            45714986.0,
+            47606235.0,
+            46947962.0,
+            50528984.0
+          ],
+          "raw_batch_iterations": [
+            10.0,
+            20.0,
+            30.0,
+            40.0,
+            50.0,
+            60.0,
+            70.0,
+            80.0,
+            90.0,
+            100.0,
+            110.0,
+            120.0,
+            130.0,
+            140.0,
+            150.0,
+            160.0,
+            170.0,
+            180.0,
+            190.0,
+            200.0
+          ]
+        }
+      },
+      "kernel_state": {
+        "after": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 1,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "before": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "network_isolation": "fresh loopback-only namespace; unprivileged process",
+        "transport_counter_deltas": {
+          "Tcp.RetransSegs": 1,
+          "TcpExt.ListenDrops": 0,
+          "TcpExt.ListenOverflows": 0,
+          "TcpExt.TCPSynRetrans": 0,
+          "TcpExt.TCPTimeouts": 0
+        }
+      },
+      "process_elapsed_seconds": 2.8203463153913617,
+      "process_resources_including_setup_teardown": {
+        "major_faults": 0,
+        "max_rss_kib": 51748,
+        "minor_faults": 1371,
+        "system_seconds": 2.397156,
+        "user_seconds": 1.350615
+      }
+    },
+    {
+      "arm": "candidate",
+      "block": "block-02",
+      "cases": {
+        "legacy_16kb": {
+          "largest_batch_mean_ns": 551407.28,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 502564.07999999996,
+              "upper_bound": 513609.5885167464
+            },
+            "point_estimate": 508334.8259615385,
+            "standard_error": 3370.87899309008
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2456332.0,
+            4938205.0,
+            7438706.0,
+            10050465.0,
+            13121990.0,
+            15324929.0,
+            18229460.0,
+            20361103.0,
+            23070597.0,
+            27570364.0,
+            28269304.0,
+            30307559.0,
+            32996735.0,
+            36512119.0,
+            37331767.0,
+            39807288.0,
+            44298636.0,
+            45425353.0,
+            48757024.0,
+            50260491.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "legacy_small": {
+          "largest_batch_mean_ns": 518612.56,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 484877.1798611111,
+              "upper_bound": 496674.30076923076
+            },
+            "point_estimate": 488016.7907894737,
+            "standard_error": 3821.94690756374
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2372704.0,
+            4728111.0,
+            7418616.0,
+            10346197.0,
+            12965314.0,
+            15025158.0,
+            17635477.0,
+            19552854.0,
+            21365584.0,
+            24919647.0,
+            26276659.0,
+            30298509.0,
+            32172118.0,
+            34009728.0,
+            37101422.0,
+            38768987.0,
+            41337347.0,
+            43662782.0,
+            46285162.0,
+            48439971.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "mux_16kb": {
+          "largest_batch_mean_ns": 261750.1894736842,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 235351.45,
+              "upper_bound": 241549.375
+            },
+            "point_estimate": 238681.44553571427,
+            "standard_error": 1801.2989796463332
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2311647.0,
+            4828558.0,
+            6779774.0,
+            9666834.0,
+            11555874.0,
+            13928738.0,
+            16612184.0,
+            19139005.0,
+            21025134.0,
+            23709030.0,
+            27182194.0,
+            28939016.0,
+            31355991.0,
+            33337546.0,
+            36663485.0,
+            39027100.0,
+            41097622.0,
+            41690277.0,
+            49732536.0,
+            47569976.0
+          ],
+          "raw_batch_iterations": [
+            10.0,
+            20.0,
+            30.0,
+            40.0,
+            50.0,
+            60.0,
+            70.0,
+            80.0,
+            90.0,
+            100.0,
+            110.0,
+            120.0,
+            130.0,
+            140.0,
+            150.0,
+            160.0,
+            170.0,
+            180.0,
+            190.0,
+            200.0
+          ]
+        },
+        "mux_small": {
+          "largest_batch_mean_ns": 253803.5,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 237901.18238636362,
+              "upper_bound": 245344.44949494948
+            },
+            "point_estimate": 240785.5909090909,
+            "standard_error": 1884.8614438609568
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2746625.0,
+            5283835.0,
+            7736997.0,
+            11167354.0,
+            13098151.0,
+            16430990.0,
+            18998889.0,
+            20580295.0,
+            24440190.0,
+            26456515.0,
+            28615925.0,
+            31819578.0,
+            35590324.0,
+            37466682.0,
+            39474997.0,
+            41827133.0,
+            44375443.0,
+            48302116.0,
+            50814707.0,
+            51639354.0
+          ],
+          "raw_batch_iterations": [
+            11.0,
+            22.0,
+            33.0,
+            44.0,
+            55.0,
+            66.0,
+            77.0,
+            88.0,
+            99.0,
+            110.0,
+            121.0,
+            132.0,
+            143.0,
+            154.0,
+            165.0,
+            176.0,
+            187.0,
+            198.0,
+            209.0,
+            220.0
+          ]
+        }
+      },
+      "kernel_state": {
+        "after": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "before": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "network_isolation": "fresh loopback-only namespace; unprivileged process",
+        "transport_counter_deltas": {
+          "Tcp.RetransSegs": 0,
+          "TcpExt.ListenDrops": 0,
+          "TcpExt.ListenOverflows": 0,
+          "TcpExt.TCPSynRetrans": 0,
+          "TcpExt.TCPTimeouts": 0
+        }
+      },
+      "process_elapsed_seconds": 2.820169539190829,
+      "process_resources_including_setup_teardown": {
+        "major_faults": 0,
+        "max_rss_kib": 57264,
+        "minor_faults": 1371,
+        "system_seconds": 2.69766,
+        "user_seconds": 1.316905
+      }
+    },
+    {
+      "arm": "candidate",
+      "block": "block-03",
+      "cases": {
+        "legacy_16kb": {
+          "largest_batch_mean_ns": 593588.975,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 501887.43846153846,
+              "upper_bound": 520223.3
+            },
+            "point_estimate": 509623.9823529412,
+            "standard_error": 4897.039793932101
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2497613.0,
+            5233756.0,
+            7618491.0,
+            11114575.0,
+            12926775.0,
+            15021128.0,
+            17561369.0,
+            23743559.0,
+            24778900.0,
+            26546912.0,
+            27513926.0,
+            31431188.0,
+            32631396.0,
+            35217394.0,
+            37622198.0,
+            41187871.0,
+            43464628.0,
+            46152295.0,
+            47220425.0,
+            50553504.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "legacy_small": {
+          "largest_batch_mean_ns": 577030.2,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 487989.32045454544,
+              "upper_bound": 498277.13611111115
+            },
+            "point_estimate": 492710.18666666665,
+            "standard_error": 2267.0026270600806
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2885151.0,
+            4931036.0,
+            7161893.0,
+            9650345.0,
+            12153307.0,
+            14471693.0,
+            17515501.0,
+            19959882.0,
+            22390075.0,
+            25121482.0,
+            26904652.0,
+            29208189.0,
+            32211257.0,
+            36704863.0,
+            36923758.0,
+            39283933.0,
+            41971079.0,
+            44910579.0,
+            46745097.0,
+            47970785.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "mux_16kb": {
+          "largest_batch_mean_ns": 269713.105,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 240992.73863636365,
+              "upper_bound": 245741.09833333333
+            },
+            "point_estimate": 242772.98245614034,
+            "standard_error": 1272.0179917020662
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2323037.0,
+            4870276.0,
+            7293901.0,
+            9729522.0,
+            12516567.0,
+            14418935.0,
+            17747533.0,
+            20040461.0,
+            23297871.0,
+            23211083.0,
+            26497353.0,
+            28667155.0,
+            31500966.0,
+            33781364.0,
+            37108992.0,
+            38576072.0,
+            39696712.0,
+            43936005.0,
+            46059027.0,
+            53942621.0
+          ],
+          "raw_batch_iterations": [
+            10.0,
+            20.0,
+            30.0,
+            40.0,
+            50.0,
+            60.0,
+            70.0,
+            80.0,
+            90.0,
+            100.0,
+            110.0,
+            120.0,
+            130.0,
+            140.0,
+            150.0,
+            160.0,
+            170.0,
+            180.0,
+            190.0,
+            200.0
+          ]
+        },
+        "mux_small": {
+          "largest_batch_mean_ns": 302416.7,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 235059.40555555554,
+              "upper_bound": 241832.5649797571
+            },
+            "point_estimate": 237967.9601190476,
+            "standard_error": 1674.174644814259
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            3024167.0,
+            4695152.0,
+            7002478.0,
+            9179957.0,
+            11721370.0,
+            13856519.0,
+            17384474.0,
+            19447407.0,
+            21480380.0,
+            23318281.0,
+            26531243.0,
+            28580555.0,
+            31418239.0,
+            33287048.0,
+            36674464.0,
+            38724788.0,
+            40399902.0,
+            42365018.0,
+            45977410.0,
+            47435949.0
+          ],
+          "raw_batch_iterations": [
+            10.0,
+            20.0,
+            30.0,
+            40.0,
+            50.0,
+            60.0,
+            70.0,
+            80.0,
+            90.0,
+            100.0,
+            110.0,
+            120.0,
+            130.0,
+            140.0,
+            150.0,
+            160.0,
+            170.0,
+            180.0,
+            190.0,
+            200.0
+          ]
+        }
+      },
+      "kernel_state": {
+        "after": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "before": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "network_isolation": "fresh loopback-only namespace; unprivileged process",
+        "transport_counter_deltas": {
+          "Tcp.RetransSegs": 0,
+          "TcpExt.ListenDrops": 0,
+          "TcpExt.ListenOverflows": 0,
+          "TcpExt.TCPSynRetrans": 0,
+          "TcpExt.TCPTimeouts": 0
+        }
+      },
+      "process_elapsed_seconds": 2.7695746747776866,
+      "process_resources_including_setup_teardown": {
+        "major_faults": 0,
+        "max_rss_kib": 60160,
+        "minor_faults": 1379,
+        "system_seconds": 2.568278,
+        "user_seconds": 1.369681
+      }
+    },
+    {
+      "arm": "baseline",
+      "block": "block-04",
+      "cases": {
+        "legacy_16kb": {
+          "largest_batch_mean_ns": 541203.15,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 506712.38147058827,
+              "upper_bound": 515612.31666666665
+            },
+            "point_estimate": 512391.6928571429,
+            "standard_error": 2873.7014036347773
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2544450.0,
+            5153228.0,
+            7885385.0,
+            10824063.0,
+            13063252.0,
+            15470135.0,
+            17955668.0,
+            20119019.0,
+            22466174.0,
+            26691338.0,
+            28262145.0,
+            30705858.0,
+            34264300.0,
+            34914833.0,
+            38666510.0,
+            39870826.0,
+            43083419.0,
+            44976347.0,
+            48297565.0,
+            50656101.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "legacy_small": {
+          "largest_batch_mean_ns": 531179.4,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 488430.15343137254,
+              "upper_bound": 494207.05965909094
+            },
+            "point_estimate": 490242.675,
+            "standard_error": 1546.1627723650772
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2347685.0,
+            5311794.0,
+            7374358.0,
+            9773332.0,
+            12065019.0,
+            14964679.0,
+            17205959.0,
+            19601392.0,
+            21569219.0,
+            25327775.0,
+            27155435.0,
+            29309057.0,
+            32424311.0,
+            34126344.0,
+            37192060.0,
+            39574315.0,
+            41511962.0,
+            44015483.0,
+            45837103.0,
+            49045055.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "mux_16kb": {
+          "largest_batch_mean_ns": 296708.7555555556,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 265519.32523148146,
+              "upper_bound": 272294.34814814816
+            },
+            "point_estimate": 268606.2663398693,
+            "standard_error": 1512.8614671562718
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2413563.0,
+            4721491.0,
+            7197902.0,
+            9662726.0,
+            12325292.0,
+            15063327.0,
+            16199695.0,
+            18117753.0,
+            21374834.0,
+            26703788.0,
+            27957244.0,
+            29036534.0,
+            31403219.0,
+            33210230.0,
+            36543598.0,
+            38080755.0,
+            41126932.0,
+            45033825.0,
+            48538150.0,
+            48398923.0
+          ],
+          "raw_batch_iterations": [
+            9.0,
+            18.0,
+            27.0,
+            36.0,
+            45.0,
+            54.0,
+            63.0,
+            72.0,
+            81.0,
+            90.0,
+            99.0,
+            108.0,
+            117.0,
+            126.0,
+            135.0,
+            144.0,
+            153.0,
+            162.0,
+            171.0,
+            180.0
+          ]
+        },
+        "mux_small": {
+          "largest_batch_mean_ns": 278558.0714285714,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 251940.62166666667,
+              "upper_bound": 270411.88749999995
+            },
+            "point_estimate": 259311.85512820515,
+            "standard_error": 5205.970630607756
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2648588.0,
+            5414101.0,
+            7577572.0,
+            10016496.0,
+            12257943.0,
+            15705170.0,
+            19499065.0,
+            21609498.0,
+            24373972.0,
+            25429492.0,
+            26866874.0,
+            32890519.0,
+            33393214.0,
+            35655352.0,
+            36710764.0,
+            43980743.0,
+            46688101.0,
+            47756690.0,
+            47025380.0,
+            50259102.0
+          ],
+          "raw_batch_iterations": [
+            10.0,
+            20.0,
+            30.0,
+            40.0,
+            50.0,
+            60.0,
+            70.0,
+            80.0,
+            90.0,
+            100.0,
+            110.0,
+            120.0,
+            130.0,
+            140.0,
+            150.0,
+            160.0,
+            170.0,
+            180.0,
+            190.0,
+            200.0
+          ]
+        }
+      },
+      "kernel_state": {
+        "after": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "before": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "network_isolation": "fresh loopback-only namespace; unprivileged process",
+        "transport_counter_deltas": {
+          "Tcp.RetransSegs": 0,
+          "TcpExt.ListenDrops": 0,
+          "TcpExt.ListenOverflows": 0,
+          "TcpExt.TCPSynRetrans": 0,
+          "TcpExt.TCPTimeouts": 0
+        }
+      },
+      "process_elapsed_seconds": 2.819587734527886,
+      "process_resources_including_setup_teardown": {
+        "major_faults": 0,
+        "max_rss_kib": 51536,
+        "minor_faults": 1337,
+        "system_seconds": 2.362332,
+        "user_seconds": 1.392463
+      }
+    },
+    {
+      "arm": "baseline",
+      "block": "block-05",
+      "cases": {
+        "legacy_16kb": {
+          "largest_batch_mean_ns": 580896.2,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 499675.925,
+              "upper_bound": 512488.6657342657
+            },
+            "point_estimate": 501512.30555555556,
+            "standard_error": 3613.5190177376726
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2904481.0,
+            5169418.0,
+            7957702.0,
+            9986766.0,
+            13840771.0,
+            15235082.0,
+            17408502.0,
+            20000542.0,
+            22541192.0,
+            25243007.0,
+            28132019.0,
+            30126554.0,
+            33376595.0,
+            35040609.0,
+            37014505.0,
+            40007173.0,
+            42115256.0,
+            44512289.0,
+            47314743.0,
+            51856228.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "legacy_small": {
+          "largest_batch_mean_ns": 516962.4666666667,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 487994.57,
+              "upper_bound": 496814.5892857143
+            },
+            "point_estimate": 491474.5777777778,
+            "standard_error": 2240.8489012028367
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2458842.0,
+            4828918.0,
+            7754437.0,
+            9918279.0,
+            12811018.0,
+            14763555.0,
+            17420033.0,
+            20166247.0,
+            22103134.0,
+            24496557.0,
+            26361888.0,
+            29163480.0,
+            31592383.0,
+            35271904.0,
+            35947474.0,
+            39579694.0,
+            43007881.0,
+            44154039.0,
+            46090997.0,
+            49047985.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "mux_16kb": {
+          "largest_batch_mean_ns": 307431.13333333336,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 266438.59860298893,
+              "upper_bound": 286345.81172839506
+            },
+            "point_estimate": 273470.05902777775,
+            "standard_error": 4712.103251737197
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2722095.0,
+            4768139.0,
+            7374189.0,
+            10393294.0,
+            13834401.0,
+            15837335.0,
+            17616348.0,
+            19100316.0,
+            23003110.0,
+            24562116.0,
+            28984186.0,
+            27981882.0,
+            30443275.0,
+            33856612.0,
+            37443943.0,
+            39430369.0,
+            44252437.0,
+            43142827.0,
+            45582350.0,
+            46783167.0
+          ],
+          "raw_batch_iterations": [
+            9.0,
+            18.0,
+            27.0,
+            36.0,
+            45.0,
+            54.0,
+            63.0,
+            72.0,
+            81.0,
+            90.0,
+            99.0,
+            108.0,
+            117.0,
+            126.0,
+            135.0,
+            144.0,
+            153.0,
+            162.0,
+            171.0,
+            180.0
+          ]
+        },
+        "mux_small": {
+          "largest_batch_mean_ns": 270689.8714285714,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 248843.73267045454,
+              "upper_bound": 258935.07958333273
+            },
+            "point_estimate": 254952.27000000002,
+            "standard_error": 2697.933588276081
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2515340.0,
+            5116770.0,
+            8011060.0,
+            10243139.0,
+            13437622.0,
+            15435336.0,
+            18948291.0,
+            21613097.0,
+            22265459.0,
+            25406604.0,
+            27490486.0,
+            29336986.0,
+            32185447.0,
+            37248299.0,
+            37774104.0,
+            39643833.0,
+            41725896.0,
+            46895874.0,
+            48645206.0,
+            48892730.0
+          ],
+          "raw_batch_iterations": [
+            10.0,
+            20.0,
+            30.0,
+            40.0,
+            50.0,
+            60.0,
+            70.0,
+            80.0,
+            90.0,
+            100.0,
+            110.0,
+            120.0,
+            130.0,
+            140.0,
+            150.0,
+            160.0,
+            170.0,
+            180.0,
+            190.0,
+            200.0
+          ]
+        }
+      },
+      "kernel_state": {
+        "after": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "before": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "network_isolation": "fresh loopback-only namespace; unprivileged process",
+        "transport_counter_deltas": {
+          "Tcp.RetransSegs": 0,
+          "TcpExt.ListenDrops": 0,
+          "TcpExt.ListenOverflows": 0,
+          "TcpExt.TCPSynRetrans": 0,
+          "TcpExt.TCPTimeouts": 0
+        }
+      },
+      "process_elapsed_seconds": 2.820562858134508,
+      "process_resources_including_setup_teardown": {
+        "major_faults": 0,
+        "max_rss_kib": 53580,
+        "minor_faults": 1366,
+        "system_seconds": 2.292428,
+        "user_seconds": 1.441216
+      }
+    },
+    {
+      "arm": "candidate",
+      "block": "block-06",
+      "cases": {
+        "legacy_16kb": {
+          "largest_batch_mean_ns": 526480.05,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 507727.2006944445,
+              "upper_bound": 511912.4285714285
+            },
+            "point_estimate": 509793.5164835165,
+            "standard_error": 1165.9154232293304
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2460963.0,
+            5094460.0,
+            7892644.0,
+            10529601.0,
+            12439619.0,
+            15509534.0,
+            17943949.0,
+            20231945.0,
+            22164242.0,
+            25557030.0,
+            27961203.0,
+            30761936.0,
+            33158051.0,
+            35662422.0,
+            38322060.0,
+            40648825.0,
+            42363338.0,
+            45660968.0,
+            48546018.0,
+            51290224.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "legacy_small": {
+          "largest_batch_mean_ns": 530686.0666666667,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 486970.2622807018,
+              "upper_bound": 493512.1214285714
+            },
+            "point_estimate": 491203.0983333333,
+            "standard_error": 1879.3426619483662
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2397134.0,
+            4930515.0,
+            7960291.0,
+            9594267.0,
+            12035270.0,
+            14257809.0,
+            17314955.0,
+            19632462.0,
+            22446264.0,
+            24642875.0,
+            27790458.0,
+            29170750.0,
+            32183637.0,
+            34578092.0,
+            36846680.0,
+            39413669.0,
+            41493723.0,
+            43273403.0,
+            46337329.0,
+            49111713.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "mux_16kb": {
+          "largest_batch_mean_ns": 260835.32352941178,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 235728.4619047619,
+              "upper_bound": 240498.9248863635
+            },
+            "point_estimate": 238008.925,
+            "standard_error": 1424.6630661162862
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2408064.0,
+            4790179.0,
+            6915771.0,
+            9466699.0,
+            11858705.0,
+            14013016.0,
+            16478438.0,
+            18629089.0,
+            21882791.0,
+            23884375.0,
+            26419325.0,
+            28730072.0,
+            30440565.0,
+            32795751.0,
+            35407600.0,
+            39563074.0,
+            44342005.0,
+            45423713.0,
+            46145665.0,
+            47350552.0
+          ],
+          "raw_batch_iterations": [
+            10.0,
+            20.0,
+            30.0,
+            40.0,
+            50.0,
+            60.0,
+            70.0,
+            80.0,
+            90.0,
+            100.0,
+            110.0,
+            120.0,
+            130.0,
+            140.0,
+            150.0,
+            160.0,
+            170.0,
+            180.0,
+            190.0,
+            200.0
+          ]
+        },
+        "mux_small": {
+          "largest_batch_mean_ns": 268905.019138756,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 233478.0551948052,
+              "upper_bound": 238760.72549019608
+            },
+            "point_estimate": 235876.32954545453,
+            "standard_error": 1319.6061487740308
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2553919.0,
+            5038282.0,
+            7459376.0,
+            10263228.0,
+            12938875.0,
+            15772918.0,
+            18108433.0,
+            20227386.0,
+            23062547.0,
+            27864416.0,
+            28384732.0,
+            31908265.0,
+            33872661.0,
+            35989943.0,
+            39049040.0,
+            41624068.0,
+            44606577.0,
+            47766870.0,
+            56201149.0,
+            53975590.0
+          ],
+          "raw_batch_iterations": [
+            11.0,
+            22.0,
+            33.0,
+            44.0,
+            55.0,
+            66.0,
+            77.0,
+            88.0,
+            99.0,
+            110.0,
+            121.0,
+            132.0,
+            143.0,
+            154.0,
+            165.0,
+            176.0,
+            187.0,
+            198.0,
+            209.0,
+            220.0
+          ]
+        }
+      },
+      "kernel_state": {
+        "after": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "before": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "network_isolation": "fresh loopback-only namespace; unprivileged process",
+        "transport_counter_deltas": {
+          "Tcp.RetransSegs": 0,
+          "TcpExt.ListenDrops": 0,
+          "TcpExt.ListenOverflows": 0,
+          "TcpExt.TCPSynRetrans": 0,
+          "TcpExt.TCPTimeouts": 0
+        }
+      },
+      "process_elapsed_seconds": 2.8198817260563374,
+      "process_resources_including_setup_teardown": {
+        "major_faults": 0,
+        "max_rss_kib": 57112,
+        "minor_faults": 1390,
+        "system_seconds": 2.552635,
+        "user_seconds": 1.415827
+      }
+    },
+    {
+      "arm": "candidate",
+      "block": "block-07",
+      "cases": {
+        "legacy_16kb": {
+          "largest_batch_mean_ns": 532670.4,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 498960.41333333333,
+              "upper_bound": 511344.2484126984
+            },
+            "point_estimate": 503757.9725,
+            "standard_error": 4375.459780995365
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2408475.0,
+            5326704.0,
+            7434546.0,
+            9973976.0,
+            12853608.0,
+            14754625.0,
+            17897260.0,
+            20059949.0,
+            22490634.0,
+            25574038.0,
+            28076631.0,
+            30041996.0,
+            31775718.0,
+            34619692.0,
+            37441652.0,
+            41000816.0,
+            43386580.0,
+            46020439.0,
+            48946637.0,
+            50601722.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "legacy_small": {
+          "largest_batch_mean_ns": 501556.23076923075,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 480654.4325757576,
+              "upper_bound": 495953.23333333334
+            },
+            "point_estimate": 490457.2333333333,
+            "standard_error": 3622.723735895096
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2450733.0,
+            4962934.0,
+            7434196.0,
+            9486470.0,
+            12099708.0,
+            14283418.0,
+            16714002.0,
+            19669741.0,
+            22336048.0,
+            25013393.0,
+            26397986.0,
+            28880729.0,
+            32601155.0,
+            33482993.0,
+            36807590.0,
+            38147945.0,
+            41655828.0,
+            44385622.0,
+            47644804.0,
+            49686708.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "mux_16kb": {
+          "largest_batch_mean_ns": 264634.4111111111,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 237188.59166666667,
+              "upper_bound": 240629.96029411766
+            },
+            "point_estimate": 239307.85499999998,
+            "standard_error": 856.3149454207737
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2286778.0,
+            4827597.0,
+            7147764.0,
+            9667734.0,
+            11929423.0,
+            14167103.0,
+            17492191.0,
+            21143720.0,
+            23817097.0,
+            25067812.0,
+            26382547.0,
+            28705053.0,
+            30661599.0,
+            32966906.0,
+            35951704.0,
+            37583469.0,
+            40779612.0,
+            42923123.0,
+            44722744.0,
+            47881387.0
+          ],
+          "raw_batch_iterations": [
+            10.0,
+            20.0,
+            30.0,
+            40.0,
+            50.0,
+            60.0,
+            70.0,
+            80.0,
+            90.0,
+            100.0,
+            110.0,
+            120.0,
+            130.0,
+            140.0,
+            150.0,
+            160.0,
+            170.0,
+            180.0,
+            190.0,
+            200.0
+          ]
+        },
+        "mux_small": {
+          "largest_batch_mean_ns": 269095.85,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 235712.76116071426,
+              "upper_bound": 241909.61842105264
+            },
+            "point_estimate": 240112.975,
+            "standard_error": 1722.4783099321098
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2327847.0,
+            4679181.0,
+            7050557.0,
+            10763834.0,
+            12022861.0,
+            14449253.0,
+            16470869.0,
+            19370368.0,
+            21119521.0,
+            23976873.0,
+            25757944.0,
+            28880378.0,
+            32102829.0,
+            33403684.0,
+            36724684.0,
+            37780383.0,
+            41270989.0,
+            46775667.0,
+            45921031.0,
+            47284574.0
+          ],
+          "raw_batch_iterations": [
+            10.0,
+            20.0,
+            30.0,
+            40.0,
+            50.0,
+            60.0,
+            70.0,
+            80.0,
+            90.0,
+            100.0,
+            110.0,
+            120.0,
+            130.0,
+            140.0,
+            150.0,
+            160.0,
+            170.0,
+            180.0,
+            190.0,
+            200.0
+          ]
+        }
+      },
+      "kernel_state": {
+        "after": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "before": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "network_isolation": "fresh loopback-only namespace; unprivileged process",
+        "transport_counter_deltas": {
+          "Tcp.RetransSegs": 0,
+          "TcpExt.ListenDrops": 0,
+          "TcpExt.ListenOverflows": 0,
+          "TcpExt.TCPSynRetrans": 0,
+          "TcpExt.TCPTimeouts": 0
+        }
+      },
+      "process_elapsed_seconds": 2.7194767287001014,
+      "process_resources_including_setup_teardown": {
+        "major_faults": 0,
+        "max_rss_kib": 60068,
+        "minor_faults": 1381,
+        "system_seconds": 2.415534,
+        "user_seconds": 1.463414
+      }
+    },
+    {
+      "arm": "baseline",
+      "block": "block-08",
+      "cases": {
+        "legacy_16kb": {
+          "largest_batch_mean_ns": 553225.73,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 500238.57666666666,
+              "upper_bound": 512897.7571428572
+            },
+            "point_estimate": 506297.9052631579,
+            "standard_error": 3125.864831910356
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2532260.0,
+            5517060.0,
+            7962161.0,
+            9989526.0,
+            12968434.0,
+            15103746.0,
+            18008106.0,
+            19928704.0,
+            22174212.0,
+            24983605.0,
+            27696571.0,
+            29616107.0,
+            33551501.0,
+            35614833.0,
+            37560379.0,
+            40779093.0,
+            42120514.0,
+            46015038.0,
+            48083662.0,
+            55322573.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "legacy_small": {
+          "largest_batch_mean_ns": 496355.83636363636,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 479748.426923077,
+              "upper_bound": 490190.3383928571
+            },
+            "point_estimate": 484905.1789473684,
+            "standard_error": 2418.502135483829
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2338695.0,
+            4778239.0,
+            7123225.0,
+            9516279.0,
+            12044810.0,
+            14789474.0,
+            16683332.0,
+            19424738.0,
+            22120983.0,
+            24600466.0,
+            27299571.0,
+            29197579.0,
+            31308742.0,
+            34329898.0,
+            36806821.0,
+            39196285.0,
+            40440862.0,
+            43573825.0,
+            46089246.0,
+            48466040.0
+          ],
+          "raw_batch_iterations": [
+            5.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            95.0,
+            100.0
+          ]
+        },
+        "mux_16kb": {
+          "largest_batch_mean_ns": 283557.9166666667,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 263622.83134920633,
+              "upper_bound": 268776.1111111111
+            },
+            "point_estimate": 265518.81018518517,
+            "standard_error": 1267.3212540761306
+          },
+          "payload_bytes_per_direction": 16384,
+          "raw_batch_elapsed_ns": [
+            2409623.0,
+            4697012.0,
+            7197522.0,
+            9518509.0,
+            11808557.0,
+            14148332.0,
+            16559086.0,
+            19108796.0,
+            21503601.0,
+            24573675.0,
+            26711817.0,
+            28680595.0,
+            32210957.0,
+            34424766.0,
+            36123640.0,
+            40832340.0,
+            40176119.0,
+            42467214.0,
+            45338147.0,
+            49004207.0
+          ],
+          "raw_batch_iterations": [
+            9.0,
+            18.0,
+            27.0,
+            36.0,
+            45.0,
+            54.0,
+            63.0,
+            72.0,
+            81.0,
+            90.0,
+            99.0,
+            108.0,
+            117.0,
+            126.0,
+            135.0,
+            144.0,
+            153.0,
+            162.0,
+            171.0,
+            180.0
+          ]
+        },
+        "mux_small": {
+          "largest_batch_mean_ns": 276836.5,
+          "median_estimate_ns": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 246874.11333333334,
+              "upper_bound": 260536.29615384614
+            },
+            "point_estimate": 251320.38157894736,
+            "standard_error": 3394.264144437845
+          },
+          "payload_bytes_per_direction": 35,
+          "raw_batch_elapsed_ns": [
+            2768365.0,
+            5404991.0,
+            8175906.0,
+            10499132.0,
+            12609624.0,
+            14318328.0,
+            18656138.0,
+            20021541.0,
+            21872160.0,
+            25644907.0,
+            29376854.0,
+            29477332.0,
+            33617258.0,
+            34367358.0,
+            37215569.0,
+            38194123.0,
+            42293840.0,
+            43445879.0,
+            47707872.0,
+            50309340.0
+          ],
+          "raw_batch_iterations": [
+            10.0,
+            20.0,
+            30.0,
+            40.0,
+            50.0,
+            60.0,
+            70.0,
+            80.0,
+            90.0,
+            100.0,
+            110.0,
+            120.0,
+            130.0,
+            140.0,
+            150.0,
+            160.0,
+            170.0,
+            180.0,
+            190.0,
+            200.0
+          ]
+        }
+      },
+      "kernel_state": {
+        "after": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "before": {
+          "conntrack_count": 0,
+          "conntrack_maximum": 65536,
+          "loss_counters": {
+            "Tcp.RetransSegs": 0,
+            "TcpExt.ListenDrops": 0,
+            "TcpExt.ListenOverflows": 0,
+            "TcpExt.TCPSynRetrans": 0,
+            "TcpExt.TCPTimeouts": 0
+          }
+        },
+        "network_isolation": "fresh loopback-only namespace; unprivileged process",
+        "transport_counter_deltas": {
+          "Tcp.RetransSegs": 0,
+          "TcpExt.ListenDrops": 0,
+          "TcpExt.ListenOverflows": 0,
+          "TcpExt.TCPSynRetrans": 0,
+          "TcpExt.TCPTimeouts": 0
+        }
+      },
+      "process_elapsed_seconds": 2.7700236244127154,
+      "process_resources_including_setup_teardown": {
+        "major_faults": 0,
+        "max_rss_kib": 53724,
+        "minor_faults": 1336,
+        "system_seconds": 2.270514,
+        "user_seconds": 1.417024
+      }
+    }
+  ],
+  "comparison": "Stock Yamux versus native Tokio Veyrmux through two actual proxies and a local TCP echo service.",
+  "criterion": {
+    "confidence_level": 0.95,
+    "measurement_ms": 500,
+    "resamples": 10000,
+    "samples": 20,
+    "significance_level": 0.01,
+    "warmup_ms": 100
+  },
+  "excluded_shared_namespace_diagnostic": {
+    "conntrack_capacity": 65536,
+    "failed_stage": "application TCP connect",
+    "kernel_report": "Connection-tracking table full; packets dropped.",
+    "occupancy_probes": [
+      {
+        "exit": 0,
+        "final_count": 15474,
+        "index": 1,
+        "initial_count": 15,
+        "peak_count": 15474
+      },
+      {
+        "exit": 0,
+        "final_count": 30975,
+        "index": 2,
+        "initial_count": 15474,
+        "peak_count": 30975
+      },
+      {
+        "exit": 0,
+        "final_count": 46478,
+        "index": 3,
+        "initial_count": 30975,
+        "peak_count": 46478
+      },
+      {
+        "exit": 0,
+        "final_count": 61944,
+        "index": 4,
+        "initial_count": 46478,
+        "peak_count": 61944
+      },
+      {
+        "exit": 101,
+        "final_count": 65536,
+        "index": 5,
+        "initial_count": 61944,
+        "peak_count": 65536
+      }
+    ],
+    "timings_used_in_comparison": false
+  },
+  "machine": {
+    "architecture": "x86_64",
+    "available_cpus": 8,
+    "kernel": "7.0.0-29-generic",
+    "memory_total_bytes": 3561676800,
+    "os": "Linux",
+    "reported_logical_cpus": 8
+  },
+  "method": {
+    "aggregate": "median of four independent per-block median point estimates per arm",
+    "confidence": "95% bootstrap intervals retained per block; no aggregate CI or p99 claim",
+    "controls": "legacy cases do not use either multiplexer",
+    "network_isolation": "fresh loopback-only network namespace per block; unprivileged benchmark; zero listener-drop, SYN-retransmission and kernel-timeout deltas; all data-retransmission counts retained without filtering blocks",
+    "order": [
+      "baseline",
+      "candidate",
+      "candidate",
+      "baseline",
+      "baseline",
+      "candidate",
+      "candidate",
+      "baseline"
+    ],
+    "pilot_policy": "all pilots, shared-namespace timings and kernel diagnostics excluded",
+    "runtime_overrides": "none; fixed 65536 process file-descriptor budget; no affinity, allocator or global sysctl changes",
+    "scope": "sequential complete application TCP request lifecycle: connect, payload write, local write-half shutdown, exact echo and peer EOF; one-second request deadline; not maximum service throughput",
+    "timing": "Criterion estimates exclude fixture setup and teardown; process times/resources retained separately"
+  },
+  "process_nofile_soft": 65536,
+  "publication_boundary": "Only sanitized numeric samples, relative source hashes and methodology; no execution endpoints, private paths, controllers or raw operational traces.",
+  "schema_version": 1,
+  "shared_dependency_versions": {
+    "mimalloc": "0.1.52",
+    "rustls": "0.23.46",
+    "tokio": "1.52.3",
+    "tokio-rustls": "0.26.4",
+    "yamux": "0.13.10"
+  },
+  "shared_harness_sha256": "8a41dde42962b3daa5dfb92b179b869ebdf01d6ac4cad24be22e1cdff6c0d8b6",
+  "status": "complete",
+  "summary": {
+    "legacy_16kb": {
+      "abba_group_change_percent": [
+        -0.13257629977799779,
+        0.5696785072398569
+      ],
+      "baseline_median_ns": 506608.19221491227,
+      "block_medians_ns": {
+        "baseline": [
+          506918.4791666667,
+          512391.6928571429,
+          501512.30555555556,
+          506297.9052631579
+        ],
+        "candidate": [
+          508334.8259615385,
+          509623.9823529412,
+          509793.5164835165,
+          503757.9725
+        ]
+      },
+      "blocks_per_arm": 4,
+      "candidate_change_percent": 0.4680563754724476,
+      "candidate_median_ns": 508979.4041572398,
+      "payload_bytes_per_direction": 16384,
+      "samples_per_block": 20
+    },
+    "legacy_small": {
+      "abba_group_change_percent": [
+        0.5900167299397241,
+        0.5408320794392241
+      ],
+      "baseline_median_ns": 487573.9269736842,
+      "block_medians_ns": {
+        "baseline": [
+          484731.79000000004,
+          490242.675,
+          491474.5777777778,
+          484905.1789473684
+        ],
+        "candidate": [
+          488016.7907894737,
+          492710.18666666665,
+          491203.0983333333,
+          490457.2333333333
+        ]
+      },
+      "blocks_per_arm": 4,
+      "candidate_change_percent": 0.6678451573200794,
+      "candidate_median_ns": 490830.1658333333,
+      "payload_bytes_per_direction": 35,
+      "samples_per_block": 20
+    },
+    "mux_16kb": {
+      "abba_group_change_percent": [
+        -10.423391720312104,
+        -11.442182340985473
+      ],
+      "baseline_median_ns": 268738.92483660136,
+      "block_medians_ns": {
+        "baseline": [
+          268871.5833333334,
+          268606.2663398693,
+          273470.05902777775,
+          265518.81018518517
+        ],
+        "candidate": [
+          238681.44553571427,
+          242772.98245614034,
+          238008.925,
+          239307.85499999998
+        ]
+      },
+      "blocks_per_arm": 4,
+      "candidate_change_percent": -11.068093163961768,
+      "candidate_median_ns": 238994.65026785713,
+      "payload_bytes_per_direction": 16384,
+      "samples_per_block": 20
+    },
+    "mux_small": {
+      "abba_group_change_percent": [
+        -6.4569430673801165,
+        -5.981628069192768
+      ],
+      "baseline_median_ns": 253720.30666666667,
+      "block_medians_ns": {
+        "baseline": [
+          252488.34333333332,
+          259311.85512820515,
+          254952.27000000002,
+          251320.38157894736
+        ],
+        "candidate": [
+          240785.5909090909,
+          237967.9601190476,
+          235876.32954545453,
+          240112.975
+        ]
+      },
+      "blocks_per_arm": 4,
+      "candidate_change_percent": -5.785835316062804,
+      "candidate_median_ns": 239040.46755952382,
+      "payload_bytes_per_direction": 35,
+      "samples_per_block": 20
+    }
+  },
+  "validation": {
+    "all_data_retransmission_counts_retained_without_filtering": true,
+    "all_pilots_and_prior_generations_excluded": true,
+    "all_timed_payloads_compared_exactly": true,
+    "application_half_close_and_peer_eof_required": true,
+    "eof_mutation": "Removing client half-close made the request fail at its deadline.",
+    "global_network_settings_changed": false,
+    "request_deadline_seconds": 1
+  },
+  "variants": {
+    "baseline": {
+      "architecture": "x86_64",
+      "binary_sha256": "267d9e5366c4a39dd03adcfd0c7f559e97d4212a165e09429556f1ce35110651",
+      "fresh_root_compile_confirmed": true,
+      "os": "Linux",
+      "profile": {
+        "build_jobs": 2,
+        "codegen_units": 1,
+        "lto": "full",
+        "opt_level": 3,
+        "panic": "Cargo benchmark unwind semantics",
+        "strip": true
+      },
+      "runtime_commit": "f3ccc5781dabdcd0100443e7c86baa858244f9c9",
+      "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)\nbinary: rustc\ncommit-hash: 0ef1bc386059596dada8fb65b50425aab2ea637a\ncommit-date: 2026-11-09\nhost: x86_64-unknown-linux-gnu\nrelease: 1.100.0\nLLVM version: 23.1.5",
+      "source_file_sha256": {
+        "Cargo.lock": "a4b1e3d0e941ff9e0e936da8c9a7ed9ff67d27e4b9bbc918ba68d755b2c11b08",
+        "Cargo.toml": "f7e10981f05c176a17c29a24f934bcd1c613150e98ba792447356d45e4981305",
+        "benches/data_plane.rs": "8a41dde42962b3daa5dfb92b179b869ebdf01d6ac4cad24be22e1cdff6c0d8b6",
+        "benches/support/mod.rs": "db95a3a8772cc119e178278a1f5acab3e186c674f42b81b292b767f1323b9cc3",
+        "src/proxy/mod.rs": "111f46fafdb6768ed4270d639f1df4ccbf66b68e24ea7ebe0ec1a991a8e92855",
+        "src/proxy/mux.rs": "de30f7e3da822b7ac87191ab30f75c6d7643cee805d1abe5bf59925f8f5e5a3f",
+        "src/proxy/outbound.rs": "bb1f4f32e9d7240a15918566da8c8d021816f420be6b7001d44234937253bd7b",
+        "src/proxy/tcp.rs": "ac8fb06f4059a60892de71f8be96d118c65ab6124a60ca7768c62dca30aa5412"
+      },
+      "source_sha256": "e22fbfca17f4c0492156135b6616c4afa1a0621990907a57c9e738b8de92ba7f"
+    },
+    "candidate": {
+      "architecture": "x86_64",
+      "binary_sha256": "8778c372c9502e7608fdbd59e7f9512084d0d858aa7bd56e19ea0cbfc2c97df6",
+      "fresh_root_compile_confirmed": true,
+      "os": "Linux",
+      "profile": {
+        "build_jobs": 2,
+        "codegen_units": 1,
+        "lto": "full",
+        "opt_level": 3,
+        "panic": "Cargo benchmark unwind semantics",
+        "strip": true
+      },
+      "runtime_commit": "bbdf99a9ac40970144a7c5f166447a3da3ff9050",
+      "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)\nbinary: rustc\ncommit-hash: 0ef1bc386059596dada8fb65b50425aab2ea637a\ncommit-date: 2026-11-09\nhost: x86_64-unknown-linux-gnu\nrelease: 1.100.0\nLLVM version: 23.1.5",
+      "source_file_sha256": {
+        "Cargo.lock": "4758c030cd95f1b9be30618178a119f75f65e0a1fa7c4874a5ef3fd8c906b3ac",
+        "Cargo.toml": "c241098f19cbf62549f27745cbb97325bbff7a4b110acdc1aff66316cf61f2c4",
+        "benches/data_plane.rs": "8a41dde42962b3daa5dfb92b179b869ebdf01d6ac4cad24be22e1cdff6c0d8b6",
+        "benches/support/mod.rs": "db95a3a8772cc119e178278a1f5acab3e186c674f42b81b292b767f1323b9cc3",
+        "src/proxy/mod.rs": "111f46fafdb6768ed4270d639f1df4ccbf66b68e24ea7ebe0ec1a991a8e92855",
+        "src/proxy/mux.rs": "12730519d829a307e65f9423b6b66824f699e2b59ad2d93c6321c7e2d6900e4e",
+        "src/proxy/outbound.rs": "bb1f4f32e9d7240a15918566da8c8d021816f420be6b7001d44234937253bd7b",
+        "src/proxy/tcp.rs": "ac8fb06f4059a60892de71f8be96d118c65ab6124a60ca7768c62dca30aa5412"
+      },
+      "source_sha256": "8876a22dba3a168737b14d3f80447eb7d18eddb7c49957641cea52071efa3db1"
+    }
+  },
+  "veyrmux_revision": "6a3e9f66fb896cc56dc60696d14f774657f1cd04"
+}

@@ -3,7 +3,7 @@
 Status: **native Veyrmux integration verified (2026-11-17)** — the mux path uses
 Tokio I/O directly, with rolling Yamux compatibility and unchanged ALPN/policy
 boundaries. The current preflight verifies 186 semantic benchmark paths.
-An interlink end-to-end performance improvement has not been established.
+The controlled Linux end-to-end comparison is complete; its scope and limits are below.
 
 Previous milestone: **microbenchmark path and profiling pass complete (2026-07-22)** —
 147 declared semantic paths ran through a checked inventory and source-coverage floor;
@@ -69,12 +69,49 @@ relay lines, below the unchanged limit of 33 (the failed CI run reported 35).
 Startup now validates the probe response and EOF before timing; shutdown errors
 identify the fixture. Coverage failures print the missing source lines.
 
-**⚠ Performance comparison incomplete.** Matching full-LTO two-proxy benchmark
-binaries built and exercised the existing mux/legacy paths. The measurement
-sequence stopped during a control run before completion; no end-to-end speedup
-is claimed and no incomplete timing table replaces the existing results.
-Standalone Veyrmux figures are not interlink measurements. Validation and the
-measurement boundary are recorded in
+**✓ Controlled end-to-end comparison.** The previous stock-Yamux runtime
+(`f3ccc5781dab`) and native runtime (`bbdf99a9ac40`) used identical benchmark
+sources, full LTO, one codegen unit and mimalloc on Linux/x86-64, eight vCPUs,
+3.3 GiB RAM, Rust 1.100. One benchmark process contains both actual proxies and
+the TCP echo service.
+
+| Path / payload each way | Stock Yamux, µs | Native Veyrmux, µs | Latency change |
+| --- | ---: | ---: | ---: |
+| Mux / 35 B | 253.7 | 239.0 | −5.8% |
+| Mux / 16 KiB | 268.7 | 239.0 | −11.1% |
+| Legacy control / 35 B | 487.6 | 490.8 | +0.7% |
+| Legacy control / 16 KiB | 506.6 | 509.0 | +0.5% |
+
+Values are the median of four independent block medians per arm, in fixed
+ABBAABBA order. Each block uses 100 ms warm-up, 500 ms measurement and 20 samples.
+Both independent ABBA groups show lower mux latency; the legacy controls remain
+roughly flat. Per-block 95% bootstrap intervals and every numeric batch sample
+are retained; no aggregate confidence interval or request p99 is claimed.
+
+Each timed request opens an application TCP connection, writes its payload,
+half-closes, validates the exact echo and requires peer EOF within one second.
+Fixture setup and teardown are untimed. Removing requester half-close in an
+isolated mutation caused the EOF-requiring request to fail at its deadline.
+The fixture now awaits both listener bindings before its application readiness
+probe; waiting only for outbound binding allowed an inbound-startup race.
+
+Shared-network-namespace attempts are excluded: live sampling reached the
+65,536-entry conntrack limit and the next application TCP connect timed out,
+with kernel table-full packet-drop reports. Every final block instead runs
+unprivileged in a fresh loopback-only network namespace. Conntrack counts were
+zero before and after each block; listener-drop, SYN-retransmission and kernel
+timeout deltas were zero. One data retransmission in baseline block one is
+retained, not used to filter blocks. No global network settings were changed.
+
+This measures sequential, single-host completed-connection lifecycles—not
+maximum service throughput, persistent-connection throughput, cross-host latency
+or production NAT overhead. It replaces no historical payload-only timing:
+the harness now includes half-close and EOF, and all pilots and earlier
+incomplete generations are excluded. Standalone Veyrmux figures are not
+substituted for interlink measurements.
+
+Source/binary hashes, controls, samples and methodology:
+`bench/results/veyrmux-integration/comparison.json`. Build and behavioral checks:
 `bench/results/veyrmux-integration/validation.json`.
 
 ## Microbenchmark path harness and hot-path pass (2026-07-22)

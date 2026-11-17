@@ -122,6 +122,19 @@ fn reserve_port() -> u16 {
     listener.local_addr().unwrap().port()
 }
 
+async fn wait_for_listener(addr: SocketAddr) -> TcpStream {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Ok(stream) = TcpStream::connect(addr).await {
+                return stream;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|error| panic!("listener {addr} did not become ready: {error}"))
+}
+
 #[derive(Clone, Copy)]
 enum BackendMode {
     Echo,
@@ -340,17 +353,13 @@ impl ProxyHarness {
 
         let inbound_task = inbound.spawn();
         let outbound_task = outbound.spawn();
+        // Both run tasks bind asynchronously. An outbound listener alone does
+        // not prove that its inbound upstream can accept the first handshake.
+        let inbound_addr = SocketAddr::from(([127, 0, 0, 1], inbound_port));
+        let inbound_probe = wait_for_listener(inbound_addr).await;
+        drop(inbound_probe);
         let outbound_addr = SocketAddr::from(([127, 0, 0, 1], outbound_port));
-        let probe = tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                if let Ok(stream) = TcpStream::connect(outbound_addr).await {
-                    return stream;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        let probe = wait_for_listener(outbound_addr).await;
 
         (
             Self {
@@ -363,11 +372,23 @@ impl ProxyHarness {
     }
 
     async fn request(&self, payload: &'static [u8]) -> std::io::Result<Vec<u8>> {
-        let mut stream = TcpStream::connect(self.outbound_addr).await?;
-        stream.write_all(payload).await?;
-        let mut response = vec![0u8; payload.len()];
-        stream.read_exact(&mut response).await?;
-        Ok(response)
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let mut stream = TcpStream::connect(self.outbound_addr).await?;
+            stream.write_all(payload).await?;
+            // Include the application half-close and peer EOF in every sample.
+            stream.shutdown().await?;
+            let mut response = vec![0u8; payload.len()];
+            stream.read_exact(&mut response).await?;
+            let mut trailing = [0u8; 1];
+            assert_eq!(
+                stream.read(&mut trailing).await?,
+                0,
+                "echo peer must finish without trailing bytes"
+            );
+            Ok(response)
+        })
+        .await
+        .map_err(std::io::Error::other)?
     }
 
     async fn denied(&self) -> std::io::Result<usize> {
@@ -449,16 +470,8 @@ impl OutboundHarness {
         );
         let task = proxy.spawn();
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                if TcpStream::connect(addr).await.is_ok() {
-                    return;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        let probe = wait_for_listener(addr).await;
+        drop(probe);
         Self {
             addr,
             shutdown,
