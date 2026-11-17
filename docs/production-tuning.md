@@ -36,6 +36,7 @@ the affected proxies. Compare repeated trials with the same traffic and resource
 | `INTERLINK_MAX_CONNECTIONS` | `1024` | Admission limit for each proxy direction; must be positive |
 | `INTERLINK_MUX_MAX_STREAMS` | `64` | Concurrent streams per tunnel; must be positive; configure matching caps on both endpoints |
 | `INTERLINK_TUNNEL_MAX_AGE_SECS` | `3600` | Inbound tunnel age limit; stops new admissions and drains existing streams; must be positive |
+| `INTERLINK_WORKER_THREADS` | Available CPUs, limited to 2 | Tokio worker threads; explicit values are clamped to 1–64 |
 
 Relay buffers return to a process-wide free list capped at 128 buffers.
 At the default size, that free list can retain 8 MiB, excluding active buffers,

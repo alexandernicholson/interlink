@@ -16,8 +16,35 @@ use interlink::proxy::outbound::OutboundProxy;
 use interlink::proxy::tcp::TcpProxy;
 use interlink::proxy::{TlsCredentialPaths, TlsCredentialReloader, TlsHandshake};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Default Tokio worker threads, capped by the CPUs available to the process.
+///
+/// Two workers measured lower proxy CPU per request and higher bulk throughput
+/// than one worker per CPU on the shared-host mesh benchmark: idle workers
+/// cost wakeups, cross-worker stealing and per-thread allocator caches.
+const DEFAULT_WORKER_THREADS: usize = 2;
+
+/// `INTERLINK_WORKER_THREADS` (clamped to 1..=64), else the default above.
+fn worker_threads(configured: Option<&str>, available: usize) -> usize {
+    configured
+        .and_then(|value| value.parse::<usize>().ok())
+        .map(|threads| threads.clamp(1, 64))
+        .unwrap_or_else(|| DEFAULT_WORKER_THREADS.min(available.max(1)))
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let available = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let workers = worker_threads(
+        std::env::var("INTERLINK_WORKER_THREADS").ok().as_deref(),
+        available,
+    );
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .enable_all()
+        .build()?
+        .block_on(run(workers))
+}
+
+async fn run(worker_threads: usize) -> Result<(), Box<dyn std::error::Error>> {
     println!("interlinkd v{}", env!("CARGO_PKG_VERSION"));
 
     // 1. Load runtime configuration.
@@ -32,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         inbound_port = config.proxy_inbound_port,
         outbound_port = config.proxy_outbound_port,
         metrics_port = config.metrics_port,
+        worker_threads,
         "starting interlinkd"
     );
 
@@ -233,5 +261,16 @@ mod tests {
             configured_identity(Some(identity)).unwrap().to_uri(),
             identity
         );
+    }
+
+    #[test]
+    fn worker_threads_default_to_two_within_available_cpus() {
+        assert_eq!(worker_threads(None, 8), 2);
+        assert_eq!(worker_threads(None, 1), 1);
+        assert_eq!(worker_threads(None, 0), 1);
+        assert_eq!(worker_threads(Some("not-a-number"), 8), 2);
+        assert_eq!(worker_threads(Some("6"), 2), 6, "explicit counts may exceed the default");
+        assert_eq!(worker_threads(Some("0"), 8), 1);
+        assert_eq!(worker_threads(Some("1000"), 8), 64);
     }
 }
