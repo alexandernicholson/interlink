@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/common.sh
 source "${BENCH_DIR}/scripts/common.sh"
-
-for cluster in interlink-bench-interlink interlink-bench-linkerd interlink-bench-istio; do
-    if kind get clusters 2>/dev/null | grep -q "^${cluster}$"; then
-        log "deleting kind cluster ${cluster}"
-        kind delete cluster --name "${cluster}"
-    fi
+: "${BENCH_CLUSTER_PREFIX:?Cleanup requires a unique capture cluster prefix}"
+status=0
+for mesh in interlink linkerd istio; do
+    kind delete cluster --name "${BENCH_CLUSTER_PREFIX}-${mesh}" || status=1
 done
-
-log "teardown complete"
+exit "${status}"

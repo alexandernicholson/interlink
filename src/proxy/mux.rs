@@ -3,10 +3,9 @@
 
 //! Multiplexed mTLS tunnels between interlink proxies ("handshake avoidance").
 //!
-//! One mTLS connection per upstream peer carries many application connections
-//! as Yamux v0 streams, so the full-handshake crypto (x25519 + ed25519 — ~25 % of
-//! proxy CPU under churn per the committed flamegraph) is paid once per peer
-//! instead of once per connection.
+//! Reusable mTLS tunnels carry application connections as logical Yamux v0
+//! streams through native Tokio Veyrmux. Authentication belongs to each
+//! physical tunnel; stream admission and authorization remain per connection.
 //!
 //! Negotiated via ALPN `il/mux/1` (C7: the decision point is the TLS
 //! handshake's ALPN extension — both sides know the mode before any

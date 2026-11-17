@@ -2,7 +2,7 @@
 
 Binding rules for changes to this repo, especially the proxy hot path. Each rule exists
 because we made the mistake it forbids (2026-07-08 performance work, commits
-`583f3f5..87f5ebe`; see `docs/performance-plan.md` "Review findings", nine rounds —
+`583f3f5..87f5ebe`; the original review log is retained in Git history,
 including mistakes made *during review*, which count too). Cite the rule number in
 review when you see a violation. Rules are append-only — numbers are stable so
 citations stay valid.

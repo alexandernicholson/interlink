@@ -3,8 +3,7 @@
 The proxy-to-proxy transport uses native Tokio
 [Veyrmux](https://github.com/alexandernicholson/veyrmux), with Yamux-v0 wire
 compatibility under ALPN `il/mux/1`. Existing stock-Yamux peers remain compatible;
-peers without mux negotiation use one-to-one relays. See the
-[current measurements](../benchmarks/results.md) for the measured benefit and scope.
+peers without mux negotiation use one-to-one relays.
 
 ## Deployment Topology
 
@@ -77,15 +76,3 @@ production relay I/O stays native Tokio.
 
 <hr />
 
-## Design Targets
-
-These are planning targets, not measured capacity or guarantees. Current and
-historical benchmark results are [documented separately](../benchmarks/results.md).
-
-| Metric | Cloud Target | Edge/Smartphone Target |
-|--------|-------------|----------------------|
-| RSS memory | ≤20 MB active | ≤8 MB idle |
-| CPU | ≤0.3 core active | ≤0.05 core idle |
-| Binary size | ≤5 MB (stripped musl) | ≤5 MB |
-| Startup time | ≤10 ms | ≤10 ms |
-| Connections/sec | 10,000+ | 1,000+ |

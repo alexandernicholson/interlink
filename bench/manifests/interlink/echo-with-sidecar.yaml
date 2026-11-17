@@ -24,8 +24,8 @@ spec:
         bench-role: server
       containers:
         - name: echo-server
-          image: interlink-bench/echo-server:latest
-          imagePullPolicy: IfNotPresent
+          image: interlink-bench/echo-server:${BENCH_IMAGE_TAG}
+          imagePullPolicy: Never
           # App listens on localhost only — all external traffic must come
           # through the sidecar's mTLS inbound.
           args: ["-addr", "127.0.0.1:8081", "-delay", "200ms"]
@@ -34,8 +34,8 @@ spec:
               cpu: "100m"
               memory: "64Mi"
         - name: interlinkd
-          image: interlink-bench/interlinkd:latest
-          imagePullPolicy: IfNotPresent
+          image: interlink-bench/interlinkd:${BENCH_IMAGE_TAG}
+          imagePullPolicy: Never
           env:
             - name: INTERLINK_TRUST_DOMAIN
               value: "bench.local"
@@ -54,7 +54,7 @@ spec:
             - name: INTERLINK_KEY_PATH
               value: "/etc/interlink/certs/server.key"
             - name: INTERLINK_MUX
-              value: "${INTERLINK_MUX}"
+              value: "true"
             - name: INTERLINK_LOG_LEVEL
               value: "warn"
             - name: INTERLINK_MAX_CONNECTIONS

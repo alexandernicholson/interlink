@@ -1,64 +1,94 @@
-# Production tuning guide
+# Tune an interlink deployment
 
-Per-host and build-level tuning for `interlinkd` in production. None of these
-change the proxy's semantics; they change where cycles and wakeups land.
-Measured deltas for the build-level items live in `docs/performance-plan.md`
-(R31 and later) — re-capture them on your own hardware before trusting the
-magnitudes.
+Use these controls to evaluate `interlinkd` under your deployment's traffic.
+Defaults are starting settings, not capacity guarantees or promised performance gains.
 
-## Host tuning (Linux, sidecar-class nodes)
+## Prerequisites
 
-Highest-value items first; all are standard kernel-level moves, no code.
+- A working deployment with valid SPIFFE credentials and the intended authorization policy.
+- Access to proxy metrics, application latency and error counts, and host CPU and memory usage.
+- A rollback path to the previous deployment configuration.
 
-1. **IRQ + acceptor alignment.** Pin the NIC's receive queues to the same
-   cores the proxy's acceptor tasks run on (`INTERLINK_ACCEPTORS`, 1..=16).
-   `SO_REUSEPORT` hashes each connection to one listener; keeping the accept
-   on the same core that receives the packets avoids cross-core cacheline
-   transfer on every segment. With a single-queue NIC or small node, leave
-   `INTERLINK_ACCEPTORS` at 1 — the R29 A/B found multi-acceptor neutral on
-   a lightly loaded host.
-2. **CPU isolation for the proxy cores** (`isolcpus=`, `nohz_full=`): removes
-   scheduler ticks and other tasks from the cores running acceptor/relay
-   work. Typical p99 win on pps-heavy nodes is double-digit percent; measure
-   before and after on your traffic.
-3. **Disable deep C-states** on the proxy cores (`cpupower idle-set -D`):
-   exit latency from deep states shows up as p99 spikes under bursty churn.
-4. **Transparent hugepages** (`madvise` mode) for the daemon: the relay
-   buffer pool and mimalloc arenas touch memory in 64 KiB–2 MiB patterns;
-   THP reduces TLB pressure on bulk profiles.
+## 1. Record a baseline
 
-## Runtime knobs
+Record the source revision, traffic shape, payload sizes, connection reuse,
+concurrency, resource limits, and host configuration before changing a setting.
+Observe application errors and p50/p99 latency alongside proxy CPU and RSS.
 
-| Knob | Default | Effect |
-|---|---|---|
-| `INTERLINK_ACCEPTORS` | 1 | SO_REUSEPORT listeners per proxy port; match to NIC queues/cores |
-| `INTERLINK_COPY_BUF_SIZE` | 64 KiB | Relay buffer size (4 KiB..=1 MiB). 64 KiB won the R30 bulk A/B; larger buffers help only ≥256 KiB payloads |
-| `INTERLINK_MUX_MAX_STREAMS` | 64 | Streams per proxy-to-proxy tunnel before a new tunnel is opened |
-| `INTERLINK_TUNNEL_MAX_AGE_SECS` | (see config) | Tunnel lifetime cap; churn after eviction re-pays one handshake per tunnel |
+From the proxy's network namespace, check the default metrics endpoint:
 
-Relay buffers are pooled and recycled across connections (bounded 8 MiB
-free-list); raising `INTERLINK_COPY_BUF_SIZE` raises the retained ceiling
-proportionally.
+```bash
+curl --fail http://127.0.0.1:4190/metrics
+```
 
-## Build-level
+Expect Prometheus text. If you changed the metrics bind address or port, use that
+address instead. Confirm metrics collection works before interpreting a tuning trial.
 
-- **Release profile** (already set): `opt-level = 3`, fat LTO,
-  `codegen-units = 1`, `panic = "abort"`, mimalloc global allocator,
-  aws-lc-rs crypto provider.
-- **PGO**: `scripts/pgo.sh all` produces a profile-trained `interlinkd`
-  (churn+bulk bench workload as the profile source). Interleave arms when
-  A/B-ing (single-run p99 varies 44–84 ms on identical configs, R29).
-- **BOLT**: `scripts/bolt-optimize.sh` on Linux x86_64 — layout optimization
-  on top of LTO/PGO. Experimental; no repo-verified numbers yet.
+## 2. Change one runtime setting
 
-## SVID signature family
+Set environment variables in the daemon's deployment configuration and restart
+the affected proxies. Compare repeated trials with the same traffic and resource limits.
 
-The proxy verifies whichever chain your CA issues; the test/bench PKI uses
-Ed25519 SVIDs, and ECDSA P-256 is equally supported end-to-end (both are in
-the aws-lc-rs verification set, and the bench suite drives full mTLS
-handshakes with each — see the `tls_handshake` bench arms). Ed25519 signing
-and verification are substantially cheaper than P-256 ECDSA, which matters
-only on full handshakes; resumed handshakes and mux tunnels amortize the
-cost away. Choose the family your CA/interop constraints dictate, not the
-microbenchmark — but if you are issuing fresh, short-lived SVIDs at high
-rotation rates, the issuance-side (CA) cost difference also favors Ed25519.
+| Setting | Default | Behavior |
+| --- | --- | --- |
+| `INTERLINK_ACCEPTORS` | Available CPUs, limited to 2–4 | `SO_REUSEPORT` acceptor tasks per listener; explicit values are clamped to 1–16 |
+| `INTERLINK_COPY_BUF_SIZE` | `65536` bytes | Relay buffer size per direction; clamped to 4 KiB–1 MiB |
+| `INTERLINK_MAX_CONNECTIONS` | `1024` | Admission limit for each proxy direction; must be positive |
+| `INTERLINK_MUX_MAX_STREAMS` | `64` | Concurrent streams per tunnel; must be positive; configure matching caps on both endpoints |
+| `INTERLINK_TUNNEL_MAX_AGE_SECS` | `3600` | Inbound tunnel age limit; stops new admissions and drains existing streams; must be positive |
+
+Relay buffers return to a process-wide free list capped at 128 buffers.
+At the default size, that free list can retain 8 MiB, excluding active buffers,
+allocator overhead, and other proxy state. Increasing the buffer size increases
+the free-list memory budget proportionally.
+
+Do not raise admission limits without checking file descriptors, memory, and
+downstream capacity. A stream cap is not a request-rate limit.
+
+## 3. Verify behavior and keep a rollback
+
+Confirm application success, byte integrity, and expected authorization before
+evaluating latency or resource changes. Watch these counters:
+
+- `interlink_saturation_rejections_total`: admission saturation.
+- `interlink_connection_errors_total`: failed relays.
+- `interlink_handshake_full_total` and `interlink_handshake_resumed_total`: completed handshake kinds.
+- `interlink_mux_tunnels_opened_total` and `interlink_mux_streams_total`: tunnel and stream activity.
+
+Compare counter deltas over the same interval; lifetime totals are not comparable
+across process restarts. Retain a change only when the observed result meets your
+latency, error, and resource requirements. Otherwise restore the previous setting.
+
+## Questions
+
+### Should I tune the Linux host first?
+
+Start with measured CPU, memory, scheduler, and network pressure. Do not apply
+CPU isolation, IRQ affinity, power-state, or huge-page changes without evidence
+that the relevant subsystem limits your workload.
+
+> **Warning:** Host-wide tuning can affect every workload on the node. Trial changes
+> on an isolated node and retain the previous configuration.
+
+### Does the release build need extra optimization scripts?
+
+Use the standard release build. `Cargo.toml` enables optimization level 3, LTO,
+one codegen unit, stripping, and abort-on-panic. The daemon uses mimalloc.
+No additional build-training or binary-rewriting workflow is required.
+
+### Which SVID signature family should I use?
+
+Choose a family supported by your CA and peers. No production performance advantage
+for a signature family is established here.
+
+### Can I use the published comparison to size production?
+
+Use it only within its recorded workload and topology. It does not replace a
+capacity test with your application, network, connection lifecycle, and resource limits.
+
+## Next steps
+
+Read the [service-mesh comparison](../bench/results/comparison.md) and its
+[capture guide](../bench/README.md) for the reproducible comparison workload.
+See [key management](architecture/key-management.md) for credential lifecycle guidance.
+

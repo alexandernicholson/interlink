@@ -17,8 +17,8 @@ spec:
         bench-role: server
       containers:
         - name: echo-server
-          image: interlink-bench/echo-server:latest
-          imagePullPolicy: IfNotPresent
+          image: interlink-bench/echo-server:${BENCH_IMAGE_TAG}
+          imagePullPolicy: Never
           args: ["-addr", ":8080", "-delay", "200ms"]
           ports:
             - containerPort: 8080

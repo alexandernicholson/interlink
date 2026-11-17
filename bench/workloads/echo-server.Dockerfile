@@ -1,11 +1,10 @@
-FROM golang:1.23-alpine AS builder
+FROM golang:1.23.4-alpine3.20 AS builder
 WORKDIR /src
 COPY echo-server.go go.mod ./
-RUN go mod init echo-server 2>/dev/null || true
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o echo-server .
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM scratch
 COPY --from=builder /src/echo-server /echo-server
 EXPOSE 8080
-USER nonroot:nonroot
+USER 65532:65532
 ENTRYPOINT ["/echo-server"]

@@ -34,7 +34,7 @@ cargo run --example frontend -- /tmp/interlink-demo localhost:8443
 
 Expected output:
 
-```
+```text
 mTLS connected! Backend identity = spiffe://example.local/ns/default/sa/backend
 Sent: Hello from frontend!
 Received: backend-echo[frontend]: Hello from frontend!
@@ -42,20 +42,24 @@ Received: backend-echo[frontend]: Hello from frontend!
 
 ### Run the `interlinkd` daemon
 
-```bash
-# Run with defaults (reads env vars and an optional config file)
-cargo run --bin interlinkd
+Use an issued leaf certificate, its private key, and a trusted CA bundle.
+Set `INTERLINK_IDENTITY` to the SPIFFE URI in that leaf certificate:
 
-# Override specific settings
-INTERLINK_INBOUND_PORT=4143 \
-INTERLINK_OUTBOUND_PORT=4140 \
-INTERLINK_ADMIN_PORT=4192 \
-INTERLINK_CA_CERT=/etc/interlink/ca.der \
-INTERLINK_CA_KEY=/etc/interlink/ca.key \
+```bash
+INTERLINK_PROXY_INBOUND_PORT=4143 \
+INTERLINK_PROXY_OUTBOUND_PORT=4140 \
+INTERLINK_METRICS_PORT=4190 \
+INTERLINK_TRUST_DOMAIN=example.local \
+INTERLINK_IDENTITY=spiffe://example.local/ns/default/sa/proxy \
+INTERLINK_CA_BUNDLE_PATH=/etc/interlink/ca-bundle.pem \
+INTERLINK_CERT_PATH=/etc/interlink/tls.crt \
+INTERLINK_KEY_PATH=/etc/interlink/tls.key \
 cargo run --bin interlinkd
 ```
 
-See [Configuration](#configuration) and the full [Quickstart Guide](docs/examples/quickstart.md) for the full set of options.
+Replace the example identity and credential paths with your issued identity and
+files. See [Configuration](#configuration) and the
+[Quickstart Guide](docs/examples/quickstart.md) for deployment steps.
 
 <hr />
 
@@ -72,14 +76,16 @@ Example config file:
 
 ```json
 {
-  "inbound_port": 4143,
-  "outbound_port": 4140,
-  "admin_port": 4192,
-  "ca_cert_path": "/etc/interlink/ca.der",
-  "ca_key_path": "/etc/interlink/ca.key",
-  "node_name": "worker-01",
-  "cluster_domain": "cluster.local",
-  "metrics_enabled": true
+  "trust_domain": "example.local",
+  "identity": "spiffe://example.local/ns/default/sa/proxy",
+  "proxy_inbound_port": 4143,
+  "proxy_outbound_port": 4140,
+  "metrics_port": 4190,
+  "log_level": "info",
+  "max_connections": 1024,
+  "ca_bundle_path": "/etc/interlink/ca-bundle.pem",
+  "cert_path": "/etc/interlink/tls.crt",
+  "key_path": "/etc/interlink/tls.key"
 }
 ```
 
@@ -91,7 +97,7 @@ Environment variable equivalents:
 | `INTERLINK_PROXY_OUTBOUND_PORT` | Outbound transparent proxy port (0 disables) | 4140 |
 | `INTERLINK_METRICS_PORT` | Prometheus metrics port | 4190 |
 | `INTERLINK_TRUST_DOMAIN` | SPIFFE trust domain | `cluster.local` |
-| `INTERLINK_IDENTITY` | This proxy's SPIFFE ID | derived |
+| `INTERLINK_IDENTITY` | This proxy's SPIFFE ID; must match its leaf certificate | required |
 | `INTERLINK_CA_BUNDLE_PATH` | CA bundle (DER or PEM) for peer validation | — |
 | `INTERLINK_CERT_PATH` / `INTERLINK_KEY_PATH` | Leaf cert (DER or PEM) / key (PKCS#8 DER or PEM) | — |
 | `INTERLINK_DEFAULT_UPSTREAM` | Fallback upstream when `SO_ORIGINAL_DST` is unavailable | — |
@@ -174,30 +180,24 @@ Detailed RFC compliance notes live in [`docs/rfcs/`](docs/rfcs/).
 | [RFC 9110](docs/rfcs/rfc-911x-http.md) | HTTP Semantics | Method tokens, status codes, header handling |
 | [RFC 9112](docs/rfcs/rfc-911x-http.md) | HTTP/1.1 | Request-line format, persistent connections |
 | [RFC 9113](docs/rfcs/rfc-911x-http.md) | HTTP/2 | Frame format, multiplexing, connection preface |
-| [RFC 1034](lore/rfc-103x-dns.md) | DNS Concepts | Hierarchical namespace, resolution algorithm |
-| [RFC 1035](lore/rfc-103x-dns.md) | DNS Implementation | Message format, resource records |
+| [RFC 1034](docs/rfcs/rfc-103x-dns.md) | DNS Concepts | Hierarchical namespace, resolution algorithm |
+| [RFC 1035](docs/rfcs/rfc-103x-dns.md) | DNS Implementation | Message format, resource records |
 | [RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html) | TCP | Connection management, congestion control |
 
 <hr />
 
 ## Project Structure
 
-```
+```text
 interlink/
 ├── Cargo.toml              # Dependencies (tokio, rustls, veyrmux, rcgen, hickory-resolver, metrics)
 ├── README.md               # This file
-├── lore/                   # Architecture decisions & RFC plans
-│   ├── ideation.md         # Component breakdown, resource budget
-│   ├── architecture-decisions.md  # ADR-0001 through ADR-0008
-│   ├── rfc-8446-tls1.3.md  # TLS 1.3 implementation plan
-│   ├── rfc-5280-x509.md    # X.509 PKI implementation plan
-│   ├── rfc-911x-http.md    # HTTP/1.1 + HTTP/2 plan
-│   └── rfc-103x-dns.md     # DNS implementation plan
 ├── docs/                   # Documentation
 │   ├── architecture/       # Deployment topologies, network flows
 │   ├── rfcs/               # RFC summaries and compliance
-│   ├── examples/           # Example walkthroughs
-│   └── benchmarks/         # Performance data
+│   └── examples/           # Example walkthroughs
+├── bench/                  # Service-mesh comparison harness
+│   └── results/comparison.md # Sole published performance comparison
 ├── src/
 │   ├── lib.rs              # Module root
 │   ├── common/             # Identity types, errors, constants
@@ -248,9 +248,8 @@ interlink/
 ## Test Suite
 
 ```bash
-./scripts/preflight.sh        # strict clippy, tests, 186 semantic benchmark paths + coverage gate
+./scripts/preflight.sh        # Strict clippy, tests and semantic-path coverage gate
 cargo test                    # Unit and integration suites
-cargo bench                   # Criterion benchmarks
 bash scripts/demo.sh          # End-to-end mTLS demo
 ```
 
@@ -263,55 +262,14 @@ bash scripts/demo.sh          # End-to-end mTLS demo
 
 ## Benchmarks
 
-### Native Veyrmux integration — 2026-11-17
+The [service-mesh comparison](bench/results/comparison.md) is the only published
+performance report. It compares interlink, Linkerd, and Istio ambient using matched
+HTTP load profiles. Read its capture date, source revision, and workload limits
+before applying the results to your deployment.
 
-Matched Linux measurements compare the previous stock-Yamux runtime with native
-Veyrmux. Lower lifecycle latency is better.
-
-| Path / payload each way | Stock Yamux, µs | Native Veyrmux, µs | Change |
-| --- | ---: | ---: | ---: |
-| Mux / 35 B | 253.7 | 239.0 | −5.8% |
-| Mux / 16 KiB | 268.7 | 239.0 | −11.1% |
-| Legacy control / 35 B | 487.6 | 490.8 | +0.7% |
-| Legacy control / 16 KiB | 506.6 | 509.0 | +0.5% |
-
-Eight fixed ABBAABBA blocks, four block medians per arm, on Linux/x86-64 with
-eight vCPUs, Rust 1.100, full LTO, one codegen unit and mimalloc. Both runtimes
-use the same harness; each block runs in a fresh loopback-only network namespace.
-The benchmark process contains two actual proxies and a TCP echo service.
-
-Every timed request includes application TCP connect, payload write, half-close,
-exact echo and peer EOF. Fixtures are untimed. These are sequential completed-
-connection latencies—not maximum throughput, request p99, cross-host latency or
-production NAT overhead.
-
-[Methodology and historical results](docs/benchmarks/results.md) ·
-[Raw samples, per-block intervals and source/binary hashes](bench/results/veyrmux-integration/comparison.json)
-
-### Run benchmarks
-
-```bash
-cargo bench --bench data_plane -- 'proxy_relay/(mux|legacy)_(small|16kb)$'
-cargo bench --bench proxy
-cargo bench --bench runtime
-cargo bench --bench crypto
-```
-
-These commands measure the current checkout; they do not reconstruct the matched
-historical A/B automatically. See the [benchmark guide](bench/README.md) for
-workload selection and reproduction requirements.
-
-### Other workloads and historical captures
-
-| Results | Captured | Scope |
-| --- | --- | --- |
-| [Single inbound-proxy Fortio profiles](bench/local/results/proxy-summary.md) | 2026-11-16 | Pre-cutover HTTP/churn/bulk profiles; not a native-mux A/B |
-| [Service-mesh comparison](bench/results/comparison.md) | 2026-07-08 | HTTP workload across kind workers; interlink/Linkerd sidecars versus Istio ambient |
-| [Primitive microbenchmarks](docs/benchmarks/results.md) | 2026-07-08 | Individual operations, not service latency or capacity |
-
-The earlier −63% proxy-CPU churn result compares multiplexing with per-connection
-handshakes, not Veyrmux with Yamux; see the [performance roadmap](docs/performance-plan.md).
-Do not combine that CPU result with the lifecycle-latency reductions above.
+To collect a complete dataset, follow the [benchmark guide](bench/README.md).
+Internal semantic-path checks remain correctness gates, not additional published
+performance comparisons.
 
 <hr />
 

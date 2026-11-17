@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "revision": "2bf373967de96f235ea9836ca0764aa479975fdf",
+  "run_id": "matched-20261117-2bf373967d",
+  "started_at": "2026-11-17T08:20:50Z",
+  "completed_at": "2026-11-17T08:47:24Z",
+  "duration_seconds": 60,
+  "warmup_seconds": 10,
+  "payload_bytes": 1024,
+  "server_delay_ms": 200,
+  "profiles": [
+    {
+      "qps": 320,
+      "connections": 80
+    },
+    {
+      "qps": 800,
+      "connections": 200
+    },
+    {
+      "qps": 1600,
+      "connections": 400
+    }
+  ],
+  "meshes": [
+    "interlink",
+    "linkerd",
+    "istio-ambient"
+  ],
+  "versions": {
+    "kind": "v0.24.0",
+    "kubernetes": "v1.30.0",
+    "linkerd": "stable-2.14.10",
+    "istio": "1.24.0",
+    "fortio": "1.66.0"
+  },
+  "host": {
+    "system": "Linux",
+    "architecture": "x86_64",
+    "kernel": "7.0.0-29-generic",
+    "logical_cpus": 8,
+    "memory_bytes": 3561676800
+  }
+}

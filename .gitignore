@@ -1,8 +1,9 @@
 /target
 /tmp
 bench/bin/
-# Ephemeral benchmark CA, private keys, and certificates regenerated per run.
-bench/results/**/certs/
+# Python validation helpers produce local interpreter caches.
+__pycache__/
+*.pyc
 *.swp
 *.swo
 .DS_Store

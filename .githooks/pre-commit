@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 # Skip preflight when the staged changes touch no Rust/build-relevant files.
-if git diff --cached --name-only | grep -qvE '^(docs/|lore/|.*\.md$)'; then
+if git diff --cached --name-only | grep -qvE '^(docs/|.*\.md$)'; then
     ./scripts/preflight.sh
 else
     echo "==> docs-only commit, preflight skipped"

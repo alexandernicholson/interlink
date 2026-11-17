@@ -42,14 +42,14 @@ touches as performance- and security-sensitive.
 
 ## Verified protocol facts (don't re-derive, don't contradict without a new probe)
 
-- **Mux tunnels (ALPN `il/mux/1`) amortize handshakes**: 19k churn connections over 1
-  handshake, −63 % proxy CPU vs 1:1 relays. `INTERLINK_MUX=false` removes the ALPN
-  offer; a negotiated protocol is always spoken (offer = flag, negotiation = contract).
-- **Proxy→proxy TLS resumption is production-confirmed**: 99.96 % resumed in the
-  mux-off control arm. (Fortio's 0 % resumed applies to its own client leg only.)
-- **`tokio-yamux` 0.3.18 deadlocks flow control at exactly >256 KiB per stream** even
-  with an actively reading peer (size-sweep probe, fails at 257 KiB). Use the
-  libp2p-maintained `yamux` crate; bridge with `tokio_util::compat`.
+- **Mux tunnels (ALPN `il/mux/1`) amortize handshakes** across logical application
+  connections. `INTERLINK_MUX=false` removes the ALPN offer; a negotiated protocol
+  is always spoken (offer = flag, negotiation = contract).
+- **TLS resumption works on the proxy leg**; distinguish it from the load
+  generator's separate TLS connection when interpreting observations.
+- **Production multiplexing is native Tokio Veyrmux.** Stock Yamux and
+  `tokio_util::compat` are test-only interoperability dependencies. Do not use
+  `tokio-yamux` 0.3.18: its flow control deadlocks beyond 256 KiB per stream.
 - **`SO_ORIGINAL_DST` succeeds for non-redirected connections too** (conntrack has an
   entry for every connection) and returns the proxy's own listen address — always
   guard against self-connect before dialing it.
@@ -83,12 +83,13 @@ touches as performance- and security-sensitive.
   every non-docs commit. Rules D8/D9. `--no-verify` only for docs-only commits, with
   the reason in the commit message.
 - Build/test: `cargo build`, `cargo test` (must be warning-clean; clippy too)
-- Microbenchmarks: `cargo bench --bench proxy`
-- End-to-end benchmarks: `bench/local/run.sh` and `bench/local/run-proxy.sh`
-  (env: `PROFILE_DELAY`, `CHURN=1`, `BULK=1`, `SKIP_STANDARD=1` for targeted reruns);
-  results are committed under `bench/local/results/` as per-profile section files
+- Correctness coverage: `./scripts/verify-microbench-paths.py` exercises the active
+  semantic path inventory and locked coverage floors; it is not a published
+  performance comparison.
+- Service-mesh benchmark: `./bench/run.sh`; the sole published table is
+  `bench/results/comparison.md`, generated from a complete matched capture.
 - Runtime tuning knobs: `INTERLINK_ACCEPTORS` (1..=16), `INTERLINK_COPY_BUF_SIZE`
-  (4 KiB..=1 MiB, default 64 KiB per the R30 A/B)
+  (4 KiB..=1 MiB, default 64 KiB)
 - Profiling: `cargo build --profile profiling` (symbols kept), then
   `perf record --call-graph dwarf -p $(pgrep -x interlinkd)`; note `pgrep -f` can
   match the wrapper shell — use `-x`

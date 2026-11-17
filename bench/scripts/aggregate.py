@@ -1,221 +1,227 @@
 #!/usr/bin/env python3
-"""Aggregate Fortio JSON and metrics CSVs into a comparison table."""
+"""Validate one matched service-mesh capture and generate its comparison table."""
 
+import argparse
+import base64
 import csv
+from datetime import datetime
 import json
-import re
+import math
 import os
 from pathlib import Path
+import re
+import sys
+import tempfile
 
-BENCH_DIR = Path(__file__).resolve().parent.parent
-RESULTS_DIR = BENCH_DIR / "results"
-OUTPUT = RESULTS_DIR / "comparison.md"
-
-MESHES = ["interlink", "interlink-nomux", "linkerd", "istio-ambient"]
-PROFILES = [
-    ("light", 320, 160),
-    ("medium", 3200, 1600),
-    ("heavy", 12800, 6400),
-]
+RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
+MESHES = ("interlink", "linkerd", "istio-ambient")
+VERSION_KEYS = ("kind", "kubernetes", "linkerd", "istio", "fortio")
 
 
-def parse_fortio(path: Path) -> dict:
-    # Robust to non-JSON status lines interleaved into the file (fortio writes a
-    # "Successfully wrote..." line to stdout alongside the JSON).
-    text = path.read_text()
-    dec = json.JSONDecoder()
-    i = 0
-    d = None
-    while True:
-        i = text.find("{", i)
-        if i < 0:
-            break
+def finite(value, label, minimum=0):
+    if isinstance(value, bool):
+        raise ValueError(f"{label}: expected a number")
+    number = float(value)
+    if not math.isfinite(number) or number < minimum:
+        raise ValueError(f"{label}: invalid number")
+    return number
+
+
+def positive_integer(value, label):
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{label}: expected a positive integer")
+    return value
+
+
+def instant(value, label):
+    if not isinstance(value, str):
+        raise ValueError(f"{label}: missing timestamp")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError(f"{label}: timestamp needs a timezone")
+    return parsed.timestamp()
+
+
+def read_capture(directory):
+    capture = json.loads((directory / "capture.json").read_text(encoding="utf-8"))
+    if capture["schema_version"] != 1 or capture["meshes"] != list(MESHES):
+        raise ValueError("capture must contain exactly interlink, linkerd and istio-ambient")
+    if not re.fullmatch(r"[0-9a-f]{40}", capture["revision"]):
+        raise ValueError("capture revision must be a full source commit SHA")
+    if not capture["run_id"] or not isinstance(capture["run_id"], str):
+        raise ValueError("capture needs its run identifier")
+    started = instant(capture["started_at"], "capture start")
+    completed = instant(capture["completed_at"], "capture completion")
+    if completed <= started:
+        raise ValueError("capture completion must follow its start")
+    for key in ("duration_seconds", "warmup_seconds", "payload_bytes", "server_delay_ms"):
+        positive_integer(capture[key], key)
+    profiles = []
+    for profile in capture["profiles"]:
+        profiles.append((
+            positive_integer(profile["qps"], "profile RPS"),
+            positive_integer(profile["connections"], "profile connections"),
+        ))
+    if not profiles or len(set(profiles)) != len(profiles):
+        raise ValueError("capture needs distinct load profiles")
+    for key in VERSION_KEYS:
+        value = capture["versions"][key]
+        if not isinstance(value, str) or not value or any(c in value for c in "\n\r|"):
+            raise ValueError(f"capture needs a printable {key} version")
+    return capture, profiles, started, completed
+
+
+def read_fortio(path):
+    text = path.read_text(encoding="utf-8")
+    decoder = json.JSONDecoder()
+    offset = 0
+    while (offset := text.find("{", offset)) >= 0:
         try:
-            o, e = dec.raw_decode(text, i)
-            if isinstance(o, dict) and "DurationHistogram" in o:
-                d = o
-                break
-            i = e
+            record, end = decoder.raw_decode(text, offset)
         except json.JSONDecodeError:
-            i += 1
-    if d is None:
-        return {"p50": 0, "p90": 0, "p99": 0, "avg": 0, "actual_qps": 0, "errors": -1}
-    hist = d.get("DurationHistogram", {})
-    percentiles = {p["Percentile"]: p["Value"] * 1000 for p in hist.get("Percentiles", [])}
-    return {
-        "p50": percentiles.get(50, 0),
-        "p90": percentiles.get(90, 0),
-        "p99": percentiles.get(99, 0),
-        "avg": hist.get("Avg", 0) * 1000,
-        "actual_qps": d.get("ActualQPS", 0),
-        "measured_on": d.get("StartTime", "").split("T")[0] or "not recorded",
-        "errors": sum(d.get("RetCodes", {}).values()) - d.get("RetCodes", {}).get("200", 0),
-    }
+            offset += 1
+            continue
+        if isinstance(record, dict) and "DurationHistogram" in record:
+            return record
+        offset = end
+    raise ValueError(f"{path.name}: no Fortio result")
 
 
-def aggregate_csv(path: Path) -> dict:
-    cpu_vals = []
-    mem_vals = []
-    if path.exists():
-        with path.open() as f:
-            for row in csv.DictReader(f):
-                try:
-                    cpu_vals.append(float(row.get("cpu_millicores", row.get("cpu_percent", 0))))
-                    mem_vals.append(float(row.get("memory_rss_kb", 0)))
-                except ValueError:
-                    continue
-    # Peak host utilization from the sibling .host.csv — the headroom signal.
-    peak_host = 0.0
-    host_path = path.with_suffix(".host.csv")
-    if host_path.exists():
-        with host_path.open() as f:
-            for row in csv.DictReader(f):
-                try:
-                    peak_host = max(peak_host, float(row.get("host_util_percent", 0)))
-                except ValueError:
-                    continue
-    out = {"avg_cpu": 0, "peak_cpu": 0, "avg_mem": 0, "peak_mem": 0, "peak_host": peak_host}
-    if cpu_vals:
-        out.update(
-            avg_cpu=sum(cpu_vals) / len(cpu_vals),
-            peak_cpu=max(cpu_vals),
-            avg_mem=sum(mem_vals) / len(mem_vals),
-            peak_mem=max(mem_vals),
-        )
-    return out
+def read_metrics(path, columns, started, completed):
+    rows = []
+    with path.open(encoding="utf-8", newline="") as source:
+        reader = csv.DictReader(source)
+        if not reader.fieldnames or not {"timestamp", *columns} <= set(reader.fieldnames):
+            raise ValueError(f"{path.name}: missing metric columns")
+        for row in reader:
+            timestamp = finite(row["timestamp"], f"{path.name} timestamp")
+            values = [finite(row[key], f"{path.name} {key}") for key in columns]
+            if rows and timestamp <= rows[-1][0]:
+                raise ValueError(f"{path.name}: unordered metric timestamps")
+            rows.append((timestamp, values))
+    if len(rows) < 2 or rows[0][0] > started + 3 or rows[-1][0] < completed - 3:
+        raise ValueError(f"{path.name}: metrics do not cover the measured load")
+    measured = [values for timestamp, values in rows if started - 1 <= timestamp <= completed + 1]
+    if len(measured) < 2:
+        raise ValueError(f"{path.name}: missing measured-window samples")
+    return measured
 
 
-# A profile's numbers are trustworthy only if the load actually ran as
-# specified AND the host was not itself the bottleneck. Otherwise latency is
-# queuing-dominated and must not be published as a mesh comparison.
-HOST_SATURATION_PCT = 85.0
-RPS_TOLERANCE = 0.97
+def measured_row(directory, mesh, qps, connections, capture, capture_start, capture_end):
+    label = f"{mesh}-q{qps}-c{connections}"
+    record = read_fortio(directory / mesh / f"fortio-{label}.json")
+    if record["Version"] != capture["versions"]["fortio"]:
+        raise ValueError(f"{label}: load generator version differs from this capture")
+    if finite(record["RequestedQPS"], label) != qps or record["NumThreads"] != connections:
+        raise ValueError(f"{label}: load differs from the capture manifest")
+    if len(base64.b64decode(record["Payload"], validate=True)) != capture["payload_bytes"]:
+        raise ValueError(f"{label}: payload differs from the capture manifest")
+    duration = finite(record["ActualDuration"], f"{label} duration", minimum=1) / 1e9
+    expected_duration = capture["duration_seconds"]
+    if not expected_duration * 0.95 <= duration <= expected_duration * 1.10:
+        raise ValueError(f"{label}: measured duration differs from the capture manifest")
+    started = instant(record["StartTime"], f"{label} start")
+    completed = started + duration
+    if started < capture_start - 1 or completed > capture_end + 1:
+        raise ValueError(f"{label}: result is outside this capture")
+    codes = record["RetCodes"]
+    if not codes or any(type(count) is not int or count < 0 for count in codes.values()):
+        raise ValueError(f"{label}: invalid response counts")
+    if not codes.get("200") or any(count for code, count in codes.items() if code != "200"):
+        raise ValueError(f"{label}: requests failed")
+    achieved = finite(record["ActualQPS"], f"{label} achieved RPS")
+    if achieved < qps * 0.97:
+        raise ValueError(f"{label}: achieved less than 97% of target RPS")
+    histogram = record["DurationHistogram"]
+    if histogram["Count"] != sum(codes.values()):
+        raise ValueError(f"{label}: response and latency counts differ")
+    percentiles = {entry["Percentile"]: finite(entry["Value"], label) * 1000
+                   for entry in histogram["Percentiles"]}
+    p50, p99 = percentiles[50], percentiles[99]
+    if p50 <= 0 or p99 < p50:
+        raise ValueError(f"{label}: invalid latency percentiles")
+    metrics = directory / mesh / f"metrics-{label}.csv"
+    proxy = read_metrics(metrics, ("cpu_millicores", "memory_rss_kb"), started, completed)
+    host = read_metrics(metrics.with_suffix(".host.csv"), ("host_util_percent",), started, completed)
+    if any(memory <= 0 for _, memory in proxy):
+        raise ValueError(f"{label}: missing proxy memory measurements")
+    if max(value[0] for value in host) >= 85:
+        raise ValueError(f"{label}: host CPU reached the 85% saturation limit")
+    return (
+        mesh, qps, achieved, p50, p99,
+        sum(cpu for cpu, _ in proxy) / len(proxy),
+        sum(memory for _, memory in proxy) / len(proxy) / 1024,
+    )
 
 
-def validity(target_rps: int, achieved_rps: float, errors: int, peak_host: float) -> tuple:
-    reasons = []
-    if errors and errors > 0:
-        reasons.append(f"{errors} errors")
-    if target_rps and achieved_rps < RPS_TOLERANCE * target_rps:
-        reasons.append(f"RPS {achieved_rps:.0f}/{target_rps} ({achieved_rps/target_rps*100:.0f}%)")
-    if peak_host >= HOST_SATURATION_PCT:
-        reasons.append(f"host {peak_host:.0f}% CPU")
-    return (not reasons, "; ".join(reasons))
-
-
-def main() -> None:
-    label_re = re.compile(r"fortio-(?P<mesh>.+)-q(?P<qps>\d+)-c(?P<conns>\d+)\.json$")
+def comparison(directory):
+    capture, profiles, started, completed = read_capture(directory)
+    if {path.name for path in directory.iterdir() if path.is_dir()} != set(MESHES):
+        raise ValueError("capture contains missing or unrelated mesh results")
     rows = []
     for mesh in MESHES:
-        mesh_dir = RESULTS_DIR / mesh
-        if not mesh_dir.exists():
-            continue
-        # Discover profiles from the result files (works with any BENCH_PROFILES).
-        found = []
-        for fp in sorted(mesh_dir.glob("fortio-*.json")):
-            m = label_re.search(fp.name)
-            if m:
-                found.append((int(m.group("qps")), int(m.group("conns"))))
-        for qps, conns in sorted(set(found)):
-            profile = f"{qps} rps"
-            label = f"{mesh}-q{qps}-c{conns}"
-            fortio_path = mesh_dir / f"fortio-{label}.json"
-            metrics_path = mesh_dir / f"metrics-{label}.csv"
-            if not fortio_path.exists():
-                continue
-            f = parse_fortio(fortio_path)
-            m = aggregate_csv(metrics_path)
-            ok, why = validity(qps, f["actual_qps"], f["errors"], m.get("peak_host", 0.0))
-            rows.append(
-                {
-                    "mesh": mesh,
-                    "profile": profile,
-                    "measured_on": f.get("measured_on", "not recorded"),
-                    "p50": f"{f['p50']:.2f}",
-                    "p90": f"{f['p90']:.2f}",
-                    "p99": f"{f['p99']:.2f}",
-                    "avg_cpu": f"{m.get('avg_cpu', 0):.1f}",
-                    "peak_cpu": f"{m.get('peak_cpu', 0):.1f}",
-                    "avg_mem": f"{m.get('avg_mem', 0):.1f}",
-                    "peak_mem": f"{m.get('peak_mem', 0):.1f}",
-                    "qps": f"{f['actual_qps']:.1f}",
-                    "errors": str(f["errors"]),
-                    "peak_host": f"{m.get('peak_host', 0.0):.0f}",
-                    "valid": ok,
-                    "why": why,
-                }
-            )
+        expected = {f"fortio-{mesh}-q{qps}-c{connections}.json" for qps, connections in profiles}
+        actual = {path.name for path in (directory / mesh).glob("fortio-*.json")}
+        if actual != expected:
+            raise ValueError(f"{mesh}: incomplete capture or stale profiles")
+        for qps, connections in profiles:
+            rows.append(measured_row(directory, mesh, qps, connections, capture, started, completed))
+    revision = capture["revision"]
+    versions = capture["versions"]
+    lines = [
+        "# Service Mesh Benchmark Comparison",
+        "",
+        f"Captured {capture['completed_at']}. Interlink revision "
+        f"[`{revision[:12]}`](https://github.com/alexandernicholson/interlink/commit/{revision}).",
+        "",
+        f"HTTP echo: {capture['payload_bytes']:,} B payload, {capture['server_delay_ms']} ms "
+        f"application delay, {capture['duration_seconds']} s measured per profile. "
+        "Client and server use separate workers in the same three-node kind layout. "
+        "Interlink and Linkerd use sidecars; Istio ambient uses node-level ztunnel.",
+        "",
+        "Pinned versions: " + ", ".join(f"{key.replace('_', '-')} {versions[key]}" for key in VERSION_KEYS) + ".",
+        "",
+        "| Mesh | Target RPS | Achieved RPS | p50 ms | p99 ms | Proxy CPU (m) | Memory (MiB) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for mesh, qps, achieved, p50, p99, cpu, memory in rows:
+        lines.append(f"| {mesh} | {qps} | {achieved:.1f} | {p50:.2f} | {p99:.2f} | {cpu:.1f} | {memory:.1f} |")
+    lines.extend([
+        "",
+        "Only complete matched captures with zero request errors, at least 97% of target RPS "
+        "and host CPU below 85% are published. CPU and RSS sum the proxy containers "
+        "using kubelet statistics; these are not per-connection allocations.",
+        "",
+        "[Capture metadata](capture.json) · [Run the comparison](../README.md)",
+        "",
+    ])
+    return "\n".join(lines)
 
-    def mem_mb(kb: str) -> str:
-        try:
-            return f"{float(kb) / 1024:.1f}"
-        except ValueError:
-            return kb
 
-    with OUTPUT.open("w") as f:
-        f.write("# Service Mesh Benchmark Comparison\n\n")
-        dates = ", ".join(sorted({r["measured_on"] for r in rows})) or "not recorded"
-        f.write(f"HTTP workload comparison. Measurement dates from Fortio `StartTime`: {dates}.\n\n")
-        f.write("For the separate native Veyrmux-versus-stock-Yamux lifecycle result, see "
-                "[Benchmark Results](../../docs/benchmarks/results.md). "
-                "Regenerating this HTTP report does not recapture that runtime A/B; "
-                "use the dates and raw inputs below to identify these measurements.\n\n")
-        captured_meshes = {r["mesh"] for r in rows}
-        sources = ", ".join(f"[{mesh}]({mesh}/)" for mesh in MESHES if mesh in captured_meshes)
-        f.write("Generated by `bench/scripts/aggregate.py` from Fortio JSON and metrics CSVs: "
-                f"{sources or 'none found'}. "
-                "Each Fortio file records its start time, duration, connection count and load settings.\n\n")
-        f.write("Harness topology: the same 3-node kind layout "
-                "(`bench/manifests/kind-3node.yaml`) in a separate cluster per mesh, "
-                "with load generator and echo server on separate workers. "
-                "The configured workload is Go HTTP echo with a 200 ms delay and 1 KB payload; "
-                "CPU/memory are sampled via `kubectl top pod`. "
-                "interlink and Linkerd use per-pod sidecars; Istio ambient uses "
-                "node-level ztunnel. Shared topology and workload do not make these "
-                "identical deployment architectures.\n\n")
-        f.write("A profile is **valid** only if achieved RPS reaches at least "
-                "97 % of target, there are zero reported errors, and peak host CPU stays below "
-                f"{HOST_SATURATION_PCT:.0f} %. Invalid profiles are excluded from the tables; "
-                "the reason identifies the error, under-target load, or host saturation.\n\n")
-        f.write("| Mesh | Profile | valid | p50 ms | p90 ms | p99 ms | avg CPU (m) | avg mem MB | QPS | errors | peak host % |\n")
-        f.write("|------|---------|:-----:|--------|--------|--------|-------------|------------|-----|--------|-------------|\n")
-        for r in rows:
-            mark = "✅" if r["valid"] else "❌"
-            note = "" if r["valid"] else f" _({r['why']})_"
-            f.write(
-                f"| {r['mesh']} | {r['profile']} | {mark} | {r['p50']} | {r['p90']} | {r['p99']} | "
-                f"{r['avg_cpu']} | {mem_mb(r['avg_mem'])} | {r['qps']} | {r['errors']} | {r['peak_host']}{note} |\n"
-            )
-
-        valid_rows = [r for r in rows if r["valid"]]
-        f.write("\n## Proxy latency overhead (p99 above the 200 ms workload delay)\n\n")
-        f.write("_Valid profiles only._\n\n")
-        profs = []
-        for r in valid_rows:
-            if r["profile"] not in profs:
-                profs.append(r["profile"])
-        f.write("| Mesh | " + " | ".join(profs) + " |\n")
-        f.write("|------|" + "|".join("-------" for _ in profs) + "|\n")
-        by = {}
-        for r in valid_rows:
-            try:
-                by.setdefault(r["mesh"], {})[r["profile"]] = float(r["p99"]) - 200.0
-            except ValueError:
-                pass
-        for mesh in MESHES:
-            if mesh in by:
-                b = by[mesh]
-                cells = " | ".join(f"+{b[p]:.1f} ms" if p in b else "—" for p in profs)
-                f.write(f"| {mesh} | {cells} |\n")
-        f.write("\n")
-        invalid = [r for r in rows if not r["valid"]]
-        if invalid:
-            f.write(f"> {len(invalid)} of {len(rows)} profiles were host-bound and "
-                    "excluded. Rerun on a dedicated host for a complete table.\n")
-
-    n_valid = sum(1 for r in rows if r["valid"])
-    print(f"Wrote comparison to {OUTPUT} ({n_valid}/{len(rows)} profiles valid)")
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--results", type=Path, default=RESULTS_DIR)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--check", action="store_true", help="fail if the published table is stale")
+    args = parser.parse_args()
+    output = args.output or args.results / "comparison.md"
+    try:
+        text = comparison(args.results)
+        if args.check:
+            if output.read_text(encoding="utf-8") != text:
+                raise ValueError("comparison table is stale; regenerate it from its capture")
+        else:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output.parent,
+                                             prefix=".comparison-", delete=False) as temporary:
+                temporary.write(text)
+                pending = temporary.name
+            os.replace(pending, output)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(f"benchmark report: {error}", file=sys.stderr)
+        return 1
+    print(f"Verified comparison: {output}" if args.check else f"Wrote comparison: {output}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -54,4 +54,4 @@ Certificate ::= SEQUENCE {
 
 Short-lived leaf certs eliminate the need for CRLs or OCSP (RFC 5280 §6.3). Expiry IS revocation.
 
-> **ADR-0002 trade-off:** interlink intentionally does not implement CRL/OCSP revocation today. Leaf certificates are short-lived (default 24 h) and issuance requires a trusted CA key. If a CA key is compromised, operators rotate the trust bundle out of band. This keeps the proxy simple and avoids runtime revocation network calls. See `lore/architecture-decisions.md` for details.
+> **Revocation trade-off:** interlink intentionally does not implement CRL/OCSP revocation today. Leaf certificates are short-lived (default 24 h) and issuance requires a trusted CA key. If a CA key is compromised, operators rotate the trust bundle out of band. This keeps the proxy simple and avoids runtime revocation network calls.
