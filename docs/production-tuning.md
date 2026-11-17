@@ -33,7 +33,7 @@ the affected proxies. Compare repeated trials with the same traffic and resource
 | --- | --- | --- |
 | `INTERLINK_ACCEPTORS` | Available CPUs, limited to 2–4 | `SO_REUSEPORT` acceptor tasks per listener; explicit values are clamped to 1–16 |
 | `INTERLINK_COPY_BUF_SIZE` | `65536` bytes | Relay buffer size per direction; clamped to 4 KiB–1 MiB |
-| `INTERLINK_MAX_CONNECTIONS` | `1024` | Admission limit for each proxy direction, including mux streams; must be positive |
+| `INTERLINK_MAX_CONNECTIONS` | `10000` | Admission limit for each proxy direction, including mux streams; must be positive |
 | `INTERLINK_MUX_MAX_STREAMS` | `64` | Concurrent streams per tunnel; must be positive; configure matching caps on both endpoints |
 | `INTERLINK_TUNNEL_MAX_AGE_SECS` | `3600` | Inbound tunnel age limit; stops new admissions and drains existing streams; must be positive |
 | `INTERLINK_WORKER_THREADS` | Available CPUs, limited to 2 | Tokio worker threads; explicit values are clamped to 1–64 |
@@ -47,8 +47,10 @@ Outbound tunnels to one peer can carry `INTERLINK_MAX_CONNECTIONS` streams.
 When every tunnel carries two or more streams, a new stream opens another tunnel,
 up to one per worker thread.
 
-Do not raise admission limits without checking file descriptors, memory, and
-downstream capacity. A stream cap is not a request-rate limit.
+Each relayed connection uses two file descriptors. At startup the daemon raises
+its open-file soft limit to the hard limit and logs both values. Do not raise
+admission limits without checking that hard limit, memory, and downstream capacity.
+A stream cap is not a request-rate limit.
 
 ## 3. Verify behavior and keep a rollback
 

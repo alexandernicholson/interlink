@@ -53,6 +53,10 @@ mimalloc = { version = "0.1", default-features = false, features = ["no_thp"] }
 veyrmux = { git = "https://github.com/alexandernicholson/veyrmux", rev = "6a3e9f66fb896cc56dc60696d14f774657f1cd04" }
 bytes = "1"
 
+[target.'cfg(unix)'.dependencies]
+# Safe getrlimit/setrlimit: startup raises the open-file soft limit (main.rs).
+rustix = { version = "1", features = ["process"] }
+
 [dev-dependencies]
 interlink-test-support = { path = "test-support" }
 criterion = { version = "0.5", features = ["async_tokio"] }

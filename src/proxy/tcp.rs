@@ -70,7 +70,9 @@ impl TcpProxy {
         policy: Arc<PolicyEngine>,
         discovery: Option<Arc<ServiceDiscovery>>,
     ) -> Result<Self, InterlinkError> {
-        let max_conn = config.max_connections.unwrap_or(1024);
+        let max_conn = config
+            .max_connections
+            .unwrap_or(crate::common::constants::limits::MAX_CONNECTIONS);
         let local_id = config.local_identity()?;
         let egress = EgressPolicy::parse(&config.egress_subnets)?;
         if config.tunnel_max_age_secs == 0 || config.mux_max_streams_per_tunnel == 0 {

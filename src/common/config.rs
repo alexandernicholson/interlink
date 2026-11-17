@@ -73,7 +73,7 @@ impl Default for Config {
             proxy_outbound_port: crate::common::constants::ports::OUTBOUND_PROXY,
             metrics_port: crate::common::constants::ports::METRICS,
             log_level: "info".into(),
-            max_connections: 1024,
+            max_connections: crate::common::constants::limits::MAX_CONNECTIONS,
             ca_bundle_path: None,
             cert_path: None,
             key_path: None,
@@ -309,7 +309,7 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(cfg.trust_domain, "cluster.local");
         assert!(cfg.identity.is_none());
-        assert_eq!(cfg.max_connections, 1024);
+        assert_eq!(cfg.max_connections, 10_000);
         assert_eq!(cfg.outbound_bind, "127.0.0.1");
         assert_eq!(cfg.metrics_bind, "127.0.0.1");
         assert_eq!(cfg.admin_bind, "127.0.0.1:4192");

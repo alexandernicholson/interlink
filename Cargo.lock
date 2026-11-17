@@ -1048,6 +1048,7 @@ dependencies = [
  "proptest",
  "quickcheck",
  "ring",
+ "rustix",
  "rustls",
  "rustls-pki-types",
  "serde",

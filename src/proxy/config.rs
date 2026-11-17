@@ -82,7 +82,7 @@ impl Default for ProxyConfig {
             trust_domain: "cluster.local".into(),
             identity: None,
             default_upstream: None,
-            max_connections: Some(1024),
+            max_connections: Some(crate::common::constants::limits::MAX_CONNECTIONS),
             mux: true,
             outbound_bind: default_outbound_bind(),
             egress_subnets: Vec::new(),

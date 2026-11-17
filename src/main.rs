@@ -44,6 +44,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .block_on(run(workers))
 }
 
+/// Raise the open-file soft limit to the hard limit and return the
+/// `(previous, current)` soft limits (`None` means unlimited). Each relayed
+/// connection holds two sockets, so the default admission limit needs far more
+/// descriptors than the 1024 soft limit that current Docker and containerd give
+/// containers; without this, accept() fails long before admission rejects.
+#[cfg(unix)]
+fn raise_open_file_limit() -> std::io::Result<(Option<u64>, Option<u64>)> {
+    use rustix::process::{getrlimit, setrlimit, Resource, Rlimit};
+    let limit = getrlimit(Resource::Nofile);
+    if limit.current != limit.maximum {
+        setrlimit(
+            Resource::Nofile,
+            Rlimit {
+                current: limit.maximum,
+                maximum: limit.maximum,
+            },
+        )?;
+    }
+    Ok((limit.current, limit.maximum))
+}
+
 async fn run(worker_threads: usize) -> Result<(), Box<dyn std::error::Error>> {
     println!("interlinkd v{}", env!("CARGO_PKG_VERSION"));
 
@@ -62,6 +83,12 @@ async fn run(worker_threads: usize) -> Result<(), Box<dyn std::error::Error>> {
         worker_threads,
         "starting interlinkd"
     );
+
+    #[cfg(unix)]
+    match raise_open_file_limit() {
+        Ok((previous, current)) => info!(?previous, ?current, "open-file soft limit"),
+        Err(error) => warn!(%error, "could not raise the open-file soft limit"),
+    }
 
     // 3. Require a configured, valid identity before starting any listeners.
     let identity = configured_identity(config.identity.as_deref())?;
@@ -272,5 +299,23 @@ mod tests {
         assert_eq!(worker_threads(Some("6"), 2), 6, "explicit counts may exceed the default");
         assert_eq!(worker_threads(Some("0"), 8), 1);
         assert_eq!(worker_threads(Some("1000"), 8), 64);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn startup_raises_open_file_soft_limit_to_hard_limit() {
+        use rustix::process::{getrlimit, setrlimit, Resource, Rlimit};
+        let hard = getrlimit(Resource::Nofile).maximum;
+        let low = hard.map_or(256, |hard| hard.min(256));
+        setrlimit(
+            Resource::Nofile,
+            Rlimit {
+                current: Some(low),
+                maximum: hard,
+            },
+        )
+        .unwrap();
+        assert_eq!(raise_open_file_limit().unwrap(), (Some(low), hard));
+        assert_eq!(getrlimit(Resource::Nofile).current, hard);
     }
 }

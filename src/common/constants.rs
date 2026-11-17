@@ -41,6 +41,14 @@ pub mod admin {
     pub const READ_TIMEOUT: Duration = Duration::from_secs(5);
 }
 
+/// Proxy admission limits.
+pub mod limits {
+    /// Default concurrent connections per proxy direction, mux streams included.
+    /// Each relayed connection holds two sockets; startup raises the soft
+    /// open-file limit so this budget is reachable.
+    pub const MAX_CONNECTIONS: usize = 10_000;
+}
+
 /// Per-connection multiplexing ceiling and per-stream receive window.
 pub mod mux {
     /// Protocol-level bound on streams one mux connection may hold open.
