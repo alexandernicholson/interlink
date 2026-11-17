@@ -166,8 +166,10 @@ def proxy_metrics(namespace, container, expected, run=command, now=None):
     return cpu, rss
 
 
-def validate_load(text, payload_bytes, connections, duration):
-    """Keep real request-error boundaries, but never malformed measurements."""
+def validate_load(text, payload_bytes, connections, duration, requested_qps=0):
+    """Keep real capacity error boundaries; require error-free matched-load controls."""
+    if type(requested_qps) is not int or requested_qps < 0:
+        raise ValueError('requested QPS must be a nonnegative integer')
     data = json.loads(text)
     codes = data['RetCodes']
     if not isinstance(codes, dict) or not codes:
@@ -178,8 +180,9 @@ def validate_load(text, payload_bytes, connections, duration):
     count = sum(codes.values())
     if count <= 0 or data['DurationHistogram']['Count'] != count:
         raise ValueError('Fortio returned no requests or inconsistent latency counts')
-    if data['RequestedQPS'] != 'max' or data['NumThreads'] != connections:
-        raise ValueError('Fortio load differs from the concurrency sweep')
+    expected_qps = str(requested_qps) if requested_qps else 'max'
+    if data['RequestedQPS'] != expected_qps or data['NumThreads'] != connections:
+        raise ValueError('Fortio load differs from the requested rate or concurrency')
     standard_client = payload_bytes == 1_048_576
     if data['DisableFastClient'] is not standard_client:
         raise ValueError('Fortio client differs from the workload protocol')
@@ -192,6 +195,8 @@ def validate_load(text, payload_bytes, connections, duration):
     achieved = number(data['ActualQPS'], positive=True)
     if not math.isclose(achieved, count / seconds, rel_tol=0.001):
         raise ValueError('Fortio request rate and counts disagree')
+    if requested_qps and abs(achieved - requested_qps) > requested_qps * 0.03:
+        raise ValueError(f'Fortio achieved {achieved} QPS, outside 3% of target {requested_qps}')
     stamp = dt.datetime.fromisoformat(data['StartTime'].replace('Z', '+00:00'))
     if stamp.tzinfo is None:
         raise ValueError('Fortio start time needs a timezone')
@@ -222,6 +227,8 @@ def validate_load(text, payload_bytes, connections, duration):
         body_bytes = data['Sizes']['Sum'] - data['HeaderSizes']['Sum']
         if not math.isclose(body_bytes, count * payload_bytes, rel_tol=1e-12, abs_tol=0.01):
             raise ValueError('Fortio echoed response payload differs from the request')
+    if requested_qps and error_count:
+        raise ValueError(f'Fortio matched-load control returned request errors: {codes}')
     data['PayloadBytes'] = len(payload)
     data['PayloadSHA256'] = hashlib.sha256(payload).hexdigest()
     del data['Payload']
@@ -232,9 +239,11 @@ def request_errors(codes):
     return sum(count for code, count in codes.items() if code != '200')
 
 
-def fortio_args(target, payload_bytes, connections, duration):
+def fortio_args(target, payload_bytes, connections, duration, requested_qps=0):
+    if type(requested_qps) is not int or requested_qps < 0:
+        raise ValueError('requested QPS must be a nonnegative integer')
     args = ['kubectl', 'exec', '-n', 'bench', 'deploy/fortio-client', '-c', 'fortio', '--',
-            'fortio', 'load', '-quiet', '-qps', '0', '-c', str(connections),
+            'fortio', 'load', '-quiet', '-qps', str(requested_qps), '-c', str(connections),
             '-t', f'{duration}s', '-payload-size', str(payload_bytes),
             '-timeout', f'{REQUEST_TIMEOUT_SECONDS}s',
             '-allow-initial-errors', '-json', '/dev/stdout']
@@ -247,23 +256,23 @@ def fortio_args(target, payload_bytes, connections, duration):
 
 
 def collect_point(args, workload, connections, run=command, sample=None, ticks=host_ticks,
-                  launch=subprocess.Popen, interval=2):
+                  launch=subprocess.Popen, interval=2, *, requested_qps=0):
     payload_bytes = workload['payload_bytes']
-    # No sampler exists during the discarded 10-second warmup. Its request
-    # errors are retained for eligibility, not mistaken for infrastructure loss.
+    # No sampler exists during discarded warmup. Capacity errors remain boundary
+    # evidence; a matched-load control must be error-free and achieve its target.
     try:
-        warmup_text = run(fortio_args(args.target, payload_bytes, connections, 10), timeout=140)
+        warmup_text = run(fortio_args(args.target, payload_bytes, connections, 10, requested_qps), timeout=140)
     except subprocess.CalledProcessError as error:
         if not error.stdout:
             raise
         try:
-            warmup = validate_load(error.stdout, payload_bytes, connections, 10)
+            warmup = validate_load(error.stdout, payload_bytes, connections, 10, requested_qps)
         except (ValueError, KeyError, TypeError):
             raise error
         if not request_errors(warmup['RetCodes']):
             raise
     else:
-        warmup = validate_load(warmup_text, payload_bytes, connections, 10)
+        warmup = validate_load(warmup_text, payload_bytes, connections, 10, requested_qps)
     expected = expected_containers(args.namespace, args.container,
                                    [args.client_node, args.server_node], run)
     if sample is None:
@@ -319,7 +328,7 @@ def collect_point(args, workload, connections, run=command, sample=None, ticks=h
             raise errors[0]
         # Redirect to files, not PIPEs: Fortio output cannot deadlock a full pipe.
         with (args.results / f'fortio-{label}.json').open('w') as out:
-            process = launch(fortio_args(args.target, payload_bytes, connections, args.duration), stdout=out)
+            process = launch(fortio_args(args.target, payload_bytes, connections, args.duration, requested_qps), stdout=out)
             deadline = time.monotonic() + args.duration + 140
             while process.poll() is None:
                 if errors:
@@ -328,7 +337,7 @@ def collect_point(args, workload, connections, run=command, sample=None, ticks=h
                     raise TimeoutError('measured Fortio timed out')
                 stop.wait(0.1)
         result_path = args.results / f'fortio-{label}.json'
-        measured = validate_load(result_path.read_text(), payload_bytes, connections, args.duration)
+        measured = validate_load(result_path.read_text(), payload_bytes, connections, args.duration, requested_qps)
         if process.returncode and not request_errors(measured['RetCodes']):
             raise subprocess.CalledProcessError(process.returncode, process.args)
         measured['WarmupRetCodes'] = warmup['RetCodes']
@@ -357,12 +366,24 @@ def main():
     parser.add_argument('--duration', type=int, required=True)
     parser.add_argument('--rps-concurrency', required=True)
     parser.add_argument('--bulk-concurrency', required=True)
+    parser.add_argument('--shared-rps', type=int, default=10000)
+    parser.add_argument('--shared-concurrency', type=int, default=64)
+    parser.add_argument('--shared-only', action='store_true')
     args = parser.parse_args()
-    if args.duration <= 0:
-        parser.error('duration must be positive')
-    for workload in workload_grids(args.rps_concurrency, args.bulk_concurrency):
-        for connections in workload['concurrency']:
-            collect_point(args, workload, connections)
+    if args.duration <= 0 or args.shared_rps <= 0 or args.shared_concurrency <= 0:
+        parser.error('duration, shared RPS and shared concurrency must be positive integers')
+    try:
+        workloads = workload_grids(args.rps_concurrency, args.bulk_concurrency)
+    except ValueError as error:
+        parser.error(str(error))
+    # Per-mesh runners create fresh containers before invoking this collector.
+    # Collect the shared control before capacity can raise their RSS high-water marks.
+    collect_point(args, {'name': 'shared', 'payload_bytes': 1024}, args.shared_concurrency,
+                  requested_qps=args.shared_rps)
+    if not args.shared_only:
+        for workload in workloads:
+            for connections in workload['concurrency']:
+                collect_point(args, workload, connections)
 
 
 if __name__ == '__main__':

@@ -26,6 +26,18 @@ def git(*args, root=ROOT):
     return subprocess.check_output(['git', '-C', str(root), *args], text=True, timeout=30).strip()
 
 
+def runtime_matches(before, after, root=ROOT):
+    if before == after:
+        return True
+    paths = ('src', 'Cargo.toml', 'Cargo.lock', 'Dockerfile')
+    try:
+        old = git('rev-parse', *(f'{before}:{path}' for path in paths), root=root)
+        new = git('rev-parse', *(f'{after}:{path}' for path in paths), root=root)
+    except subprocess.CalledProcessError as error:
+        raise ValueError('shared-only capture requires the recorded runtime in local Git history') from error
+    return old == new
+
+
 def assert_source(revision, root=ROOT):
     if git('rev-parse', 'HEAD', root=root) != revision:
         raise RuntimeError('source HEAD changed during capture; refusing publication')
@@ -95,12 +107,6 @@ def source_identity(root=ROOT):
                 raise RuntimeError('archive source changed during capture; refusing publication')
     guard(revision)
     return revision, guard
-
-
-def assert_remote_revision(revision, remote='origin', branch='main', root=ROOT):
-    line = git('ls-remote', '--exit-code', remote, f'refs/heads/{branch}', root=root)
-    if line.split()[0] != revision:
-        raise RuntimeError('remote source advanced; refusing stale benchmark publication')
 
 
 def publish_results(staged, destination, revision, guard=assert_source, readme=None):
@@ -184,7 +190,7 @@ def cleanup(env, log):
         raise RuntimeError('capture resource cleanup failed; refusing publication') from errors[0]
 
 
-def capture():
+def capture(shared_only=False):
     os.umask(0o077)
     revision, guard = source_identity()
     inputs = harness_hashes(ROOT)
@@ -193,6 +199,28 @@ def capture():
     duration = int(os.environ.get('BENCH_DURATION', '20'))
     if duration <= 0:
         raise ValueError('BENCH_DURATION must be a positive number of seconds')
+    target = int(os.environ.get('BENCH_SHARED_RPS', '10000'))
+    clients = int(os.environ.get('BENCH_SHARED_CONCURRENCY', '64'))
+    if target <= 0 or clients <= 0:
+        raise ValueError('shared load and concurrency must be positive')
+    versions = {name: os.environ[key] for name, key in (
+        ('kind', 'KIND_VERSION'), ('kubernetes', 'KUBECTL_VERSION'),
+        ('linkerd', 'LINKERD_VERSION'), ('istio', 'ISTIO_VERSION'),
+        ('fortio', 'FORTIO_VERSION'))}
+    machine = dict(system=os.uname().sysname, architecture=os.uname().machine,
+                   kernel=os.uname().release, logical_cpus=os.cpu_count(),
+                   memory_bytes=os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES'))
+    baseline = None
+    if shared_only:
+        baseline, _ = load_results(BENCH / 'results')
+        if (not runtime_matches(baseline['revision'], revision, root=ROOT)
+                or baseline['host'] != machine or baseline['versions'] != versions):
+            raise ValueError('shared-only capture needs the same runtime, machine and tool versions')
+        stable_inputs = lambda values: {name: value for name, value in values.items()
+                                       if name in ('Dockerfile', 'Cargo.toml', 'Cargo.lock')
+                                       or name.startswith(('bench/workloads/', 'bench/manifests/'))}
+        if stable_inputs(baseline['harness_sha256']) != stable_inputs(inputs):
+            raise ValueError('shared-only capture needs unchanged workloads and deployment settings')
     scratch = ROOT / 'tmp'
     scratch.mkdir(exist_ok=True)
     # One producer owns shared tool paths and canonical publication at a time.
@@ -203,12 +231,22 @@ def capture():
             data = stage / 'data'
             private = stage / 'private'
             data.mkdir()
+            if baseline is not None:
+                shutil.copytree(BENCH / 'results', data, dirs_exist_ok=True)
+                previous = baseline.pop('shared_load', None)
+                if previous is not None:
+                    for mesh in MESHES:
+                        label = f'{mesh}-shared-c{previous["concurrency"]}'
+                        for name in (f'fortio-{label}.json', f'metrics-{label}.csv', f'metrics-{label}.host.csv'):
+                            (data / mesh / name).unlink()
             private.mkdir(mode=0o700)
             run_id = uuid.uuid4().hex
             env = os.environ.copy()
             env.update(BENCH_CAPTURE_DIR=str(data), BENCH_PRIVATE_DIR=str(private),
                        BENCH_IMAGE_TAG=f'{revision[:12]}-{run_id}',
                        BENCH_CLUSTER_PREFIX=f'bench-{run_id[:12]}',
+                       BENCH_SHARED_RPS=str(target), BENCH_SHARED_CONCURRENCY=str(clients),
+                       BENCH_SHARED_ONLY='1' if shared_only else '0',
                        KUBECONFIG=str(private / 'kubeconfig'), PYTHONDONTWRITEBYTECODE='1')
             # kubectl never waits indefinitely for a broken apiserver.
             env['PATH'] = str(BENCH / 'bin') + os.pathsep + env['PATH']
@@ -223,8 +261,8 @@ def capture():
                             ('istio-ambient', 'run-istio.sh', 'istio'),
                         ):
                             print(f'Capturing {mesh}', flush=True)
-                            run_script('scripts/' + script, env, log,
-                                       1200 + sum(len(w['concurrency']) for w in selected) * (duration + 300))
+                            count = 1 if shared_only else 1 + sum(len(w['concurrency']) for w in selected)
+                            run_script('scripts/' + script, env, log, 1200 + count * (duration + 300))
                             subprocess.run(['kind', 'delete', 'cluster', '--name',
                                             env['BENCH_CLUSTER_PREFIX'] + '-' + suffix],
                                            env=env, stdout=log, stderr=subprocess.STDOUT,
@@ -233,24 +271,20 @@ def capture():
                     finally:
                         # Also removes partially-created clusters after any setup/load failure.
                         cleanup(env, log)
-                    versions = {name: os.environ[key] for name, key in (
-                        ('kind', 'KIND_VERSION'), ('kubernetes', 'KUBECTL_VERSION'),
-                        ('linkerd', 'LINKERD_VERSION'), ('istio', 'ISTIO_VERSION'),
-                        ('fortio', 'FORTIO_VERSION'))}
-                    metadata = dict(schema_version=2, benchmark='echo-capacity',
-                                    revision=revision, run_id=run_id,
-                                    harness_sha256=inputs,
-                                    started_at=started, completed_at=completed,
-                                    duration_seconds=duration, warmup_seconds=10,
-                                    request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
-                                    server_delay_ms=0, workloads=selected,
-                                    meshes=list(MESHES), versions=versions,
-                                    host=dict(system=os.uname().sysname,
-                                              architecture=os.uname().machine,
-                                              kernel=os.uname().release,
-                                              logical_cpus=os.cpu_count(),
-                                              memory_bytes=os.sysconf('SC_PAGE_SIZE') *
-                                              os.sysconf('SC_PHYS_PAGES')))
+                    metadata = baseline if baseline is not None else dict(
+                        schema_version=2, benchmark='echo-capacity', revision=revision,
+                        run_id=run_id, harness_sha256=inputs,
+                        started_at=started, completed_at=completed,
+                        duration_seconds=duration, warmup_seconds=10,
+                        request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+                        server_delay_ms=0, workloads=selected, meshes=list(MESHES),
+                        versions=versions, host=machine)
+                    metadata['shared_load'] = dict(
+                        target_rps=target, concurrency=clients, run_id=run_id,
+                        started_at=started, completed_at=completed,
+                        duration_seconds=duration, warmup_seconds=10,
+                        request_timeout_seconds=REQUEST_TIMEOUT_SECONDS, server_delay_ms=0,
+                        revision=metadata['revision'], host=machine, versions=versions, harness_sha256=inputs)
                     (data / 'capture.json').write_text(json.dumps(metadata, indent=2) + '\n')
                     _, points = load_results(data)
                     metadata['peaks'] = peak_metadata(points)
@@ -284,9 +318,9 @@ def interrupted(signum, frame):
 if __name__ == '__main__':
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
-    if len(sys.argv) == 3 and sys.argv[1] == '--check-remote':
-        assert_remote_revision(sys.argv[2])
-    elif len(sys.argv) == 1:
+    if len(sys.argv) == 1:
         capture()
+    elif sys.argv[1:] == ['--shared-only']:
+        capture(shared_only=True)
     else:
-        raise SystemExit('usage: run_capture.py [--check-remote REVISION]')
+        raise SystemExit('usage: run_capture.py [--shared-only]')

@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
   "benchmark": "echo-capacity",
-  "revision": "fb609291398e4e41e7f3779ae231261e0dfc05ba",
-  "run_id": "ba0f184eeb0844c9b6a334129ada2a86",
+  "revision": "205d05b2851b4422b39a0e116d75dff6c91ba649",
+  "run_id": "6d44b23cf9df4539a1ee092f5dffa9c6",
   "harness_sha256": {
     "Cargo.lock": "4758c030cd95f1b9be30618178a119f75f65e0a1fa7c4874a5ef3fd8c906b3ac",
     "Cargo.toml": "c241098f19cbf62549f27745cbb97325bbff7a4b110acdc1aff66316cf61f2c4",
@@ -31,8 +31,8 @@
     "bench/workloads/fortio-client-plain.yaml": "8a9fcf007763eecb0c548ca2b0c9e558e69bd807d1d90d5cc0905fe897adf2ef",
     "bench/workloads/go.mod": "4df3759b52ccd90ece8f38ba9eed4948c157e5d646714480f12e4c84fbd19de1"
   },
-  "started_at": "2026-11-17T12:10:23Z",
-  "completed_at": "2026-11-17T12:35:04Z",
+  "started_at": "2026-11-17T11:37:17Z",
+  "completed_at": "2026-11-17T12:02:38Z",
   "duration_seconds": 20,
   "warmup_seconds": 10,
   "request_timeout_seconds": 5,
@@ -79,22 +79,77 @@
   "host": {
     "system": "Linux",
     "architecture": "x86_64",
-    "kernel": "7.0.0-1014-aws",
-    "logical_cpus": 4,
-    "memory_bytes": 16464302080
+    "kernel": "7.0.0-29-generic",
+    "logical_cpus": 8,
+    "memory_bytes": 3561676800
   },
   "peaks": {
     "interlink": {
       "rps_concurrency": 1024,
-      "bulk_concurrency": 16
+      "bulk_concurrency": 64
     },
     "linkerd": {
-      "rps_concurrency": 256,
+      "rps_concurrency": 64,
       "bulk_concurrency": 16
     },
     "istio-ambient": {
-      "rps_concurrency": 256,
-      "bulk_concurrency": 4
+      "rps_concurrency": 1024,
+      "bulk_concurrency": 256
+    }
+  },
+  "shared_load": {
+    "target_rps": 10000,
+    "concurrency": 64,
+    "run_id": "66693f16ba204be4a98afbf1b77122cc",
+    "started_at": "2026-11-17T13:10:49Z",
+    "completed_at": "2026-11-17T13:15:59Z",
+    "duration_seconds": 20,
+    "warmup_seconds": 10,
+    "request_timeout_seconds": 5,
+    "server_delay_ms": 0,
+    "revision": "205d05b2851b4422b39a0e116d75dff6c91ba649",
+    "host": {
+      "system": "Linux",
+      "architecture": "x86_64",
+      "kernel": "7.0.0-29-generic",
+      "logical_cpus": 8,
+      "memory_bytes": 3561676800
+    },
+    "versions": {
+      "kind": "v0.24.0",
+      "kubernetes": "v1.30.0",
+      "linkerd": "stable-2.14.10",
+      "istio": "1.24.0",
+      "fortio": "1.66.0"
+    },
+    "harness_sha256": {
+      "Cargo.lock": "4758c030cd95f1b9be30618178a119f75f65e0a1fa7c4874a5ef3fd8c906b3ac",
+      "Cargo.toml": "c241098f19cbf62549f27745cbb97325bbff7a4b110acdc1aff66316cf61f2c4",
+      "Dockerfile": "dfb01191c8157f99af7a2d5d20dc48e207402d52ee10df06c4807588263a55cb",
+      "bench/Makefile": "7a78ddb8cbfa68185f27465184a2a769798283e8938c5057a58ee4de5e042f34",
+      "bench/manifests/interlink/echo-with-sidecar.yaml": "096a510ab9271ca5db4ca309c967f104a9e366e5003fb700a9ddd38b14148f08",
+      "bench/manifests/interlink/fortio-client.yaml": "0e20cecaca635587b936fe217d1ca43d02772d9f5fde1cda924fb53517e81067",
+      "bench/manifests/istio-ambient/namespace-label.yaml": "bde58f62cbf40a0908a681518e3cc2970ee57c69ec7526cd1d1037947dee9548",
+      "bench/manifests/kind-3node.yaml": "e82570f20e3259c9f8f62d9d6dd4d81218cce892b277aafc81429805811463a0",
+      "bench/manifests/linkerd/namespace-annotation.yaml": "3b60d55fdecb39c0b8a352c3f110e4dad64dec8d58540ced826e93fc17c52107",
+      "bench/manifests/namespace.yaml": "a7afa3f2fa65fc55257c5ea6b5e57a765c14f8a9c0f67071f270752bb320ed17",
+      "bench/run.sh": "e88ae7a9de98a3d05b4de825d5cbd7be543f01df73db42972a4949125ca4dba6",
+      "bench/scripts/aggregate.py": "a32180d1082fb191662110227881c49bceac39f09779395b2ed96182bffa102c",
+      "bench/scripts/capture_profile.py": "58ec0922fe774d7ba76091130218a2cd9d84a9376676031e37ebf98c2950f64a",
+      "bench/scripts/common.sh": "eb2b43a501e98e88e5407ee22989859f601d485a650b9e377af8a4ae4459ecb2",
+      "bench/scripts/plot.py": "4e5019ccd4e71436841779bedf452b77cfc13caf4e449a4db9562f1dc2d99109",
+      "bench/scripts/run-interlink.sh": "5e9d503fa292694d5f61d7777587fd8a0c1fc8a52a204ff9c8bfbbba819e72f7",
+      "bench/scripts/run-istio.sh": "5961618deb97df41ab4bb35cf412d2dd36ee21ccc4446c6c6b0a17a9e3b67804",
+      "bench/scripts/run-linkerd.sh": "f33a194719dc5fa01e431e10d5eca0eae9739d56735764a14dbd49b0843150bd",
+      "bench/scripts/run_capture.py": "654456e48969bb3b94729f7c8d709123ead5d373b17c65adb684c40bcb12e6a5",
+      "bench/setup.sh": "a5f74bbd27890bf281ec5d87229f0aba446fe5b25290f89da032f9c41fb78e61",
+      "bench/teardown.sh": "be07c04e05aebc6d02de5f67d44efe8a7bfd18b2c957b0095593029c1220b368",
+      "bench/workloads/echo-server-deployment.yaml": "271abfc3be42cfbd28a0516cd6e1faf4a4149fd45c0f87d75f77872321902016",
+      "bench/workloads/echo-server.Dockerfile": "a1898fb3cfa98d2b15a001d311f82e21ecd8c8ff8d6994808f47975671f332d4",
+      "bench/workloads/echo-server.go": "6aa7c1dd7a1ac61d3dc009b677f1da5a99a4c971eb522cf1cb2560455dbfd96a",
+      "bench/workloads/echo-server_test.go": "1dff9eb044148069d1899f52133fe6ca353f330c30c0e21a25c0090a802fa606",
+      "bench/workloads/fortio-client-plain.yaml": "8a9fcf007763eecb0c548ca2b0c9e558e69bd807d1d90d5cc0905fe897adf2ef",
+      "bench/workloads/go.mod": "4df3759b52ccd90ece8f38ba9eed4948c157e5d646714480f12e4c84fbd19de1"
     }
   }
 }

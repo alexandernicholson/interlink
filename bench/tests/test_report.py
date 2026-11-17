@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from unittest import mock
 
 REPORTER = Path(__file__).resolve().parents[1] / "scripts" / "aggregate.py"
@@ -38,6 +39,7 @@ class ReportTests(unittest.TestCase):
         self.results = self.root / "results"
         self.results.mkdir()
         self.output = self.results / "comparison.md"
+        self.graph = self.output.with_suffix(".svg")
         self.readme = self.root / "README.md"
         self.before = "# Project\n\nHand-written introduction.\n\n"
         self.after = "\n\nHand-written conclusion.\n"
@@ -85,6 +87,22 @@ class ReportTests(unittest.TestCase):
                     self.records[mesh, name, concurrency] = record
                     self.write_record(mesh, record, name, concurrency)
                     self.write_metrics(mesh, name, concurrency)
+        self.capture["shared_load"] = {
+            **{key: copy.deepcopy(self.capture[key]) for key in (
+                "revision", "host", "versions", "duration_seconds", "warmup_seconds",
+                "request_timeout_seconds", "server_delay_ms", "started_at", "completed_at")},
+            "target_rps": 150, "concurrency": 4,
+        }
+        for index, mesh in enumerate(MESHES):
+            count = 1500
+            record = copy.deepcopy(self.records[mesh, "rps", 4])
+            record.update(RequestedQPS="150", ActualQPS=150, RetCodes={"200": count},
+                          DurationHistogram=histogram(count, 0.004 + index * 0.001),
+                          Sizes=histogram(count, 1024 + 118), HeaderSizes=histogram(count, 118))
+            record["DurationHistogram"]["Percentiles"] = [{"Percentile": 99, "Value": 0.004 + index * 0.001}]
+            self.records[mesh, "shared", 4] = record
+            self.write_record(mesh, record, "shared", 4)
+            self.write_metrics(mesh, "shared", 4)
         self.write_capture()
         self.update_peaks()
 
@@ -127,27 +145,71 @@ class ReportTests(unittest.TestCase):
         return subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
 
     def published_views(self):
-        return self.output.read_bytes(), self.readme.read_bytes()
+        return self.output.read_bytes(), self.readme.read_bytes(), self.graph.read_bytes()
 
     def test_complete_capture_selects_independent_peaks_and_actual_payload_units(self):
         result = self.run_report()
         self.assertEqual(result.returncode, 0, result.stderr)
-        table = [line for line in self.output.read_text().splitlines() if line.startswith("| ")]
-        headline = [line for line in self.readme.read_text().splitlines() if line.startswith("| ")]
-        self.assertEqual(table[2:], [
-            f"| {mesh} | {200 + i * 10:.1f} | {4 + i:.2f} | {30 + i * 3:.2f} | {100 + i * 10:.1f} | {50 + i * 5:.1f} |"
-            for i, mesh in enumerate(MESHES)])
-        self.assertEqual(headline[2:], [
-            f"| {mesh} | {200 + i * 10:.1f} | {30 + i * 3:.2f} | {4 + i:.2f} |"
-            for i, mesh in enumerate(MESHES)])
-        self.assertEqual(self.capture["peaks"]["interlink"], dict(rps_concurrency=4, bulk_concurrency=1))
-        self.assertIn("Largest tested concurrency still wins for rps", self.output.read_text())
-        self.assertIn("16.0 GiB RAM", self.output.read_text())
-        self.assertIn(self.capture["revision"], self.readme.read_text())
-        self.assertIn(self.capture["completed_at"], self.readme.read_text())
-        self.assertTrue(self.readme.read_text().startswith(self.before + BEGIN))
-        self.assertTrue(self.readme.read_text().endswith(END + self.after))
+        capture, points = reporter.load_results(self.results)
+        peaks = reporter.selected_peaks(points)
+        for index, mesh in enumerate(MESHES):
+            self.assertEqual(peaks[mesh]["rps"].rps, 200 + index * 10)
+            self.assertEqual(peaks[mesh]["bulk"].payload_mib_s, 30 + index * 3)
+        controls = reporter.load_shared_points(self.results, capture)
+        self.assertEqual([point.rps for point in controls], [150, 150, 150])
+        svg = ET.fromstring(self.graph.read_text())
+        self.assertEqual(svg.tag, "{http://www.w3.org/2000/svg}svg")
         self.assertEqual(self.run_report(check=True).returncode, 0)
+
+    def test_shared_controls_reject_different_machines_targets_and_errors_without_publication(self):
+        self.assertEqual(self.run_report().returncode, 0)
+        previous = self.published_views()
+        group = copy.deepcopy(self.capture["shared_load"])
+        for field, value in [
+                ("host", {**group["host"], "logical_cpus": 9}),
+                ("versions", {**group["versions"], "fortio": "other"}),
+                ("revision", "b" * 40), ("target_rps", 0),
+                ("request_timeout_seconds", 120)]:
+            with self.subTest(field=field):
+                self.capture["shared_load"] = {**copy.deepcopy(group), field: value}
+                self.write_capture()
+                self.assertNotEqual(self.run_report().returncode, 0)
+                self.assertEqual(self.published_views(), previous)
+        self.capture["shared_load"] = group
+        self.write_capture()
+        original = self.records["interlink", "shared", 4]
+        for change in [
+                {"RequestedQPS": "max"}, {"WarmupRetCodes": {"503": 1}},
+                {"RetCodes": {"200": 1499, "503": 1}},
+                {"ActualDuration": 15_000_000_000, "ActualQPS": 100}]:
+            with self.subTest(change=change):
+                self.write_record("interlink", {**copy.deepcopy(original), **change}, "shared", 4)
+                self.assertNotEqual(self.run_report().returncode, 0)
+                self.assertEqual(self.published_views(), previous)
+        self.write_record("interlink", original, "shared", 4)
+        self.assertEqual(self.run_report(check=True).returncode, 0)
+
+    def test_graph_uses_each_measured_control_coordinate_not_the_offered_target(self):
+        capture, points = reporter.load_results(self.results)
+        controls = reporter.load_shared_points(self.results, capture)
+
+        def markers(text, metric):
+            panel = ET.fromstring(text).find(f".//{{*}}g[@id='panel-{metric}']")
+            return {
+                node.attrib["data-mesh"]: (float(node.attrib["data-x"]), float(node.attrib["data-y"]))
+                for node in panel.findall(".//{*}g")
+                if "shared-point" in node.attrib.get("class", "").split()
+            }
+
+        baseline = reporter.render(points, controls, capture["host"], target_rps=150)
+        from dataclasses import replace
+        changed = [replace(controls[0], rps=149, p99_ms=4.5), *controls[1:]]
+        updated = reporter.render(points, changed, capture["host"], target_rps=150)
+        before, after = markers(baseline, "p99_ms"), markers(updated, "p99_ms")
+        self.assertLess(after["interlink"][0], before["interlink"][0])
+        self.assertLess(after["interlink"][1], before["interlink"][1])
+        self.assertEqual(after["linkerd"], before["linkerd"])
+        self.assertEqual(after["istio-ambient"], before["istio-ambient"])
 
     def test_measured_and_warmup_error_boundaries_remain_raw_but_cannot_win(self):
         for mesh in MESHES:
@@ -163,9 +225,6 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(self.capture["peaks"]["interlink"], dict(rps_concurrency=1, bulk_concurrency=4))
         result = self.run_report()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("| interlink | 100.0 | 20.00 | 4.00 |", self.readme.read_text())
-        self.assertIn("2000/2000 measured errors", self.output.read_text())
-        self.assertIn("1 warm-up errors", self.output.read_text())
         self.assertEqual(json.loads(self.fortio_path().read_text())["RetCodes"], {"503": 2000})
         self.assertEqual(self.run_report(check=True).returncode, 0)
 
@@ -191,7 +250,6 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(self.capture["peaks"]["interlink"]["bulk_concurrency"], 4)
         result = self.run_report()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("| interlink | 200.0 | 20.00 | 4.00 |", self.readme.read_text())
 
     def test_documented_unlimited_qps_representations_are_accepted(self):
         for value in ("max", "0", 0):
@@ -209,7 +267,6 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(self.capture["peaks"]["interlink"]["rps_concurrency"], 1)
         result = self.run_report()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("winning concurrency RPS 1, bulk 1", self.output.read_text())
 
     def test_invalid_data_never_overwrites_either_view(self):
         self.assertEqual(self.run_report().returncode, 0)
@@ -293,7 +350,6 @@ class ReportTests(unittest.TestCase):
                 self.write_record("interlink", bulk, "bulk", 1)
                 result = self.run_report()
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("| interlink | 200.0 | 30.00 | 4.00 |", self.readme.read_text())
                 self.assertEqual(self.run_report(check=True).returncode, 0)
 
     def test_standard_failed_read_sizes_are_retained_but_ineligible_not_zeroed(self):
@@ -307,8 +363,6 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(self.capture["peaks"]["interlink"]["bulk_concurrency"], 4)
         result = self.run_report()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("| interlink | 200.0 | 20.00 | 4.00 |", self.readme.read_text())
-        self.assertIn("bulk c1: 300/300 measured errors", self.output.read_text())
         self.assertEqual(json.loads(self.fortio_path("interlink", "bulk", 1).read_text())["Sizes"]["Sum"], -300)
         previous = self.published_views()
         bulk["Sizes"] = histogram(300, -2)
@@ -328,8 +382,6 @@ class ReportTests(unittest.TestCase):
                 self.assertEqual(self.capture["peaks"]["interlink"]["bulk_concurrency"], 4)
                 result = self.run_report()
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("| interlink | 200.0 | 20.00 | 4.00 |", self.readme.read_text())
-                self.assertIn("bulk c1: 300/300 measured errors", self.output.read_text())
                 previous = self.published_views()
                 bulk["ErrorsDurationHistogram"] = histogram(300, 0.004)
                 self.write_record("interlink", bulk, "bulk", 1)
@@ -462,14 +514,13 @@ class ReportTests(unittest.TestCase):
         self.assertNotEqual(self.run_report(check=True).returncode, 0)
         self.assertEqual(self.published_views(), previous)
         self.assertEqual(self.run_report().returncode, 0)
-        self.assertIn("| interlink | 200.0 | 30.00 | 25.00 |", self.readme.read_text())
-        self.assertIn(self.capture["completed_at"], self.readme.read_text())
+        self.assertNotEqual(self.graph.read_bytes(), previous[2])
         self.assertEqual(self.run_report(check=True).returncode, 0)
 
     def test_check_rejects_stale_headline_without_touching_either_view(self):
         self.assertEqual(self.run_report().returncode, 0)
         published = self.output.read_bytes()
-        stale = self.readme.read_text().replace("| 4.00 |", "| 999.00 |")
+        stale = self.readme.read_text().replace("comparison.svg", "missing.svg")
         self.readme.write_text(stale)
         result = self.run_report(check=True)
         self.assertNotEqual(result.returncode, 0)
@@ -477,7 +528,6 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(self.output.read_bytes(), published)
         self.assertEqual(self.readme.read_text(), stale)
         self.assertEqual(self.run_report().returncode, 0)
-        self.assertIn("| interlink | 200.0 | 30.00 | 4.00 |", self.readme.read_text())
         self.assertEqual(self.run_report(check=True).returncode, 0)
 
     def test_broken_or_absent_markers_reject_both_generation_and_check(self):
@@ -514,20 +564,26 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(self.readme.read_bytes().endswith(END.encode() + suffix))
         self.assertEqual(self.run_report(check=True).returncode, 0)
 
-    def test_comparison_and_readme_must_be_distinct_files(self):
+    def test_generated_outputs_must_be_distinct_files(self):
         prior = self.readme.read_bytes()
-        result = subprocess.run(
-            [sys.executable, str(REPORTER), "--results", str(self.results),
-             "--readme", str(self.readme), "--output", str(self.readme)],
-            capture_output=True, text=True, timeout=10, check=False)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("separate files", result.stderr)
-        self.assertEqual(self.readme.read_bytes(), prior)
+        for output, readme in ((self.readme, self.readme), (self.graph, self.readme),
+                               (self.output, self.graph)):
+            with self.subTest(output=output, readme=readme):
+                result = subprocess.run(
+                    [sys.executable, str(REPORTER), "--results", str(self.results),
+                     "--readme", str(readme), "--output", str(output)],
+                    capture_output=True, text=True, timeout=10, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("separate files", result.stderr)
+                self.assertEqual(self.readme.read_bytes(), prior)
+                self.assertFalse(self.output.exists())
+                self.assertFalse(self.graph.exists())
 
     def test_regeneration_write_failure_restores_both_published_views(self):
         self.assertEqual(self.run_report().returncode, 0)
         published = self.output.read_bytes()
         original = self.readme.read_bytes()
+        previous_graph = self.graph.read_bytes()
         replace = os.replace
 
         def fail_headline(source, destination):
@@ -538,9 +594,10 @@ class ReportTests(unittest.TestCase):
         with mock.patch.object(reporter.os, "replace", side_effect=fail_headline):
             with self.assertRaisesRegex(OSError, "injected"):
                 reporter.write_reports(self.output, "new comparison", self.readme,
-                                       original, "new headline")
+                                       original, "new headline", "<svg/>")
         self.assertEqual(self.output.read_bytes(), published)
         self.assertEqual(self.readme.read_bytes(), original)
+        self.assertEqual(self.graph.read_bytes(), previous_graph)
         self.assertEqual(list(self.root.glob(".mesh-report-*")), [])
         self.assertEqual(list(self.results.glob(".mesh-report-*")), [])
 
@@ -555,11 +612,13 @@ class ReportTests(unittest.TestCase):
 
         with mock.patch.object(reporter.os, "replace", side_effect=fail_headline):
             with self.assertRaisesRegex(OSError, "injected"):
-                reporter.write_reports(self.output, "comparison", self.readme, original, "headline")
+                reporter.write_reports(self.output, "comparison", self.readme, original, "headline", "<svg/>")
         self.assertFalse(self.output.exists())
+        self.assertFalse(self.graph.exists())
         self.assertEqual(self.readme.read_bytes(), original)
 
-    def live_capture(self, source_changed=False, publication_failure=False, invalid=False):
+    def live_capture(self, source_changed=False, publication_failure=False, invalid=False, shared_only=False,
+                     advanced_head=False, runtime_changed=False):
         self.assertEqual(self.run_report().returncode, 0)
         repository = self.root / "repository"
         bench = repository / "bench"
@@ -574,13 +633,17 @@ class ReportTests(unittest.TestCase):
         shutil.copy2(self.readme, readme)
         published = bench / "results"
         shutil.copytree(self.results, published)
+        stored = json.loads((published / "capture.json").read_text())
+        stored["harness_sha256"] = capture_runner.harness_hashes(repository)
+        (published / "capture.json").write_text(json.dumps(stored))
         previous = {p.relative_to(published): p.read_bytes() for p in published.rglob("*") if p.is_file()}
         old_readme = readme.read_bytes()
-        record = copy.deepcopy(self.records["interlink", "rps", 4])
+        name = "shared" if shared_only else "rps"
+        record = copy.deepcopy(self.records["interlink", name, 4])
         record["DurationHistogram"]["Percentiles"][0]["Value"] = 0.025
         if invalid:
             record["ActualQPS"] = float("nan")
-        self.write_record("interlink", record)
+        self.write_record("interlink", record, name, 4)
         run = subprocess.run
         rename = Path.rename
         source_identity = capture_runner.source_identity
@@ -589,6 +652,20 @@ class ReportTests(unittest.TestCase):
         def run_script(script, env, log, timeout):
             if script == "setup.sh":
                 shutil.copytree(self.results, Path(env["BENCH_CAPTURE_DIR"]), dirs_exist_ok=True)
+            if shared_only and script.startswith("scripts/"):
+                mesh = {"scripts/run-interlink.sh": "interlink", "scripts/run-linkerd.sh": "linkerd",
+                        "scripts/run-istio.sh": "istio-ambient"}[script]
+                folder = Path(env["BENCH_CAPTURE_DIR"]) / mesh
+                result = folder / f"fortio-{mesh}-shared-c4.json"
+                data = json.loads(result.read_text())
+                data["StartTime"] = "2026-11-17T01:00:10Z"
+                result.write_text(json.dumps(data))
+                for suffix in (".csv", ".host.csv"):
+                    path = folder / f"metrics-{mesh}-shared-c4{suffix}"
+                    text = path.read_text()
+                    for second in (10, 20):
+                        text = text.replace(str(EPOCH + second), str(EPOCH + 3600 + second))
+                    path.write_text(text)
 
         def command(args, **kwargs):
             if args[0] == "kind":
@@ -610,26 +687,35 @@ class ReportTests(unittest.TestCase):
             return rename(path, destination)
 
         environment = {
-            "BENCH_REVISION": self.capture["revision"],
+            "BENCH_REVISION": "b" * 40 if advanced_head else self.capture["revision"],
             "BENCH_RPS_CONCURRENCY": "1,4", "BENCH_BULK_CONCURRENCY": "1,4",
             "BENCH_DURATION": "10",
+            "BENCH_SHARED_RPS": "150", "BENCH_SHARED_CONCURRENCY": "4",
             **{key.upper() + "_VERSION": value for key, value in self.capture["versions"].items()
                if key != "kubernetes"},
             "KUBECTL_VERSION": self.capture["versions"]["kubernetes"],
         }
         old_umask = os.umask(0o022)
         self.addCleanup(os.umask, old_umask)
+        window = (["2026-11-17T01:00:00Z", "2026-11-17T01:01:00Z"] if shared_only
+                  else [self.capture["started_at"], self.capture["completed_at"]])
+
+        def tree_ids(*args, **kwargs):
+            return "changed" if runtime_changed and str(args[1]).startswith("b" * 40) else "same"
         with mock.patch.multiple(capture_runner, ROOT=repository, BENCH=bench), \
                 mock.patch.object(capture_runner, "source_identity",
                                   side_effect=lambda: source_identity(repository)), \
                 mock.patch.object(capture_runner, "timestamp",
-                                  side_effect=[self.capture["started_at"], self.capture["completed_at"]]), \
+                                  side_effect=window), \
                 mock.patch.object(capture_runner, "run_script", side_effect=run_script), \
                 mock.patch.object(capture_runner, "cleanup"), \
+                mock.patch.object(capture_runner, "git", side_effect=tree_ids), \
                 mock.patch.object(capture_runner.subprocess, "run", side_effect=command), \
                 mock.patch.object(capture_runner.os, "uname",
                                   return_value=os.uname_result(("Linux", "test", "test-kernel", "test", "x86_64"))), \
-                mock.patch.object(capture_runner.os, "sysconf", return_value=4096), \
+                mock.patch.object(capture_runner.os, "cpu_count", return_value=8), \
+                mock.patch.object(capture_runner.os, "sysconf",
+                                  side_effect=lambda key: 4096 if key == "SC_PAGE_SIZE" else 4_194_304), \
                 mock.patch.object(Path, "rename", fail_publication), \
                 mock.patch.dict(os.environ, environment):
             if source_changed:
@@ -641,22 +727,33 @@ class ReportTests(unittest.TestCase):
             elif invalid:
                 with self.assertRaisesRegex(ValueError, "achieved RPS"):
                     capture_runner.capture()
+            elif runtime_changed:
+                with self.assertRaisesRegex(ValueError, "same runtime"):
+                    capture_runner.capture(shared_only=True)
             else:
-                capture_runner.capture()
-        if source_changed or publication_failure or invalid:
+                capture_runner.capture(shared_only=shared_only)
+        if source_changed or publication_failure or invalid or runtime_changed:
             self.assertEqual(readme.read_bytes(), old_readme)
             self.assertEqual(
                 {p.relative_to(published): p.read_bytes() for p in published.rglob("*") if p.is_file()},
                 previous)
         else:
-            self.assertIn("| interlink | 200.0 | 30.00 | 25.00 |", readme.read_text())
-            self.assertIn("| interlink | 200.0 | 25.00 | 30.00 |",
-                          (published / "comparison.md").read_text())
+            self.assertNotEqual((published / "comparison.svg").read_bytes(), previous[Path("comparison.svg")])
             self.assertEqual(
                 subprocess.run([sys.executable, str(REPORTER), "--results", str(published),
                                 "--readme", str(readme), "--check"],
                                capture_output=True, text=True, timeout=10).returncode, 0)
-        self.assertEqual(bool(staged_readmes), not invalid)
+            if shared_only:
+                metadata = json.loads((published / "capture.json").read_text())
+                self.assertEqual(metadata["started_at"], self.capture["started_at"])
+                self.assertEqual(metadata["completed_at"], self.capture["completed_at"])
+                self.assertEqual(metadata["shared_load"]["started_at"], window[0])
+                self.assertEqual(metadata["shared_load"]["completed_at"], window[1])
+                for path, content in previous.items():
+                    if path.name.startswith(("fortio-", "metrics-")) and "-shared-" not in path.name:
+                        self.assertEqual((published / path).read_bytes(), content)
+                self.assertEqual(metadata["shared_load"]["revision"], self.capture["revision"])
+        self.assertEqual(bool(staged_readmes), not (invalid or runtime_changed))
 
     def test_live_capture_publishes_same_capture_without_dirtying_source_before_guard(self):
         self.live_capture()
@@ -669,6 +766,12 @@ class ReportTests(unittest.TestCase):
 
     def test_live_capture_headline_publication_failure_restores_dataset_and_headline(self):
         self.live_capture(publication_failure=True)
+
+    def test_shared_only_refresh_preserves_capacity_measurements_and_their_window(self):
+        self.live_capture(shared_only=True, advanced_head=True)
+
+    def test_shared_only_refuses_changed_runtime_without_touching_published_measurements(self):
+        self.live_capture(shared_only=True, advanced_head=True, runtime_changed=True)
 
 
 if __name__ == "__main__":

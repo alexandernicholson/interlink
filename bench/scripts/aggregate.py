@@ -13,6 +13,8 @@ import re
 import sys
 import tempfile
 
+from plot import render
+
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 README_PATH = RESULTS_DIR.parents[1] / "README.md"
 HEADLINE_BEGIN = "<!-- BEGIN GENERATED MESH HEADLINE -->"
@@ -192,7 +194,7 @@ class Point:
         return self.errors == 0 and self.warmup_errors == 0
 
 
-def measured_point(directory, mesh, workload, concurrency, capture, capture_start, capture_end):
+def measured_point(directory, mesh, workload, concurrency, capture, capture_start, capture_end, requested_qps=0):
     label = f"{mesh}-{workload['name']}-c{concurrency}"
     record = json.loads((directory / mesh / f"fortio-{label}.json").read_text(encoding="utf-8"))
     if record["Version"] != capture["versions"]["fortio"]:
@@ -202,10 +204,13 @@ def measured_point(directory, mesh, workload, concurrency, capture, capture_star
         raise ValueError(f"{label}: Fortio client mode differs from the declared workload")
     if finite(record["HTTPReqTimeOut"], f"{label} request timeout", minimum=1) != capture["request_timeout_seconds"] * 1e9:
         raise ValueError(f"{label}: request timeout differs from the declared experiment")
-    if (record["RequestedQPS"] not in ("max", "0", 0)
-            or isinstance(record["RequestedQPS"], bool)
-            or positive_integer(record["NumThreads"], label) != concurrency):
-        raise ValueError(f"{label}: expected unlimited offered load at declared concurrency")
+    if positive_integer(record["NumThreads"], label) != concurrency:
+        raise ValueError(f"{label}: concurrency differs from the declared measurement")
+    if requested_qps:
+        if finite(record["RequestedQPS"], f"{label} offered RPS", minimum=1) != requested_qps:
+            raise ValueError(f"{label}: offered load differs from the shared target")
+    elif record["RequestedQPS"] not in ("max", "0", 0) or isinstance(record["RequestedQPS"], bool):
+        raise ValueError(f"{label}: expected unlimited offered load")
     if ("Payload" in record or positive_integer(record["PayloadBytes"], label) != workload["payload_bytes"]
             or not re.fullmatch(r"[0-9a-f]{64}", record["PayloadSHA256"])):
         raise ValueError(f"{label}: invalid normalized request payload")
@@ -222,6 +227,8 @@ def measured_point(directory, mesh, workload, concurrency, capture, capture_star
     rps = finite(record["ActualQPS"], f"{label} achieved RPS")
     if not math.isclose(rps, total / duration, rel_tol=1e-6, abs_tol=1e-6):
         raise ValueError(f"{label}: achieved RPS differs from response count and duration")
+    if requested_qps and (errors or warmup_errors or not 0.97 * requested_qps <= rps <= 1.03 * requested_qps):
+        raise ValueError(f"{label}: shared load needs error-free requests within 3% of target")
     latency = histogram(record, "DurationHistogram", total, label)
     # Fortio 1.66 considers 2xx and 418 successful, even its synthetic 204
     # after a partial standard-client read. Echo eligibility still requires 200.
@@ -278,6 +285,8 @@ def load_results(directory):
     points = []
     for mesh in MESHES:
         labels = [f"{mesh}-{w['name']}-c{c}" for w in capture["workloads"] for c in w["concurrency"]]
+        if "shared_load" in capture:
+            labels.append(f"{mesh}-shared-c{positive_integer(capture['shared_load']['concurrency'], 'shared concurrency')}")
         expected = {f"{prefix}-{label}{suffix}" for label in labels
                     for prefix, suffix in (("fortio", ".json"), ("metrics", ".csv"), ("metrics", ".host.csv"))}
         if {p.name for p in (directory / mesh).iterdir()} != expected:
@@ -286,6 +295,24 @@ def load_results(directory):
             for concurrency in workload["concurrency"]:
                 points.append(measured_point(directory, mesh, workload, concurrency, capture, started, completed))
     return capture, points
+
+
+def load_shared_points(directory, capture):
+    shared = capture["shared_load"]
+    for key in ("target_rps", "concurrency", "duration_seconds", "warmup_seconds", "request_timeout_seconds"):
+        positive_integer(shared[key], f"shared {key}")
+    for key in ("host", "versions", "revision", "server_delay_ms", "request_timeout_seconds"):
+        if shared[key] != capture[key]:
+            raise ValueError(f"shared load {key} differs from the capacity sweep")
+    started = instant(shared["started_at"], "shared load start")
+    completed = instant(shared["completed_at"], "shared load completion")
+    if completed <= started:
+        raise ValueError("shared load completion must follow its start")
+    return [
+        measured_point(directory, mesh, {"name": "shared", "payload_bytes": 1024},
+                       shared["concurrency"], shared, started, completed, shared["target_rps"])
+        for mesh in MESHES
+    ]
 
 
 def selected_peaks(points):
@@ -309,79 +336,33 @@ def peak_metadata(points):
 
 def reports(directory):
     capture, points = load_results(directory)
-    peaks = selected_peaks(points)
-    for mesh in MESHES:
-        for name, _ in WORKLOADS:
-            positive_integer(capture["peaks"][mesh][f"{name}_concurrency"], "peak concurrency")
     if capture["peaks"] != peak_metadata(points):
-        raise ValueError("capture peak concurrency metadata differs from raw measured winners")
-    revision = capture["revision"]
-    provenance = (f"Captured {capture['completed_at']}; runtime source [`{revision[:12]}`]"
-                  f"(https://github.com/alexandernicholson/interlink/commit/{revision}). "
-                  "Actual harness, workload, manifest and build-input SHA256 hashes are recorded "
-                  "separately in the capture metadata.")
+        raise ValueError("capture peak metadata differs from measured winners")
+    shared = load_shared_points(directory, capture)
+    target = capture["shared_load"]["target_rps"]
+    clients = capture["shared_load"]["concurrency"]
+    graph = render(points, shared, capture["host"], target_rps=target)
+    conditions = f"All meshes at **{target:,} RPS with {clients} clients**; lines show capacity sweeps."
+    workload = "Zero-delay HTTP echo: 1 KiB requests/responses; bulk uses 1 MiB each way."
     host = capture["host"]
-    conditions = (
-        f"Zero-delay HTTP echo, unlimited offered load; {capture['duration_seconds']} s measured "
-        f"after {capture['warmup_seconds']} s warm-up per point. "
-        f"{capture['request_timeout_seconds']} s request timeout on every mesh. "
-        "1 KiB request/response with Fortio's fast client for RPS, "
-        "1 MiB request/response with its full-duplex standard client for payload throughput. "
-        "Payload MiB/s is each direction, not doubled wire throughput.")
-    grids = "; ".join(f"{w['name']}: " + ", ".join(map(str, w["concurrency"])) for w in capture["workloads"])
-    lines = [
-        "# Service Mesh Echo Capacity Comparison", "", provenance, "", conditions, "",
-        f"Linux machine: {host['architecture']}, {host['logical_cpus']} logical CPUs, "
-        f"{host['memory_bytes'] / 2**30:.1f} GiB RAM, kernel {host['kernel']}. "
-        "Client/server use separate workers in the same three-node kind cluster on this shared host. "
-        "Interlink/Linkerd use sidecars; Istio ambient uses L4 ztunnel without a waypoint.", "",
-        "Pinned versions: " + ", ".join(f"{key} {capture['versions'][key]}" for key in VERSION_KEYS) + ".", "",
-        f"Predeclared concurrency sweeps — {grids}. All points, including error boundaries, are retained.", "",
-        "| Mesh | Peak measured RPS (1 KiB) | p99 at RPS peak (ms) | Peak payload MiB/s each way (1 MiB) | Proxy CPU at RPS peak (m) | RSS at RPS peak (MiB) |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
-    ]
-    headline = [
-        HEADLINE_BEGIN, provenance, "", conditions, "",
-        "| Mesh | Peak measured RPS (1 KiB) | Peak payload MiB/s each way (1 MiB) | p99 at RPS peak (ms) |",
-        "| --- | ---: | ---: | ---: |",
-    ]
-    for mesh, winners in peaks.items():
-        rps, bulk = winners["rps"], winners["bulk"]
-        lines.append(f"| {mesh} | {rps.rps:.1f} | {rps.p99_ms:.2f} | {bulk.payload_mib_s:.2f} | "
-                     f"{rps.cpu_millicores:.1f} | {rps.rss_mib:.1f} |")
-        headline.append(f"| {mesh} | {rps.rps:.1f} | {bulk.payload_mib_s:.2f} | {rps.p99_ms:.2f} |")
-    lines.extend(["", "## Selection and limits", ""])
-    for mesh, winners in peaks.items():
-        errors = [p for p in points if p.mesh == mesh and not p.eligible]
-        boundary = ", ".join(f"{p.workload} c{p.concurrency}: {p.errors}/{p.requests} measured errors, "
-                             f"{p.warmup_errors} warm-up errors" for p in errors) or "none"
-        limits = [name for name, point in winners.items()
-                  if point.concurrency == max(c for w in capture["workloads"]
-                                              for c in w["concurrency"] if w["name"] == name)]
-        lines.append(f"- **{mesh}**: winning concurrency RPS {winners['rps'].concurrency}, "
-                     f"bulk {winners['bulk'].concurrency}. Error boundaries: {boundary}. "
-                     + ("Largest tested concurrency still wins for " + ", ".join(limits)
-                        + "; this is a tested-range limit, not an absolute ceiling." if limits
-                        else "Peaks are limited to the tested concurrency grid."))
-    lines.extend([
-        "", "Only points with zero warm-up and measured request errors are eligible. "
-        "Missing/invalid/stale metrics or incomplete grids fail the entire capture. "
-        "Unlimited-load capacity testing may saturate the host; no fixed-target achievement or "
-        "85% host-CPU gate applies. Raw host CPU samples remain part of the evidence. "
-        "CPU and actual RSS sum the proxy containers; they are not per-connection allocations.",
-        "", "These are peak measured results within this machine's declared sweep, not theoretical "
-        "capacity or a guarantee for other machines, production networks, connection churn or TLS "
-        "handshake throughput.", "",
-        "[Capture metadata and selected concurrency](capture.json) · [Run the comparison](../README.md)", "",
+    text = "\n".join([
+        "# Service mesh benchmarks", "",
+        "![Latency, memory, CPU and throughput](comparison.svg)", "",
+        conditions, "", workload,
+        f"One Linux host: {host['logical_cpus']} logical CPUs, {host['memory_bytes'] / 2**30:.1f} GiB RAM; "
+        "client and server on separate kind workers. Interlink/Linkerd use sidecars; Istio ambient uses L4 ztunnel.", "",
+        f"{capture['duration_seconds']} s per capacity point after {capture['warmup_seconds']} s warm-up; "
+        f"{capture['request_timeout_seconds']} s request timeout. Error-free measurements only.", "",
+        "[Run the benchmarks](../README.md)", "",
     ])
-    headline.extend([
-        "", f"Concurrency sweeps — {grids}. Peak measured within this Linux machine's tested range, "
-        "not an absolute capacity guarantee. Shared-host three-node kind; Interlink/Linkerd sidecars, "
-        "Istio ambient L4 ztunnel. "
-        "[Machine, winning concurrency, errors and limits](bench/results/comparison.md).",
+    headline = "\n".join([
+        HEADLINE_BEGIN,
+        "![Service mesh latency, memory, CPU and throughput](bench/results/comparison.svg)", "",
+        conditions, "",
+        "[Workload and results](bench/results/comparison.md) · [Run manually](bench/README.md)",
         HEADLINE_END,
     ])
-    return "\n".join(lines), "\n".join(headline)
+    return text, headline, graph
 
 
 def replace_headline(readme, headline):
@@ -399,12 +380,14 @@ def replace_headline(readme, headline):
     return readme[:start] + headline + readme[end + len(HEADLINE_END):]
 
 
-def write_reports(output, text, readme, original, updated):
-    """Prepare both files before replacing either; roll back a failed publication."""
+def write_reports(output, text, readme, original, updated, graph):
+    """Replace the graph, report and README together; roll back on failure."""
     pending = []
     replaced = []
     try:
+        graph_path = output.with_suffix(".svg")
         for path, content, previous in (
+                (graph_path, graph, graph_path.read_bytes() if graph_path.exists() else None),
                 (output, text, output.read_bytes() if output.exists() else None),
                 (readme, updated, original)):
             with tempfile.NamedTemporaryFile("wb", dir=path.parent,
@@ -437,18 +420,20 @@ def main():
     args = parser.parse_args()
     output = args.output or args.results / "comparison.md"
     try:
-        if output.resolve() == args.readme.resolve():
-            raise ValueError("comparison and README must be separate files")
-        text, headline = reports(args.results)
+        if len({output.resolve(), output.with_suffix(".svg").resolve(), args.readme.resolve()}) != 3:
+            raise ValueError("graph, comparison and README must be separate files")
+        text, headline, graph = reports(args.results)
         original = args.readme.read_bytes()
         updated = replace_headline(original.decode("utf-8"), headline)
         if args.check:
             if output.read_text(encoding="utf-8") != text:
-                raise ValueError("comparison table is stale; regenerate it from its capture")
+                raise ValueError("comparison report is stale; regenerate it from its measurements")
             if original != updated.encode("utf-8"):
                 raise ValueError("README headline is stale; regenerate it from its capture")
+            if output.with_suffix(".svg").read_text(encoding="utf-8") != graph:
+                raise ValueError("benchmark graph is stale; regenerate it from its measurements")
         else:
-            write_reports(output, text, args.readme, original, updated)
+            write_reports(output, text, args.readme, original, updated, graph)
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"benchmark report: {error}", file=sys.stderr)
         return 1

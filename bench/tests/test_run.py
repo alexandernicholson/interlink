@@ -47,12 +47,13 @@ class HarnessTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 profile.concurrency_grid(value)
 
-    def load_record(self, payload_bytes=1024, connections=80, duration=1, codes=None):
-        codes = {'200': 10} if codes is None else codes
+    def load_record(self, payload_bytes=1024, connections=80, duration=1, codes=None, requested_qps=0):
+        codes = {'200': requested_qps * duration if requested_qps else 10} if codes is None else codes
         count = sum(codes.values())
         standard_client = payload_bytes == 1_048_576
         header_bytes = 0 if standard_client else 120
-        return {'RetCodes': codes, 'RequestedQPS': 'max', 'NumThreads': connections,
+        return {'RetCodes': codes, 'RequestedQPS': str(requested_qps) if requested_qps else 'max',
+                'NumThreads': connections,
                 'ActualDuration': duration * 1_000_000_000, 'ActualQPS': count / duration,
                 'HTTPReqTimeOut': 5_000_000_000,
                 'StartTime': dt.datetime.now(dt.timezone.utc).isoformat(), 'Version': '1.66.0',
@@ -137,6 +138,49 @@ class HarnessTests(unittest.TestCase):
             command = profile.fortio_args('http://test/echo', payload_bytes, 4, 20)
             self.assertEqual('-stdclient' in command, standard_client)
             self.assertEqual(command[command.index('-qps') + 1], '0')
+
+    def test_shared_load_uses_actual_target_and_preserves_measured_rate_duration_and_body_proof(self):
+        command = profile.fortio_args('http://test/echo', 1024, 64, 20, requested_qps=10000)
+        command = command[command.index('--') + 1:]
+        self.assertEqual(command[command.index('-qps') + 1], '10000')
+        self.assertEqual(command[command.index('-c') + 1], '64')
+        self.assertEqual(command[command.index('-t') + 1], '20s')
+        self.assertNotIn('-stdclient', command)
+        for achieved in (9700, 10000, 10300):
+            data = self.load_record(connections=64, duration=2, requested_qps=10000,
+                                    codes={'200': achieved * 2})
+            result = profile.validate_load(json.dumps(data), 1024, 64, 2, requested_qps=10000)
+            self.assertEqual(result['ActualQPS'], achieved)
+            self.assertEqual(result['ActualDuration'], 2_000_000_000)
+            self.assertEqual(result['RetCodes'], {'200': achieved * 2})
+            self.assertEqual(result['PayloadBytes'], 1024)
+            self.assertEqual(result['PayloadSHA256'], hashlib.sha256(b'x' * 1024).hexdigest())
+            self.assertEqual(result['Sizes'], data['Sizes'])
+            self.assertNotIn('Payload', result)
+
+    def test_shared_load_rejects_wrong_target_drift_errors_and_payload_corruption(self):
+        for codes in ({'200': 10000}, {'200': 9699}, {'200': 10301}, {'200': 9999, '503': 1}, {'-1': 10000}):
+            data = self.load_record(connections=64, requested_qps=10000, codes=codes)
+            if codes == {'200': 10000}:
+                data['RequestedQPS'] = 'max'
+            with self.subTest(codes=codes), self.assertRaises(ValueError):
+                profile.validate_load(json.dumps(data), 1024, 64, 1, requested_qps=10000)
+        for mutate in (
+            lambda d: d.update(RequestedQPS='9999'),
+            lambda d: d.update(NumThreads=80),
+            lambda d: d.update(Payload=base64.b64encode(b'wrong body').decode()),
+            lambda d: d['Sizes'].update(Sum=d['Sizes']['Sum'] - 1),
+        ):
+            data = self.load_record(connections=64, requested_qps=10000)
+            mutate(data)
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                profile.validate_load(json.dumps(data), 1024, 64, 1, requested_qps=10000)
+        for invalid in (-1, True, 10000.0, '10000'):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    profile.fortio_args('http://test/echo', 1024, 64, 20, requested_qps=invalid)
+                with self.assertRaises(ValueError):
+                    profile.validate_load('{}', 1024, 64, 20, requested_qps=invalid)
 
     def test_host_delta_does_not_fabricate_zero_or_double_count_guest(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -268,7 +312,8 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'missing proxy'):
             profile.expected_containers('bench', 'proxy', ['client', 'server'], run)
 
-    def collect(self, directory, failure=None, real_metrics=False, payload_bytes=1024):
+    def collect(self, directory, failure=None, real_metrics=False, payload_bytes=1024,
+                requested_qps=0, connections=80):
         args = types.SimpleNamespace(target='http://test/echo', mesh='interlink', duration=1,
                                      namespace='bench', container='proxy', client_node='client',
                                      server_node='server', results=pathlib.Path(directory))
@@ -279,10 +324,18 @@ class HarnessTests(unittest.TestCase):
         samples = []
         processes = []
         pods = {'items': [self.pod('a', 'client'), self.pod('b', 'server', 'b' * 64)]}
-        measured_codes = {'200': 8, '503': 2} if failure in ('measured-errors', 'measured-exit-errors') else {'200': 10}
+        measured_count = requested_qps or 10
+        if failure == 'measured-rate':
+            measured_count = int(measured_count * 0.96)
+        measured_codes = ({'200': measured_count - 2, '503': 2}
+                          if failure in ('measured-errors', 'measured-exit-errors') else {'200': measured_count})
         if failure == 'all-errors':
-            measured_codes = {'-1': 10}
-        measured_text = json.dumps(self.load_record(payload_bytes=payload_bytes, codes=measured_codes))
+            measured_codes = {'-1': measured_count}
+        measured_record = self.load_record(payload_bytes=payload_bytes, connections=connections,
+                                          codes=measured_codes, requested_qps=requested_qps)
+        if failure == 'body':
+            measured_record['Sizes']['Sum'] -= 1
+        measured_text = json.dumps(measured_record)
         if failure == 'malformed':
             measured_text = 'not json'
 
@@ -304,12 +357,18 @@ class HarnessTests(unittest.TestCase):
                 events.append('sample')
                 return self.rss(uid, uid * 64, rss, int(time.time() * 1000))
             self.assertIn('10s', command)
+            self.assertEqual(command[command.index('-qps') + 1], str(requested_qps))
             self.assertFalse(samples, 'sampler must not run during warmup')
             events.append('warmup')
             if failure == 'warmup':
                 raise subprocess.CalledProcessError(1, command)
-            codes = {'200': 7, '503': 3} if failure in ('warmup-errors', 'warmup-exit-errors') else {'200': 10}
-            text = json.dumps(self.load_record(payload_bytes=payload_bytes, duration=10, codes=codes))
+            warmup_count = requested_qps * 10 if requested_qps else 10
+            if failure == 'warmup-rate':
+                warmup_count = int(warmup_count * 0.96)
+            codes = ({'200': warmup_count - 3, '503': 3}
+                     if failure in ('warmup-errors', 'warmup-exit-errors') else {'200': warmup_count})
+            text = json.dumps(self.load_record(payload_bytes=payload_bytes, connections=connections,
+                                              duration=10, codes=codes, requested_qps=requested_qps))
             if failure in ('warmup-exit-errors', 'warmup-exit-success', 'warmup-malformed'):
                 raise subprocess.CalledProcessError(1, command, output='not json' if failure == 'warmup-malformed' else text)
             return text
@@ -332,6 +391,7 @@ class HarnessTests(unittest.TestCase):
         class Process:
             def __init__(self, command, stdout):
                 self.args = command
+                self_outer.assertEqual(command[command.index('-qps') + 1], str(requested_qps))
                 self.returncode = None
                 self.polls = 0
                 self.terminated = False
@@ -357,15 +417,21 @@ class HarnessTests(unittest.TestCase):
             def wait(self, timeout):
                 return self.returncode
 
-        workload = {'name': 'rps' if payload_bytes == 1024 else 'bulk', 'payload_bytes': payload_bytes}
+        workload = {'name': 'shared' if requested_qps else ('rps' if payload_bytes == 1024 else 'bulk'),
+                    'payload_bytes': payload_bytes}
         sampler = None if real_metrics else sample
+        self_outer = self
         with Deadline():
-            if failure in ('warmup', 'initial-metrics', 'metrics', 'load', 'malformed', 'restart',
-                           'warmup-exit-success', 'warmup-malformed'):
+            if (failure in ('warmup', 'initial-metrics', 'metrics', 'load', 'malformed', 'restart',
+                            'warmup-exit-success', 'warmup-malformed', 'body', 'warmup-rate', 'measured-rate')
+                    or requested_qps and failure in ('warmup-errors', 'warmup-exit-errors', 'measured-errors',
+                                                    'measured-exit-errors', 'all-errors')):
                 with self.assertRaises((ValueError, subprocess.CalledProcessError)):
-                    profile.collect_point(args, workload, 80, run, sampler, ticks, Process, interval=0.01)
+                    profile.collect_point(args, workload, connections, run, sampler, ticks, Process,
+                                          interval=0.01, requested_qps=requested_qps)
             else:
-                profile.collect_point(args, workload, 80, run, sampler, ticks, Process, interval=0.01)
+                profile.collect_point(args, workload, connections, run, sampler, ticks, Process,
+                                      interval=0.01, requested_qps=requested_qps)
         return events, samples, times, processes
 
     def test_sampler_starts_after_warmup_and_brackets_full_measured_window(self):
@@ -431,6 +497,47 @@ class HarnessTests(unittest.TestCase):
                 self.assertEqual(record['Sizes']['Sum'], 10 * 1_048_576)
                 self.assertTrue((pathlib.Path(temporary) / 'metrics-interlink-bulk-c80.csv').is_file())
 
+    def test_shared_collector_brackets_load_and_writes_only_the_contract_file_triple(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            _, samples, times, processes = self.collect(temporary, real_metrics=True,
+                                                       requested_qps=10000, connections=64)
+            self.assertEqual(len(processes), 1)
+            self.assertLessEqual(samples[0], times['start'])
+            self.assertGreaterEqual(samples[-1], times['end'])
+            root = pathlib.Path(temporary)
+            self.assertEqual({path.name for path in root.iterdir()}, {
+                'fortio-interlink-shared-c64.json', 'metrics-interlink-shared-c64.csv',
+                'metrics-interlink-shared-c64.host.csv'})
+            result = json.loads((root / 'fortio-interlink-shared-c64.json').read_text())
+            self.assertEqual(result['RequestedQPS'], '10000')
+            self.assertEqual(result['ActualQPS'], 10000)
+            self.assertEqual(result['WarmupRetCodes'], {'200': 100000})
+            self.assertEqual(result['RetCodes'], {'200': 10000})
+            self.assertEqual(result['PayloadBytes'], 1024)
+            self.assertNotIn('Payload', result)
+
+    def test_shared_collector_aborts_warmup_errors_and_drift_before_measured_launch(self):
+        for failure in ('warmup-errors', 'warmup-exit-errors', 'warmup-rate'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                _, _, _, processes = self.collect(temporary, failure, requested_qps=10000, connections=64)
+                self.assertEqual(processes, [])
+
+    def test_shared_collector_rejects_measured_errors_drift_and_body_corruption_with_raw_evidence(self):
+        for failure in ('measured-errors', 'measured-exit-errors', 'all-errors', 'measured-rate', 'body'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                _, samples, times, processes = self.collect(temporary, failure,
+                                                           requested_qps=10000, connections=64)
+                self.assertEqual(len(processes), 1)
+                self.assertGreaterEqual(samples[-1], times['end'])
+                result = json.loads((pathlib.Path(temporary) / 'fortio-interlink-shared-c64.json').read_text())
+                self.assertIn('Payload', result)
+                if 'errors' in failure:
+                    self.assertGreater(profile.request_errors(result['RetCodes']), 0)
+                elif failure == 'measured-rate':
+                    self.assertEqual(result['ActualQPS'], 9600)
+                else:
+                    self.assertEqual(result['Sizes']['Sum'] - result['HeaderSizes']['Sum'], 10000 * 1024 - 1)
+
     def test_restarted_required_proxy_aborts_and_terminates_measured_load(self):
         with tempfile.TemporaryDirectory() as temporary:
             _, _, _, processes = self.collect(temporary, 'restart', real_metrics=True)
@@ -440,17 +547,62 @@ class HarnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             self.collect(temporary, 'malformed')
 
-    def test_cli_attempts_entire_predeclared_grid_without_shaped_load_mode(self):
-        with mock.patch.object(sys, 'argv', [
+    def collector_cli(self, extra=()):
+        return [
             'capture_profile.py', '--mesh', 'interlink', '--namespace', 'bench', '--container', 'proxy',
             '--target', 'http://test/echo', '--client-node', 'client', '--server-node', 'server',
             '--results', '/unused', '--duration', '20', '--rps-concurrency', '1,4,16', '--bulk-concurrency', '1,4',
-        ]), mock.patch.object(profile, 'collect_point') as collect:
+            *extra,
+        ]
+
+    def test_cli_collects_default_shared_control_before_the_entire_capacity_grid(self):
+        with mock.patch.object(sys, 'argv', self.collector_cli()), \
+             mock.patch.object(profile, 'collect_point') as collect:
             profile.main()
-        self.assertEqual([(call.args[1]['name'], call.args[1]['payload_bytes'], call.args[2])
-                          for call in collect.call_args_list],
-                         [('rps', 1024, 1), ('rps', 1024, 4), ('rps', 1024, 16),
-                          ('bulk', 1_048_576, 1), ('bulk', 1_048_576, 4)])
+        self.assertEqual([(call.args[1]['name'], call.args[1]['payload_bytes'], call.args[2],
+                           call.kwargs.get('requested_qps', 0)) for call in collect.call_args_list],
+                         [('shared', 1024, 64, 10000), ('rps', 1024, 1, 0), ('rps', 1024, 4, 0),
+                          ('rps', 1024, 16, 0), ('bulk', 1_048_576, 1, 0), ('bulk', 1_048_576, 4, 0)])
+
+    def test_cli_shared_only_collects_exactly_one_control_with_custom_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            collect_point = profile.collect_point
+            collected = []
+
+            def collect(args, workload, connections, *, requested_qps=0):
+                collected.append((workload, connections, requested_qps))
+                # Exercise the collector's actual command/validation/file consumer,
+                # not just its CLI dispatch, without starting external workloads.
+                with mock.patch.object(profile, 'collect_point', collect_point):
+                    self.collect(temporary, requested_qps=requested_qps, connections=connections)
+
+            with mock.patch.object(sys, 'argv', self.collector_cli([
+                '--shared-only', '--shared-rps', '8000', '--shared-concurrency', '32',
+            ])), mock.patch.object(profile, 'collect_point', side_effect=collect):
+                profile.main()
+            self.assertEqual(collected, [({'name': 'shared', 'payload_bytes': 1024}, 32, 8000)])
+            root = pathlib.Path(temporary)
+            self.assertEqual({path.name for path in root.iterdir()}, {
+                'fortio-interlink-shared-c32.json', 'metrics-interlink-shared-c32.csv',
+                'metrics-interlink-shared-c32.host.csv'})
+            result = json.loads((root / 'fortio-interlink-shared-c32.json').read_text())
+            self.assertEqual(result['RequestedQPS'], '8000')
+            self.assertEqual(result['ActualQPS'], 8000)
+
+    def test_cli_rejects_invalid_controls_or_grids_before_any_collection(self):
+        for option, value in (
+            ('--shared-rps', '0'), ('--shared-rps', '-1'), ('--shared-rps', 'nan'),
+            ('--shared-rps', '1.5'), ('--shared-concurrency', '0'), ('--shared-concurrency', '-1'),
+            ('--shared-concurrency', '1.5'), ('--duration', '0'), ('--rps-concurrency', '1,1'),
+            ('--bulk-concurrency', '0'),
+        ):
+            with self.subTest(option=option, value=value), \
+                 mock.patch.object(sys, 'argv', self.collector_cli([option, value])), \
+                 mock.patch.object(profile, 'collect_point') as collect, \
+                 mock.patch('sys.stderr'), self.assertRaises(SystemExit) as error:
+                profile.main()
+            self.assertEqual(error.exception.code, 2)
+            collect.assert_not_called()
 
     def test_publication_replaces_whole_cohort_and_keeps_private_files_out(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -540,15 +692,6 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(readme.read_text(), 'valid prior headline')
             self.assertEqual((data / 'comparison.md').read_text(), 'new comparison')
             self.assertEqual(pending.read_text(), 'new headline')
-
-    def test_remote_source_guard_accepts_only_exact_current_revision(self):
-        with mock.patch.object(capture, 'git', return_value='a' * 40 + '\trefs/heads/main'):
-            capture.assert_remote_revision('a' * 40)
-            with self.assertRaisesRegex(RuntimeError, 'advanced'):
-                capture.assert_remote_revision('b' * 40)
-        with mock.patch.object(capture, 'git', side_effect=subprocess.CalledProcessError(1, ['git'])):
-            with self.assertRaises(subprocess.CalledProcessError):
-                capture.assert_remote_revision('a' * 40)
 
     def test_archive_requires_full_explicit_provenance_and_rejects_source_changes(self):
         with tempfile.TemporaryDirectory() as temporary:

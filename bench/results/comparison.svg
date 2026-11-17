@@ -1,0 +1,550 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="990" viewBox="0 0 1000 990" role="img" aria-labelledby="plot-title plot-desc">
+<title id="plot-title">Measured service mesh echo performance</title>
+<desc id="plot-desc">Four panels show p99 latency, proxy RSS, proxy CPU, and bulk payload throughput. Small markers are eligible capacity measurements in declared concurrency order. Large ringed markers are separate measured shared-load controls at their actual achieved request rates.</desc>
+<style>svg{color:var(--fg,CanvasText);color-scheme:light dark;font-family:system-ui,-apple-system,sans-serif;font-size:14px}text{fill:currentColor}.muted{fill:var(--muted,currentColor)}.axis{stroke:currentColor;stroke-width:1;fill:none}.grid{stroke:var(--border,currentColor);stroke-opacity:.18;stroke-width:1}.shade{fill:var(--accent,currentColor);fill-opacity:.08}.target{stroke:currentColor;stroke-opacity:.65;stroke-dasharray:2 5;stroke-width:1.5}.mesh0{stroke:var(--c1,LinkText)}.mesh1{stroke:var(--c2,ActiveText)}.mesh2{stroke:var(--c3,VisitedText)}.curve{fill:none;stroke-width:2;stroke-linejoin:round}.marker{fill:none;stroke-width:1.5}.control{stroke-width:2.5}</style>
+<text x="24.00" y="29.00" text-anchor="start" font-size="22">Service mesh · measured echo performance</text>
+<text x="24.00" y="53.00" text-anchor="start" class="muted">Same host · 8 logical CPUs · 3.32 GiB RAM</text>
+<line x1="24.00" y1="80.00" x2="62.00" y2="80.00" class="mesh0 curve"/>
+<g class="mesh0 marker">
+<circle cx="43.00" cy="80.00" r="3.50"/>
+</g>
+<text x="72.00" y="85.00" text-anchor="start">interlink</text>
+<line x1="239.00" y1="80.00" x2="277.00" y2="80.00" class="mesh1 curve" stroke-dasharray="8 5"/>
+<g class="mesh1 marker">
+<rect x="254.50" y="76.50" width="7.00" height="7.00"/>
+</g>
+<text x="287.00" y="85.00" text-anchor="start">linkerd</text>
+<line x1="454.00" y1="80.00" x2="492.00" y2="80.00" class="mesh2 curve" stroke-dasharray="2 4"/>
+<g class="mesh2 marker">
+<path d="M 473.00,76.50 L 476.50,83.50 L 469.50,83.50 Z"/>
+</g>
+<text x="502.00" y="85.00" text-anchor="start">istio-ambient</text>
+<g class="mesh0 marker control">
+<circle cx="715.00" cy="80.00" r="8.00" stroke-width="1"/>
+<circle cx="715.00" cy="80.00" r="5.00"/>
+</g>
+<text x="733.00" y="85.00" text-anchor="start">Measured shared control</text>
+<text x="24.00" y="112.00" text-anchor="start">Shared controls: 10,000 RPS offered to each mesh · concurrency 64 · 1 KiB request / response</text>
+<text x="24.00" y="135.00" text-anchor="start" class="muted">Common capacity range: 4,837.01–19,000.92 RPS (shaded)</text>
+<g id="panel-p99_ms" class="panel" role="group" aria-label="1 KiB · p99 latency">
+<text x="24.00" y="171.00" text-anchor="start" font-size="17">1 KiB · p99 latency</text>
+<text x="81.00" y="189.00" text-anchor="start" class="muted" font-size="13">p99 latency (ms, log scale)</text>
+<rect class="shade" x="104.34" y="202.00" width="68.34" height="190.00"/>
+<line x1="81.00" y1="392.00" x2="467.00" y2="392.00" class="grid"/>
+<text x="72.00" y="397.00" text-anchor="end" font-size="13">0.1</text>
+<line x1="81.00" y1="344.50" x2="467.00" y2="344.50" class="grid"/>
+<text x="72.00" y="349.50" text-anchor="end" font-size="13">1</text>
+<line x1="81.00" y1="297.00" x2="467.00" y2="297.00" class="grid"/>
+<text x="72.00" y="302.00" text-anchor="end" font-size="13">10</text>
+<line x1="81.00" y1="249.50" x2="467.00" y2="249.50" class="grid"/>
+<text x="72.00" y="254.50" text-anchor="end" font-size="13">100</text>
+<line x1="81.00" y1="202.00" x2="467.00" y2="202.00" class="grid"/>
+<text x="72.00" y="207.00" text-anchor="end" font-size="13">1k</text>
+<line x1="81.00" y1="202.00" x2="81.00" y2="392.00" class="grid"/>
+<text x="81.00" y="414.00" text-anchor="middle" font-size="13">0</text>
+<line x1="177.50" y1="202.00" x2="177.50" y2="392.00" class="grid"/>
+<text x="177.50" y="414.00" text-anchor="middle" font-size="13">20k</text>
+<line x1="274.00" y1="202.00" x2="274.00" y2="392.00" class="grid"/>
+<text x="274.00" y="414.00" text-anchor="middle" font-size="13">40k</text>
+<line x1="370.50" y1="202.00" x2="370.50" y2="392.00" class="grid"/>
+<text x="370.50" y="414.00" text-anchor="middle" font-size="13">60k</text>
+<line x1="467.00" y1="202.00" x2="467.00" y2="392.00" class="grid"/>
+<text x="467.00" y="414.00" text-anchor="middle" font-size="13">80k</text>
+<line x1="81.00" y1="202.00" x2="81.00" y2="392.00" class="axis"/>
+<line x1="81.00" y1="392.00" x2="467.00" y2="392.00" class="axis"/>
+<line x1="129.25" y1="202.00" x2="129.25" y2="392.00" class="target"/>
+<text x="467.00" y="189.00" text-anchor="end" font-size="12">Dotted: 10k offered</text>
+<text x="274.00" y="436.00" text-anchor="middle">Achieved request rate (RPS)</text>
+<polyline class="mesh0 curve" data-mesh="interlink" points="104.34,344.69 147.72,344.67 220.28,331.40 259.94,308.63 353.85,283.81 418.06,257.17"/>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="104.34" data-y="344.69">
+<title>interlink capacity · c1 · 4,837.01 RPS · 0.99 ms</title>
+<circle cx="104.34" cy="344.69" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="147.72" data-y="344.67">
+<title>interlink capacity · c4 · 13,828.76 RPS · 0.99 ms</title>
+<circle cx="147.72" cy="344.67" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="220.28" data-y="331.40">
+<title>interlink capacity · c16 · 28,866.63 RPS · 1.89 ms</title>
+<circle cx="220.28" cy="331.40" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="259.94" data-y="308.63">
+<title>interlink capacity · c64 · 37,086.44 RPS · 5.69 ms</title>
+<circle cx="259.94" cy="308.63" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="353.85" data-y="283.81">
+<title>interlink capacity · c256 · 56,548.83 RPS · 18.95 ms</title>
+<circle cx="353.85" cy="283.81" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="418.06" data-y="257.17">
+<title>interlink capacity · c1024 · 69,856.37 RPS · 68.95 ms</title>
+<circle cx="418.06" cy="257.17" r="3.50"/>
+</g>
+<polyline class="mesh1 curve" data-mesh="linkerd" points="93.60,344.67 116.52,344.60 147.85,330.24 172.68,306.39 171.81,278.49 165.17,252.74 164.27,223.62" stroke-dasharray="8 5"/>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="93.60" data-y="344.67">
+<title>linkerd capacity · c1 · 2,611.27 RPS · 0.99 ms</title>
+<rect x="90.10" y="341.17" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="116.52" data-y="344.60">
+<title>linkerd capacity · c4 · 7,361.31 RPS · 1 ms</title>
+<rect x="113.02" y="341.10" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="147.85" data-y="330.24">
+<title>linkerd capacity · c16 · 13,855.95 RPS · 2 ms</title>
+<rect x="144.35" y="326.74" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="172.68" data-y="306.39">
+<title>linkerd capacity · c64 · 19,000.92 RPS · 6.34 ms</title>
+<rect x="169.18" y="302.89" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="171.81" data-y="278.49">
+<title>linkerd capacity · c256 · 18,820.35 RPS · 24.53 ms</title>
+<rect x="168.31" y="274.99" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="165.17" data-y="252.74">
+<title>linkerd capacity · c1024 · 17,444.34 RPS · 85.47 ms</title>
+<rect x="161.67" y="249.24" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="164.27" data-y="223.62">
+<title>linkerd capacity · c4096 · 17,257.32 RPS · 350.6 ms</title>
+<rect x="160.77" y="220.12" width="7.00" height="7.00"/>
+</g>
+<polyline class="mesh2 curve" data-mesh="istio-ambient" points="99.65,344.69 134.71,344.64 195.55,330.48 246.84,308.99 329.50,287.27 370.72,258.38 351.85,229.92" stroke-dasharray="2 4"/>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="99.65" data-y="344.69">
+<title>istio-ambient capacity · c1 · 3,865.3 RPS · 0.99 ms</title>
+<path d="M 99.65,341.19 L 103.15,348.19 L 96.15,348.19 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="134.71" data-y="344.64">
+<title>istio-ambient capacity · c4 · 11,131.73 RPS · 0.99 ms</title>
+<path d="M 134.71,341.14 L 138.21,348.14 L 131.21,348.14 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="195.55" data-y="330.48">
+<title>istio-ambient capacity · c16 · 23,741.93 RPS · 1.97 ms</title>
+<path d="M 195.55,326.98 L 199.05,333.98 L 192.05,333.98 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="246.84" data-y="308.99">
+<title>istio-ambient capacity · c64 · 34,370.49 RPS · 5.59 ms</title>
+<path d="M 246.84,305.49 L 250.34,312.49 L 243.34,312.49 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="329.50" data-y="287.27">
+<title>istio-ambient capacity · c256 · 51,502.79 RPS · 16.02 ms</title>
+<path d="M 329.50,283.77 L 333.00,290.77 L 326.00,290.77 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="370.72" data-y="258.38">
+<title>istio-ambient capacity · c1024 · 60,045.55 RPS · 65.02 ms</title>
+<path d="M 370.72,254.88 L 374.22,261.88 L 367.22,261.88 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="351.85" data-y="229.92">
+<title>istio-ambient capacity · c4096 · 56,133.96 RPS · 258.34 ms</title>
+<path d="M 351.85,226.42 L 355.35,233.42 L 348.35,233.42 Z"/>
+</g>
+<text x="81.00" y="458.00" text-anchor="start" class="muted">Measured controls · actual RPS → value</text>
+<g class="mesh0 marker control shared-point" data-mesh="interlink" data-x="129.24" data-y="323.10">
+<title>interlink · 9,998.49 RPS → 2.82 ms</title>
+<circle cx="129.24" cy="323.10" r="9.00" stroke-width="1"/>
+<circle cx="129.24" cy="323.10" r="6.00"/>
+</g>
+<g class="mesh0 marker control">
+<circle cx="83.00" cy="475.00" r="7.00" stroke-width="1"/>
+<circle cx="83.00" cy="475.00" r="4.00"/>
+</g>
+<text x="100.00" y="480.00" text-anchor="start" font-size="13">interlink · 9,998.49 RPS → 2.82 ms</text>
+<g class="mesh1 marker control shared-point" data-mesh="linkerd" data-x="129.24" data-y="307.89">
+<title>linkerd · 9,997.66 RPS → 5.9 ms</title>
+<circle cx="129.24" cy="307.89" r="9.00" stroke-width="1"/>
+<rect x="123.24" y="301.89" width="12.00" height="12.00"/>
+</g>
+<g class="mesh1 marker control">
+<circle cx="83.00" cy="495.00" r="7.00" stroke-width="1"/>
+<rect x="79.00" y="491.00" width="8.00" height="8.00"/>
+</g>
+<text x="100.00" y="500.00" text-anchor="start" font-size="13">linkerd · 9,997.66 RPS → 5.9 ms</text>
+<g class="mesh2 marker control shared-point" data-mesh="istio-ambient" data-x="129.24" data-y="319.08">
+<title>istio-ambient · 9,998.43 RPS → 3.43 ms</title>
+<circle cx="129.24" cy="319.08" r="9.00" stroke-width="1"/>
+<path d="M 129.24,313.08 L 135.24,325.08 L 123.24,325.08 Z"/>
+</g>
+<g class="mesh2 marker control">
+<circle cx="83.00" cy="515.00" r="7.00" stroke-width="1"/>
+<path d="M 83.00,511.00 L 87.00,519.00 L 79.00,519.00 Z"/>
+</g>
+<text x="100.00" y="520.00" text-anchor="start" font-size="13">istio-ambient · 9,998.43 RPS → 3.43 ms</text>
+</g>
+<g id="panel-rss_mib" class="panel" role="group" aria-label="1 KiB · proxy resident memory">
+<text x="516.00" y="171.00" text-anchor="start" font-size="17">1 KiB · proxy resident memory</text>
+<text x="573.00" y="189.00" text-anchor="start" class="muted" font-size="13">Proxy RSS (MiB)</text>
+<rect class="shade" x="596.34" y="202.00" width="68.34" height="190.00"/>
+<line x1="573.00" y1="392.00" x2="959.00" y2="392.00" class="grid"/>
+<text x="564.00" y="397.00" text-anchor="end" font-size="13">0</text>
+<line x1="573.00" y1="328.67" x2="959.00" y2="328.67" class="grid"/>
+<text x="564.00" y="333.67" text-anchor="end" font-size="13">100</text>
+<line x1="573.00" y1="265.33" x2="959.00" y2="265.33" class="grid"/>
+<text x="564.00" y="270.33" text-anchor="end" font-size="13">200</text>
+<line x1="573.00" y1="202.00" x2="959.00" y2="202.00" class="grid"/>
+<text x="564.00" y="207.00" text-anchor="end" font-size="13">300</text>
+<line x1="573.00" y1="202.00" x2="573.00" y2="392.00" class="grid"/>
+<text x="573.00" y="414.00" text-anchor="middle" font-size="13">0</text>
+<line x1="669.50" y1="202.00" x2="669.50" y2="392.00" class="grid"/>
+<text x="669.50" y="414.00" text-anchor="middle" font-size="13">20k</text>
+<line x1="766.00" y1="202.00" x2="766.00" y2="392.00" class="grid"/>
+<text x="766.00" y="414.00" text-anchor="middle" font-size="13">40k</text>
+<line x1="862.50" y1="202.00" x2="862.50" y2="392.00" class="grid"/>
+<text x="862.50" y="414.00" text-anchor="middle" font-size="13">60k</text>
+<line x1="959.00" y1="202.00" x2="959.00" y2="392.00" class="grid"/>
+<text x="959.00" y="414.00" text-anchor="middle" font-size="13">80k</text>
+<line x1="573.00" y1="202.00" x2="573.00" y2="392.00" class="axis"/>
+<line x1="573.00" y1="392.00" x2="959.00" y2="392.00" class="axis"/>
+<line x1="621.25" y1="202.00" x2="621.25" y2="392.00" class="target"/>
+<text x="959.00" y="189.00" text-anchor="end" font-size="12">Dotted: 10k offered</text>
+<text x="766.00" y="436.00" text-anchor="middle">Achieved request rate (RPS)</text>
+<polyline class="mesh0 curve" data-mesh="interlink" points="596.34,380.35 639.72,373.21 712.28,369.31 751.94,367.29 845.85,359.00 910.06,343.64"/>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="596.34" data-y="380.35">
+<title>interlink capacity · c1 · 4,837.01 RPS · 18.39 MiB</title>
+<circle cx="596.34" cy="380.35" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="639.72" data-y="373.21">
+<title>interlink capacity · c4 · 13,828.76 RPS · 29.67 MiB</title>
+<circle cx="639.72" cy="373.21" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="712.28" data-y="369.31">
+<title>interlink capacity · c16 · 28,866.63 RPS · 35.82 MiB</title>
+<circle cx="712.28" cy="369.31" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="751.94" data-y="367.29">
+<title>interlink capacity · c64 · 37,086.44 RPS · 39.01 MiB</title>
+<circle cx="751.94" cy="367.29" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="845.85" data-y="359.00">
+<title>interlink capacity · c256 · 56,548.83 RPS · 52.11 MiB</title>
+<circle cx="845.85" cy="359.00" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="910.06" data-y="343.64">
+<title>interlink capacity · c1024 · 69,856.37 RPS · 76.36 MiB</title>
+<circle cx="910.06" cy="343.64" r="3.50"/>
+</g>
+<polyline class="mesh1 curve" data-mesh="linkerd" points="585.60,388.31 608.52,388.11 639.85,387.26 664.68,384.32 663.81,373.84 657.17,339.29 656.27,248.70" stroke-dasharray="8 5"/>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="585.60" data-y="388.31">
+<title>linkerd capacity · c1 · 2,611.27 RPS · 5.83 MiB</title>
+<rect x="582.10" y="384.81" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="608.52" data-y="388.11">
+<title>linkerd capacity · c4 · 7,361.31 RPS · 6.15 MiB</title>
+<rect x="605.02" y="384.61" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="639.85" data-y="387.26">
+<title>linkerd capacity · c16 · 13,855.95 RPS · 7.49 MiB</title>
+<rect x="636.35" y="383.76" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="664.68" data-y="384.32">
+<title>linkerd capacity · c64 · 19,000.92 RPS · 12.13 MiB</title>
+<rect x="661.18" y="380.82" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="663.81" data-y="373.84">
+<title>linkerd capacity · c256 · 18,820.35 RPS · 28.67 MiB</title>
+<rect x="660.31" y="370.34" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="657.17" data-y="339.29">
+<title>linkerd capacity · c1024 · 17,444.34 RPS · 83.23 MiB</title>
+<rect x="653.67" y="335.79" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="656.27" data-y="248.70">
+<title>linkerd capacity · c4096 · 17,257.32 RPS · 226.26 MiB</title>
+<rect x="652.77" y="245.20" width="7.00" height="7.00"/>
+</g>
+<polyline class="mesh2 curve" data-mesh="istio-ambient" points="591.65,389.53 626.71,389.17 687.55,388.50 738.84,387.38 821.50,381.72 862.72,362.62 843.85,312.83" stroke-dasharray="2 4"/>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="591.65" data-y="389.53">
+<title>istio-ambient capacity · c1 · 3,865.3 RPS · 3.91 MiB</title>
+<path d="M 591.65,386.03 L 595.15,393.03 L 588.15,393.03 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="626.71" data-y="389.17">
+<title>istio-ambient capacity · c4 · 11,131.73 RPS · 4.46 MiB</title>
+<path d="M 626.71,385.67 L 630.21,392.67 L 623.21,392.67 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="687.55" data-y="388.50">
+<title>istio-ambient capacity · c16 · 23,741.93 RPS · 5.52 MiB</title>
+<path d="M 687.55,385.00 L 691.05,392.00 L 684.05,392.00 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="738.84" data-y="387.38">
+<title>istio-ambient capacity · c64 · 34,370.49 RPS · 7.29 MiB</title>
+<path d="M 738.84,383.88 L 742.34,390.88 L 735.34,390.88 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="821.50" data-y="381.72">
+<title>istio-ambient capacity · c256 · 51,502.79 RPS · 16.24 MiB</title>
+<path d="M 821.50,378.22 L 825.00,385.22 L 818.00,385.22 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="862.72" data-y="362.62">
+<title>istio-ambient capacity · c1024 · 60,045.55 RPS · 46.4 MiB</title>
+<path d="M 862.72,359.12 L 866.22,366.12 L 859.22,366.12 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="843.85" data-y="312.83">
+<title>istio-ambient capacity · c4096 · 56,133.96 RPS · 125 MiB</title>
+<path d="M 843.85,309.33 L 847.35,316.33 L 840.35,316.33 Z"/>
+</g>
+<text x="573.00" y="458.00" text-anchor="start" class="muted">Measured controls · actual RPS → value</text>
+<g class="mesh0 marker control shared-point" data-mesh="interlink" data-x="621.24" data-y="377.95">
+<title>interlink · 9,998.49 RPS → 22.18 MiB</title>
+<circle cx="621.24" cy="377.95" r="9.00" stroke-width="1"/>
+<circle cx="621.24" cy="377.95" r="6.00"/>
+</g>
+<g class="mesh0 marker control">
+<circle cx="575.00" cy="475.00" r="7.00" stroke-width="1"/>
+<circle cx="575.00" cy="475.00" r="4.00"/>
+</g>
+<text x="592.00" y="480.00" text-anchor="start" font-size="13">interlink · 9,998.49 RPS → 22.18 MiB</text>
+<g class="mesh1 marker control shared-point" data-mesh="linkerd" data-x="621.24" data-y="385.55">
+<title>linkerd · 9,997.66 RPS → 10.19 MiB</title>
+<circle cx="621.24" cy="385.55" r="9.00" stroke-width="1"/>
+<rect x="615.24" y="379.55" width="12.00" height="12.00"/>
+</g>
+<g class="mesh1 marker control">
+<circle cx="575.00" cy="495.00" r="7.00" stroke-width="1"/>
+<rect x="571.00" y="491.00" width="8.00" height="8.00"/>
+</g>
+<text x="592.00" y="500.00" text-anchor="start" font-size="13">linkerd · 9,997.66 RPS → 10.19 MiB</text>
+<g class="mesh2 marker control shared-point" data-mesh="istio-ambient" data-x="621.24" data-y="387.31">
+<title>istio-ambient · 9,998.43 RPS → 7.4 MiB</title>
+<circle cx="621.24" cy="387.31" r="9.00" stroke-width="1"/>
+<path d="M 621.24,381.31 L 627.24,393.31 L 615.24,393.31 Z"/>
+</g>
+<g class="mesh2 marker control">
+<circle cx="575.00" cy="515.00" r="7.00" stroke-width="1"/>
+<path d="M 575.00,511.00 L 579.00,519.00 L 571.00,519.00 Z"/>
+</g>
+<text x="592.00" y="520.00" text-anchor="start" font-size="13">istio-ambient · 9,998.43 RPS → 7.4 MiB</text>
+</g>
+<g id="panel-cpu_millicores" class="panel" role="group" aria-label="1 KiB · proxy CPU">
+<text x="24.00" y="565.00" text-anchor="start" font-size="17">1 KiB · proxy CPU</text>
+<text x="81.00" y="583.00" text-anchor="start" class="muted" font-size="13">Proxy CPU (cores)</text>
+<rect class="shade" x="104.34" y="596.00" width="68.34" height="190.00"/>
+<line x1="81.00" y1="786.00" x2="467.00" y2="786.00" class="grid"/>
+<text x="72.00" y="791.00" text-anchor="end" font-size="13">0</text>
+<line x1="81.00" y1="722.67" x2="467.00" y2="722.67" class="grid"/>
+<text x="72.00" y="727.67" text-anchor="end" font-size="13">1</text>
+<line x1="81.00" y1="659.33" x2="467.00" y2="659.33" class="grid"/>
+<text x="72.00" y="664.33" text-anchor="end" font-size="13">2</text>
+<line x1="81.00" y1="596.00" x2="467.00" y2="596.00" class="grid"/>
+<text x="72.00" y="601.00" text-anchor="end" font-size="13">3</text>
+<line x1="81.00" y1="596.00" x2="81.00" y2="786.00" class="grid"/>
+<text x="81.00" y="808.00" text-anchor="middle" font-size="13">0</text>
+<line x1="177.50" y1="596.00" x2="177.50" y2="786.00" class="grid"/>
+<text x="177.50" y="808.00" text-anchor="middle" font-size="13">20k</text>
+<line x1="274.00" y1="596.00" x2="274.00" y2="786.00" class="grid"/>
+<text x="274.00" y="808.00" text-anchor="middle" font-size="13">40k</text>
+<line x1="370.50" y1="596.00" x2="370.50" y2="786.00" class="grid"/>
+<text x="370.50" y="808.00" text-anchor="middle" font-size="13">60k</text>
+<line x1="467.00" y1="596.00" x2="467.00" y2="786.00" class="grid"/>
+<text x="467.00" y="808.00" text-anchor="middle" font-size="13">80k</text>
+<line x1="81.00" y1="596.00" x2="81.00" y2="786.00" class="axis"/>
+<line x1="81.00" y1="786.00" x2="467.00" y2="786.00" class="axis"/>
+<line x1="129.25" y1="596.00" x2="129.25" y2="786.00" class="target"/>
+<text x="467.00" y="583.00" text-anchor="end" font-size="12">Dotted: 10k offered</text>
+<text x="274.00" y="830.00" text-anchor="middle">Achieved request rate (RPS)</text>
+<polyline class="mesh0 curve" data-mesh="interlink" points="104.34,744.66 147.72,677.04 220.28,665.46 259.94,670.32 353.85,667.40 418.06,646.47"/>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="104.34" data-y="744.66">
+<title>interlink capacity · c1 · 4,837.01 RPS · 0.65 cores</title>
+<circle cx="104.34" cy="744.66" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="147.72" data-y="677.04">
+<title>interlink capacity · c4 · 13,828.76 RPS · 1.72 cores</title>
+<circle cx="147.72" cy="677.04" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="220.28" data-y="665.46">
+<title>interlink capacity · c16 · 28,866.63 RPS · 1.9 cores</title>
+<circle cx="220.28" cy="665.46" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="259.94" data-y="670.32">
+<title>interlink capacity · c64 · 37,086.44 RPS · 1.83 cores</title>
+<circle cx="259.94" cy="670.32" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="353.85" data-y="667.40">
+<title>interlink capacity · c256 · 56,548.83 RPS · 1.87 cores</title>
+<circle cx="353.85" cy="667.40" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="418.06" data-y="646.47">
+<title>interlink capacity · c1024 · 69,856.37 RPS · 2.2 cores</title>
+<circle cx="418.06" cy="646.47" r="3.50"/>
+</g>
+<polyline class="mesh1 curve" data-mesh="linkerd" points="93.60,731.03 116.52,685.55 147.85,669.40 172.68,667.44 171.81,667.68 165.17,670.65 164.27,687.95" stroke-dasharray="8 5"/>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="93.60" data-y="731.03">
+<title>linkerd capacity · c1 · 2,611.27 RPS · 0.87 cores</title>
+<rect x="90.10" y="727.53" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="116.52" data-y="685.55">
+<title>linkerd capacity · c4 · 7,361.31 RPS · 1.59 cores</title>
+<rect x="113.02" y="682.05" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="147.85" data-y="669.40">
+<title>linkerd capacity · c16 · 13,855.95 RPS · 1.84 cores</title>
+<rect x="144.35" y="665.90" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="172.68" data-y="667.44">
+<title>linkerd capacity · c64 · 19,000.92 RPS · 1.87 cores</title>
+<rect x="169.18" y="663.94" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="171.81" data-y="667.68">
+<title>linkerd capacity · c256 · 18,820.35 RPS · 1.87 cores</title>
+<rect x="168.31" y="664.18" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="165.17" data-y="670.65">
+<title>linkerd capacity · c1024 · 17,444.34 RPS · 1.82 cores</title>
+<rect x="161.67" y="667.15" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="164.27" data-y="687.95">
+<title>linkerd capacity · c4096 · 17,257.32 RPS · 1.55 cores</title>
+<rect x="160.77" y="684.45" width="7.00" height="7.00"/>
+</g>
+<polyline class="mesh2 curve" data-mesh="istio-ambient" points="99.65,749.14 134.71,684.14 195.55,651.77 246.84,652.79 329.50,643.77 370.72,626.72 351.85,636.70" stroke-dasharray="2 4"/>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="99.65" data-y="749.14">
+<title>istio-ambient capacity · c1 · 3,865.3 RPS · 0.58 cores</title>
+<path d="M 99.65,745.64 L 103.15,752.64 L 96.15,752.64 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="134.71" data-y="684.14">
+<title>istio-ambient capacity · c4 · 11,131.73 RPS · 1.61 cores</title>
+<path d="M 134.71,680.64 L 138.21,687.64 L 131.21,687.64 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="195.55" data-y="651.77">
+<title>istio-ambient capacity · c16 · 23,741.93 RPS · 2.12 cores</title>
+<path d="M 195.55,648.27 L 199.05,655.27 L 192.05,655.27 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="246.84" data-y="652.79">
+<title>istio-ambient capacity · c64 · 34,370.49 RPS · 2.1 cores</title>
+<path d="M 246.84,649.29 L 250.34,656.29 L 243.34,656.29 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="329.50" data-y="643.77">
+<title>istio-ambient capacity · c256 · 51,502.79 RPS · 2.25 cores</title>
+<path d="M 329.50,640.27 L 333.00,647.27 L 326.00,647.27 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="370.72" data-y="626.72">
+<title>istio-ambient capacity · c1024 · 60,045.55 RPS · 2.52 cores</title>
+<path d="M 370.72,623.22 L 374.22,630.22 L 367.22,630.22 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="351.85" data-y="636.70">
+<title>istio-ambient capacity · c4096 · 56,133.96 RPS · 2.36 cores</title>
+<path d="M 351.85,633.20 L 355.35,640.20 L 348.35,640.20 Z"/>
+</g>
+<text x="81.00" y="852.00" text-anchor="start" class="muted">Measured controls · actual RPS → value</text>
+<g class="mesh0 marker control shared-point" data-mesh="interlink" data-x="129.24" data-y="754.27">
+<title>interlink · 9,998.49 RPS → 0.5 cores</title>
+<circle cx="129.24" cy="754.27" r="9.00" stroke-width="1"/>
+<circle cx="129.24" cy="754.27" r="6.00"/>
+</g>
+<g class="mesh0 marker control">
+<circle cx="83.00" cy="869.00" r="7.00" stroke-width="1"/>
+<circle cx="83.00" cy="869.00" r="4.00"/>
+</g>
+<text x="100.00" y="874.00" text-anchor="start" font-size="13">interlink · 9,998.49 RPS → 0.5 cores</text>
+<g class="mesh1 marker control shared-point" data-mesh="linkerd" data-x="129.24" data-y="719.96">
+<title>linkerd · 9,997.66 RPS → 1.04 cores</title>
+<circle cx="129.24" cy="719.96" r="9.00" stroke-width="1"/>
+<rect x="123.24" y="713.96" width="12.00" height="12.00"/>
+</g>
+<g class="mesh1 marker control">
+<circle cx="83.00" cy="889.00" r="7.00" stroke-width="1"/>
+<rect x="79.00" y="885.00" width="8.00" height="8.00"/>
+</g>
+<text x="100.00" y="894.00" text-anchor="start" font-size="13">linkerd · 9,997.66 RPS → 1.04 cores</text>
+<g class="mesh2 marker control shared-point" data-mesh="istio-ambient" data-x="129.24" data-y="745.19">
+<title>istio-ambient · 9,998.43 RPS → 0.64 cores</title>
+<circle cx="129.24" cy="745.19" r="9.00" stroke-width="1"/>
+<path d="M 129.24,739.19 L 135.24,751.19 L 123.24,751.19 Z"/>
+</g>
+<g class="mesh2 marker control">
+<circle cx="83.00" cy="909.00" r="7.00" stroke-width="1"/>
+<path d="M 83.00,905.00 L 87.00,913.00 L 79.00,913.00 Z"/>
+</g>
+<text x="100.00" y="914.00" text-anchor="start" font-size="13">istio-ambient · 9,998.43 RPS → 0.64 cores</text>
+</g>
+<g id="panel-payload_mib_s" class="panel" role="group" aria-label="1 MiB · bulk payload throughput">
+<text x="516.00" y="565.00" text-anchor="start" font-size="17">1 MiB · bulk payload throughput</text>
+<text x="573.00" y="583.00" text-anchor="start" class="muted" font-size="13">Payload (MiB/s per direction)</text>
+<line x1="573.00" y1="786.00" x2="959.00" y2="786.00" class="grid"/>
+<text x="564.00" y="791.00" text-anchor="end" font-size="13">0</text>
+<line x1="573.00" y1="722.67" x2="959.00" y2="722.67" class="grid"/>
+<text x="564.00" y="727.67" text-anchor="end" font-size="13">1k</text>
+<line x1="573.00" y1="659.33" x2="959.00" y2="659.33" class="grid"/>
+<text x="564.00" y="664.33" text-anchor="end" font-size="13">2k</text>
+<line x1="573.00" y1="596.00" x2="959.00" y2="596.00" class="grid"/>
+<text x="564.00" y="601.00" text-anchor="end" font-size="13">3k</text>
+<line x1="573.00" y1="596.00" x2="573.00" y2="786.00" class="grid"/>
+<text x="573.00" y="808.00" text-anchor="middle" font-size="13">1</text>
+<line x1="669.50" y1="596.00" x2="669.50" y2="786.00" class="grid"/>
+<text x="669.50" y="808.00" text-anchor="middle" font-size="13">4</text>
+<line x1="766.00" y1="596.00" x2="766.00" y2="786.00" class="grid"/>
+<text x="766.00" y="808.00" text-anchor="middle" font-size="13">16</text>
+<line x1="862.50" y1="596.00" x2="862.50" y2="786.00" class="grid"/>
+<text x="862.50" y="808.00" text-anchor="middle" font-size="13">64</text>
+<line x1="959.00" y1="596.00" x2="959.00" y2="786.00" class="grid"/>
+<text x="959.00" y="808.00" text-anchor="middle" font-size="13">256</text>
+<line x1="573.00" y1="596.00" x2="573.00" y2="786.00" class="axis"/>
+<line x1="573.00" y1="786.00" x2="959.00" y2="786.00" class="axis"/>
+<text x="766.00" y="830.00" text-anchor="middle">Concurrency (log scale)</text>
+<polyline class="mesh0 curve" data-mesh="interlink" points="573.00,748.75 669.50,696.69 766.00,667.96 862.50,642.05 959.00,687.30"/>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="573.00" data-y="748.75">
+<title>interlink capacity · c1 · 588.14 RPS · 588.14 MiB/s</title>
+<circle cx="573.00" cy="748.75" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="669.50" data-y="696.69">
+<title>interlink capacity · c4 · 1,410.17 RPS · 1,410.17 MiB/s</title>
+<circle cx="669.50" cy="696.69" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="766.00" data-y="667.96">
+<title>interlink capacity · c16 · 1,863.8 RPS · 1,863.8 MiB/s</title>
+<circle cx="766.00" cy="667.96" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="862.50" data-y="642.05">
+<title>interlink capacity · c64 · 2,272.86 RPS · 2,272.86 MiB/s</title>
+<circle cx="862.50" cy="642.05" r="3.50"/>
+</g>
+<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="959.00" data-y="687.30">
+<title>interlink capacity · c256 · 1,558.49 RPS · 1,558.49 MiB/s</title>
+<circle cx="959.00" cy="687.30" r="3.50"/>
+</g>
+<polyline class="mesh1 curve" data-mesh="linkerd" points="573.00,770.68 669.50,762.65 766.00,758.97 862.50,760.95 959.00,765.17" stroke-dasharray="8 5"/>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="573.00" data-y="770.68">
+<title>linkerd capacity · c1 · 241.97 RPS · 241.97 MiB/s</title>
+<rect x="569.50" y="767.18" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="669.50" data-y="762.65">
+<title>linkerd capacity · c4 · 368.68 RPS · 368.68 MiB/s</title>
+<rect x="666.00" y="759.15" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="766.00" data-y="758.97">
+<title>linkerd capacity · c16 · 426.81 RPS · 426.81 MiB/s</title>
+<rect x="762.50" y="755.47" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="862.50" data-y="760.95">
+<title>linkerd capacity · c64 · 395.5 RPS · 395.5 MiB/s</title>
+<rect x="859.00" y="757.45" width="7.00" height="7.00"/>
+</g>
+<g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="959.00" data-y="765.17">
+<title>linkerd capacity · c256 · 328.96 RPS · 328.96 MiB/s</title>
+<rect x="955.50" y="761.67" width="7.00" height="7.00"/>
+</g>
+<polyline class="mesh2 curve" data-mesh="istio-ambient" points="573.00,745.09 669.50,726.59 766.00,724.17 862.50,724.90 959.00,721.05" stroke-dasharray="2 4"/>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="573.00" data-y="745.09">
+<title>istio-ambient capacity · c1 · 645.88 RPS · 645.88 MiB/s</title>
+<path d="M 573.00,741.59 L 576.50,748.59 L 569.50,748.59 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="669.50" data-y="726.59">
+<title>istio-ambient capacity · c4 · 938.07 RPS · 938.07 MiB/s</title>
+<path d="M 669.50,723.09 L 673.00,730.09 L 666.00,730.09 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="766.00" data-y="724.17">
+<title>istio-ambient capacity · c16 · 976.22 RPS · 976.22 MiB/s</title>
+<path d="M 766.00,720.67 L 769.50,727.67 L 762.50,727.67 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="862.50" data-y="724.90">
+<title>istio-ambient capacity · c64 · 964.71 RPS · 964.71 MiB/s</title>
+<path d="M 862.50,721.40 L 866.00,728.40 L 859.00,728.40 Z"/>
+</g>
+<g class="mesh2 marker capacity-point" data-mesh="istio-ambient" data-x="959.00" data-y="721.05">
+<title>istio-ambient capacity · c256 · 1,025.53 RPS · 1,025.53 MiB/s</title>
+<path d="M 959.00,717.55 L 962.50,724.55 L 955.50,724.55 Z"/>
+</g>
+<text x="573.00" y="852.00" text-anchor="start" class="muted">Each marker is a measured capacity point.</text>
+<text x="573.00" y="874.00" text-anchor="start" font-size="13">1 MiB request + 1 MiB response per exchange.</text>
+<text x="573.00" y="896.00" text-anchor="start" font-size="13">Payload rate is per direction, not doubled.</text>
+</g>
+<text x="24.00" y="951.00" text-anchor="start" class="muted" font-size="13">Only error-free points shown. Lines follow declared concurrency order; they do not add measurements.</text>
+<text x="24.00" y="974.00" text-anchor="start" class="muted" font-size="13">Shading is the overlap of measured capacity RPS spans. Ringed controls use actual achieved RPS, not the offered target.</text>
+</svg>

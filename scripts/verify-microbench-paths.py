@@ -121,7 +121,10 @@ def normalize_source(filename: str) -> str | None:
 
 
 def collect_coverage() -> dict[str, dict[str, float | int]]:
-    run(["rustup", "run", "stable", "cargo", "llvm-cov", "clean", "--workspace"])
+    # cargo can otherwise find a newer Homebrew rustc ahead of rustup's shims.
+    compiler = run(["rustup", "which", "--toolchain", "stable", "rustc"]).strip()
+    run(["rustup", "run", "stable", "cargo", "llvm-cov", "clean", "--workspace"],
+        overrides={"RUSTC": compiler})
     inventory = load_inventory()
     executions = [{"target": target, "env": None} for target in inventory["targets"]]
     executions.extend(inventory.get("coverage_variants", []))
@@ -139,7 +142,7 @@ def collect_coverage() -> dict[str, dict[str, float | int]]:
                 "--",
                 "--test",
             ],
-            overrides=execution["env"],
+            overrides={**(execution["env"] or {}), "RUSTC": compiler},
         )
     run(
         [
@@ -152,7 +155,8 @@ def collect_coverage() -> dict[str, dict[str, float | int]]:
             "--json",
             "--output-path",
             str(COVERAGE_PATH),
-        ]
+        ],
+        overrides={"RUSTC": compiler},
     )
 
     with COVERAGE_PATH.open(encoding="utf-8") as coverage_file:

@@ -1,123 +1,111 @@
-# Quickstart Guide
+# Run interlink locally
+
+Try an mTLS echo exchange, then start `interlinkd` with workload credentials.
+
+```mermaid
+flowchart LR
+    F[Frontend example] -->|mTLS| B[Backend example]
+```
+
+The examples use the TLS library directly, not the daemon's forwarding path.
 
 ## Prerequisites
 
-- Rust 1.75+ (edition 2021)
-- Linux (only for the optional `SO_ORIGINAL_DST` transparent-interception mode; the standard sidecar deployment needs no iptables and no special privileges)
-- `cargo` installed
+- Rust 1.89 or later with Cargo.
+- A Unix-like system; Linux is required for optional `SO_ORIGINAL_DST` interception.
+- Git to clone the repository and `curl` to check readiness.
 
-## Installation
+## 1. Install
 
 ```bash
-git clone <repo> interlink
+git clone https://github.com/alexandernicholson/interlink.git
 cd interlink
 cargo build --release
 ```
 
-## Running the Daemon
+The daemon binary is `target/release/interlinkd`.
 
-The `interlinkd` binary is a per-pod sidecar mTLS proxy. It terminates inbound mTLS from peer proxies (port 4143 by default) and forwards plaintext to the local app; applications send outbound traffic to port 4140, which it carries to the peer's sidecar over mTLS (multiplexed tunnels when the peer supports ALPN `il/mux/1`). An admin server runs on port 4192. Where the destination isn't configured via `INTERLINK_DEFAULT_UPSTREAM`, the outbound listener can recover it transparently via `SO_ORIGINAL_DST`.
-
-```bash
-# Run with defaults; optionally create /etc/interlink/config.json first
-cargo run --bin interlinkd
-
-# With an explicit config file (there are no CLI flags; configuration is
-# env vars plus an optional JSON file)
-INTERLINK_CONFIG_FILE=/etc/interlink/config.json cargo run --bin interlinkd
-```
-
-Admin endpoints:
-
-- `GET /healthz` — liveness probe
-- `GET /readyz` — readiness probe
-- `POST /reload` — atomically reload the CA bundle, certificate, and private key for new handshakes; invalid files return `500` without replacing the active credentials
-
-## Running the Demo
-
-The demo shows two services (frontend + backend) communicating through mTLS using interlink's `TlsServer` and `TlsClient`.
-
-### Step 1: Generate Certificates
+## 2. Generate demo credentials
 
 ```bash
-cargo run --example ca_bootstrap
+TMPDIR=/tmp cargo run --example ca_bootstrap
 ```
 
-Output:
+This creates `/tmp/interlink-demo` with CA, backend, and frontend credentials.
+The directory must not already exist; the generator refuses to overwrite credentials.
+These credentials are for local testing only.
 
-```
-CA + certs written to: /tmp/interlink-demo
-  ca.der       — root CA certificate
-  server.der   — backend service cert
-  server.key   — backend service private key
-  client.der   — frontend service cert
-  client.key   — frontend service private key
-```
+## 3. Run the echo exchange
 
-### Step 2: Start Backend
+In one terminal, start the backend:
 
 ```bash
 cargo run --example backend -- /tmp/interlink-demo 8443
 ```
 
-Listens on port 8443, accepts mTLS connections, echoes received data with identity information.
-
-### Step 3: Connect Frontend
+Wait for `Backend listening on port 8443`. In another terminal, from the same checkout, run:
 
 ```bash
-cargo run --example frontend -- /tmp/interlink-demo localhost:8443
+cargo run --example frontend -- /tmp/interlink-demo 127.0.0.1:8443
 ```
 
-Connects to backend via mTLS, presents client certificate, sends message, receives echo.
+Verify the frontend logs the backend identity and echoed message:
 
-### Automated Demo
+```text
+mTLS connected! Backend identity = spiffe://example.local/ns/default/sa/backend
+Received: backend-echo[frontend]: Hello from frontend!
+```
+
+Stop the backend with Ctrl+C when finished.
+
+## Running the Daemon
+
+Provide a CA bundle, an issued leaf certificate, and its matching private key.
+Set the trust domain and SPIFFE identity to match the certificate.
+For local testing, reuse the backend credentials generated above:
 
 ```bash
-bash scripts/demo.sh
+INTERLINK_TRUST_DOMAIN=example.local \
+INTERLINK_IDENTITY=spiffe://example.local/ns/default/sa/backend \
+INTERLINK_CA_BUNDLE_PATH=/tmp/interlink-demo/ca.der \
+INTERLINK_CERT_PATH=/tmp/interlink-demo/server.der \
+INTERLINK_KEY_PATH=/tmp/interlink-demo/server.key \
+INTERLINK_DEFAULT_UPSTREAM=127.0.0.1:8080 \
+./target/release/interlinkd
 ```
 
-## Using interlink as a Library
+This configures inbound forwarding to a plaintext application on `127.0.0.1:8080`.
+Start your application there before sending traffic.
+The daemon accepts peer mTLS on port `4143` and local outbound TCP on `4140`.
+The fixed upstream applies to both proxy directions; use separate configurations for local-app and remote-peer forwarding.
+The default policy permits only peers with the same workload identity.
 
-```toml
-[dependencies]
-interlink = { git = "<repo>" }
+The daemon logs `interlinkd ready`. Check readiness in another terminal:
+
+```bash
+curl --fail http://127.0.0.1:4192/readyz
 ```
 
-```rust
-use interlink::identity::ca::CertificateAuthority;
-use interlink::common::identity::SpiffeId;
-use interlink::proxy::handshake::{TlsServer, TlsClient, TlsHandshake};
-```
+Expect HTTP `200` when ready.
+Configuration uses `INTERLINK_` environment variables over an optional JSON file at `/etc/interlink/config.json`;
+set `INTERLINK_CONFIG_FILE` to select another file.
 
-### Generate a Certificate
+## Questions
 
-```rust
-let ca = CertificateAuthority::new("mycluster.local")?;
-let id = SpiffeId::new("mycluster.local", "default", "my-service");
-let (cert, key) = ca.issue_leaf_with_key(&id, &["localhost"])?;
-```
+**Why does startup report `INTERLINK_IDENTITY must be set`?**
+Set the SPIFFE URI from your leaf certificate along with all three credential paths.
 
-### Create a TLS Server
+**Why does certificate generation fail with `create private demo dir`?**
+The demo directory already exists or cannot be created. Remove old demo credentials only after stopping processes that use them, then regenerate.
 
-```rust
-let provider = MyIdentityProvider::new();
-let server = Arc::new(TlsServer::new(
-    Arc::new(provider),
-    cert,
-    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)),
-)?);
-let tls_stream = server.accept(tcp_stream).await?;
-println!("Peer identity: {}", tls_stream.peer_identity);
-```
+**Why does the frontend reject `localhost:8443`?**
+The example requires an IP socket address. Use `127.0.0.1:8443`, which the generated certificate supports.
 
-### Create a TLS Client
+**Can I rotate daemon credentials without stopping existing streams?**
+Yes. Replace the credential files and call `POST /reload` on the admin address.
+Invalid credentials return `500` and leave active credentials unchanged.
 
-```rust
-let client = TlsClient::with_client_auth(
-    Arc::new(provider),
-    client_cert,
-    client_key,
-)?;
-let tls_stream = client.connect("localhost:8443").await?;
-println!("Server identity: {}", tls_stream.peer_identity);
-```
+## Next steps
+
+See [configuration](../../README.md#configuration), [deployment architecture](../architecture/overview.md),
+and [key management](../architecture/key-management.md) for a deployment beyond the local demo.
