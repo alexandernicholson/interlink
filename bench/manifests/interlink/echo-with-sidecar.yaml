@@ -28,7 +28,7 @@ spec:
           imagePullPolicy: Never
           # App listens on localhost only — all external traffic must come
           # through the sidecar's mTLS inbound.
-          args: ["-addr", "127.0.0.1:8081", "-delay", "200ms"]
+          args: ["-addr", "127.0.0.1:8081", "-delay", "0ms"]
           resources:
             requests:
               cpu: "100m"

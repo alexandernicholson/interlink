@@ -1,23 +1,29 @@
-# Service Mesh Benchmark Comparison
+# Service Mesh Echo Capacity Comparison
 
-Captured 2026-11-17T08:47:24Z. Interlink revision [`2bf373967de9`](https://github.com/alexandernicholson/interlink/commit/2bf373967de96f235ea9836ca0764aa479975fdf).
+Captured 2026-11-17T12:02:38Z; runtime source [`205d05b2851b`](https://github.com/alexandernicholson/interlink/commit/205d05b2851b4422b39a0e116d75dff6c91ba649). Actual harness, workload, manifest and build-input SHA256 hashes are recorded separately in the capture metadata.
 
-HTTP echo: 1,024 B payload, 200 ms application delay, 60 s measured per profile. Client and server use separate workers in the same three-node kind layout. Interlink and Linkerd use sidecars; Istio ambient uses node-level ztunnel.
+Zero-delay HTTP echo, unlimited offered load; 20 s measured after 10 s warm-up per point. 5 s request timeout on every mesh. 1 KiB request/response with Fortio's fast client for RPS, 1 MiB request/response with its full-duplex standard client for payload throughput. Payload MiB/s is each direction, not doubled wire throughput.
+
+Linux machine: x86_64, 8 logical CPUs, 3.3 GiB RAM, kernel 7.0.0-29-generic. Client/server use separate workers in the same three-node kind cluster on this shared host. Interlink/Linkerd use sidecars; Istio ambient uses L4 ztunnel without a waypoint.
 
 Pinned versions: kind v0.24.0, kubernetes v1.30.0, linkerd stable-2.14.10, istio 1.24.0, fortio 1.66.0.
 
-| Mesh | Target RPS | Achieved RPS | p50 ms | p99 ms | Proxy CPU (m) | Memory (MiB) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| interlink | 320 | 318.9 | 201.89 | 203.26 | 16.4 | 23.8 |
-| interlink | 800 | 797.3 | 225.19 | 249.71 | 31.9 | 31.8 |
-| interlink | 1600 | 1594.5 | 204.03 | 207.67 | 56.1 | 53.5 |
-| linkerd | 320 | 318.9 | 204.11 | 207.12 | 42.7 | 13.0 |
-| linkerd | 800 | 797.1 | 208.94 | 216.59 | 92.4 | 23.4 |
-| linkerd | 1600 | 1594.1 | 213.88 | 226.20 | 190.1 | 41.0 |
-| istio-ambient | 320 | 318.9 | 202.92 | 205.27 | 47.4 | 6.5 |
-| istio-ambient | 800 | 797.3 | 204.63 | 208.65 | 87.2 | 9.7 |
-| istio-ambient | 1600 | 1594.5 | 207.81 | 215.12 | 140.3 | 14.6 |
+Predeclared concurrency sweeps — rps: 1, 4, 16, 64, 256, 1024, 4096; bulk: 1, 4, 16, 64, 256, 1024. All points, including error boundaries, are retained.
 
-Only complete matched captures with zero request errors, at least 97% of target RPS and host CPU below 85% are published. CPU and RSS sum the proxy containers using kubelet statistics; these are not per-connection allocations.
+| Mesh | Peak measured RPS (1 KiB) | p99 at RPS peak (ms) | Peak payload MiB/s each way (1 MiB) | Proxy CPU at RPS peak (m) | RSS at RPS peak (MiB) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| interlink | 69856.4 | 68.95 | 2272.86 | 2203.1 | 76.4 |
+| linkerd | 19000.9 | 6.34 | 426.81 | 1872.0 | 12.1 |
+| istio-ambient | 60045.6 | 65.02 | 1025.53 | 2515.0 | 46.4 |
 
-[Capture metadata](capture.json) · [Run the comparison](../README.md)
+## Selection and limits
+
+- **interlink**: winning concurrency RPS 1024, bulk 64. Error boundaries: rps c4096: 346740/1075654 measured errors, 175571 warm-up errors, bulk c1024: 211421/213187 measured errors, 134493 warm-up errors. Peaks are limited to the tested concurrency grid.
+- **linkerd**: winning concurrency RPS 64, bulk 16. Error boundaries: bulk c1024: 4096/4096 measured errors, 2078 warm-up errors. Peaks are limited to the tested concurrency grid.
+- **istio-ambient**: winning concurrency RPS 1024, bulk 256. Error boundaries: bulk c1024: 4035/4155 measured errors, 2012 warm-up errors. Peaks are limited to the tested concurrency grid.
+
+Only points with zero warm-up and measured request errors are eligible. Missing/invalid/stale metrics or incomplete grids fail the entire capture. Unlimited-load capacity testing may saturate the host; no fixed-target achievement or 85% host-CPU gate applies. Raw host CPU samples remain part of the evidence. CPU and actual RSS sum the proxy containers; they are not per-connection allocations.
+
+These are peak measured results within this machine's declared sweep, not theoretical capacity or a guarantee for other machines, production networks, connection churn or TLS handshake throughput.
+
+[Capture metadata and selected concurrency](capture.json) · [Run the comparison](../README.md)

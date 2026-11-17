@@ -14,7 +14,8 @@ import sys
 import tempfile
 import uuid
 
-from capture_profile import profiles
+from capture_profile import REQUEST_TIMEOUT_SECONDS, workload_grids
+from aggregate import HARNESS_INPUT_DIRS, HARNESS_ROOT_FILES, load_results, peak_metadata
 
 BENCH = pathlib.Path(__file__).resolve().parents[1]
 ROOT = BENCH.parent
@@ -55,6 +56,23 @@ def source_fingerprint(root):
     return digest.digest()
 
 
+def harness_hashes(root):
+    """Pin actual measurement inputs independently of the runtime source revision."""
+    inputs = [root / relative for relative in HARNESS_ROOT_FILES]
+    for relative in HARNESS_INPUT_DIRS:
+        directory = root / relative
+        if not directory.is_dir():
+            raise ValueError(f'missing capture input directory: {relative}')
+        inputs.extend(path for path in directory.rglob('*') if path.is_file()
+                      and (relative != 'bench/scripts' or path.suffix in ('.py', '.sh')))
+    hashes = {}
+    for path in sorted(inputs):
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f'capture input is not a regular file: {path.relative_to(root)}')
+        hashes[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashes
+
+
 def source_identity(root=ROOT):
     explicit = os.environ.get('BENCH_REVISION')
     if explicit is not None and not re.fullmatch('[0-9a-f]{40}', explicit):
@@ -85,21 +103,39 @@ def assert_remote_revision(revision, remote='origin', branch='main', root=ROOT):
         raise RuntimeError('remote source advanced; refusing stale benchmark publication')
 
 
-def publish_results(staged, destination, revision, guard=assert_source):
-    # No old profile can survive: move the entire validated cohort, never merge directories.
+def publish_results(staged, destination, revision, guard=assert_source, readme=None):
+    # Validate source before touching either consumer. The generated README remains
+    # staged until this point, so it never looks like a source edit to either guard.
     guard(revision)
-    backup = staged.parent / 'previous-results'
-    had_previous = destination.exists()
+    outputs = [(staged, destination, staged.parent / 'previous-results')]
+    if readme is not None:
+        pending, published = readme
+        outputs.append((pending, published, staged.parent / 'previous-README.md'))
+    moved = []
     try:
-        if had_previous:
-            destination.rename(backup)
-        staged.rename(destination)
+        for pending, published, backup in outputs:
+            had_previous = published.exists()
+            if had_previous:
+                published.rename(backup)
+            try:
+                pending.rename(published)
+            except BaseException:
+                if had_previous:
+                    backup.rename(published)
+                raise
+            moved.append((pending, published, backup, had_previous))
     except BaseException:
-        if backup.exists() and not destination.exists():
-            backup.rename(destination)
+        for pending, published, backup, had_previous in reversed(moved):
+            published.rename(pending)
+            if had_previous:
+                backup.rename(published)
         raise
-    if had_previous:
-        shutil.rmtree(backup)
+    for _, _, backup, had_previous in moved:
+        if had_previous:
+            if backup.is_dir():
+                shutil.rmtree(backup)
+            else:
+                backup.unlink()
 
 
 def timestamp():
@@ -151,8 +187,10 @@ def cleanup(env, log):
 def capture():
     os.umask(0o077)
     revision, guard = source_identity()
-    selected = profiles(os.environ.get('BENCH_PROFILES', '320:80,800:200,1600:400'))
-    duration = int(os.environ.get('BENCH_DURATION', '60'))
+    inputs = harness_hashes(ROOT)
+    selected = workload_grids(os.environ.get('BENCH_RPS_CONCURRENCY', '1,4,16,64,256,1024,4096'),
+                              os.environ.get('BENCH_BULK_CONCURRENCY', '1,4,16,64,256,1024'))
+    duration = int(os.environ.get('BENCH_DURATION', '20'))
     if duration <= 0:
         raise ValueError('BENCH_DURATION must be a positive number of seconds')
     scratch = ROOT / 'tmp'
@@ -186,7 +224,7 @@ def capture():
                         ):
                             print(f'Capturing {mesh}', flush=True)
                             run_script('scripts/' + script, env, log,
-                                       1200 + len(selected) * (duration + 300))
+                                       1200 + sum(len(w['concurrency']) for w in selected) * (duration + 300))
                             subprocess.run(['kind', 'delete', 'cluster', '--name',
                                             env['BENCH_CLUSTER_PREFIX'] + '-' + suffix],
                                            env=env, stdout=log, stderr=subprocess.STDOUT,
@@ -199,11 +237,13 @@ def capture():
                         ('kind', 'KIND_VERSION'), ('kubernetes', 'KUBECTL_VERSION'),
                         ('linkerd', 'LINKERD_VERSION'), ('istio', 'ISTIO_VERSION'),
                         ('fortio', 'FORTIO_VERSION'))}
-                    metadata = dict(schema_version=1, revision=revision, run_id=run_id,
+                    metadata = dict(schema_version=2, benchmark='echo-capacity',
+                                    revision=revision, run_id=run_id,
+                                    harness_sha256=inputs,
                                     started_at=started, completed_at=completed,
                                     duration_seconds=duration, warmup_seconds=10,
-                                    payload_bytes=1024, server_delay_ms=200,
-                                    profiles=[dict(qps=q, connections=c) for q, c in selected],
+                                    request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+                                    server_delay_ms=0, workloads=selected,
                                     meshes=list(MESHES), versions=versions,
                                     host=dict(system=os.uname().sysname,
                                               architecture=os.uname().machine,
@@ -212,18 +252,29 @@ def capture():
                                               memory_bytes=os.sysconf('SC_PAGE_SIZE') *
                                               os.sysconf('SC_PHYS_PAGES')))
                     (data / 'capture.json').write_text(json.dumps(metadata, indent=2) + '\n')
+                    _, points = load_results(data)
+                    metadata['peaks'] = peak_metadata(points)
+                    (data / 'capture.json').write_text(json.dumps(metadata, indent=2) + '\n')
+                    staged_readme = stage / 'README.md'
+                    shutil.copy2(ROOT / 'README.md', staged_readme)
                     subprocess.run([sys.executable, str(BENCH / 'scripts/aggregate.py'),
-                                    '--results', str(data), '--output', str(data / 'comparison.md')],
+                                    '--results', str(data), '--output', str(data / 'comparison.md'),
+                                    '--readme', str(staged_readme)],
                                    check=True, timeout=60)
-                    publish_results(data, BENCH / 'results', revision, guard=guard)
+                    publish_results(data, BENCH / 'results', revision, guard=guard,
+                                    readme=(staged_readme, ROOT / 'README.md'))
                 except BaseException:
+                    if data.exists() and any(data.iterdir()):
+                        rejected = scratch / f'rejected-capture-{run_id}'
+                        data.rename(rejected)
+                        print(f'Unpublished raw evidence retained privately: {rejected}', file=sys.stderr)
                     # Operational output stays private and is deleted, never copied into evidence.
                     print('Capture failed; no results published. Private diagnostic tail:', file=sys.stderr)
                     log.flush()
                     log.seek(0)
                     print(''.join(log.readlines()[-60:]), file=sys.stderr)
                     raise
-    print('Published bench/results/comparison.md', flush=True)
+    print('Published bench/results/comparison.md and README headline', flush=True)
 
 
 def interrupted(signum, frame):

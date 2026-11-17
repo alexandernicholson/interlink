@@ -16,4 +16,4 @@ apply_workload "${BENCH_DIR}/workloads/fortio-client-plain.yaml"
 wait_for_pod bench echo-server
 wait_for_pod bench fortio-client
 kubectl rollout status daemonset/ztunnel -n istio-system --timeout=300s
-run_profiles istio-ambient istio-system istio-proxy "http://echo-server:8080/echo"
+run_workloads istio-ambient istio-system istio-proxy "http://echo-server:8080/echo"

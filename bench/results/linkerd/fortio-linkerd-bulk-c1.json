@@ -1,0 +1,198 @@
+{
+  "RunType": "HTTP",
+  "Labels": "echo-server:8080/echo , fortio-client-667b7cbff5-jf76n",
+  "StartTime": "2026-11-17T11:50:59.693312146Z",
+  "RequestedQPS": "max",
+  "RequestedDuration": "20s",
+  "ActualQPS": 241.9729546586605,
+  "ActualDuration": 20002235402,
+  "NumThreads": 1,
+  "Version": "1.66.0",
+  "DurationHistogram": {
+    "Count": 4840,
+    "Min": 0.003157194,
+    "Max": 0.006913801,
+    "Sum": 20.000231195000044,
+    "Avg": 0.0041322791725206705,
+    "StdDev": 0.000507565230161892,
+    "Data": [
+      {
+        "Start": 0.003157194,
+        "End": 0.004,
+        "Percent": 45.413223140495866,
+        "Count": 2198
+      },
+      {
+        "Start": 0.004,
+        "End": 0.005,
+        "Percent": 94.42148760330579,
+        "Count": 2372
+      },
+      {
+        "Start": 0.005,
+        "End": 0.006,
+        "Percent": 99.64876033057851,
+        "Count": 253
+      },
+      {
+        "Start": 0.006,
+        "End": 0.006913801,
+        "Percent": 100,
+        "Count": 17
+      }
+    ],
+    "Percentiles": [
+      {
+        "Percentile": 50,
+        "Value": 0.004093591905564924
+      },
+      {
+        "Percentile": 75,
+        "Value": 0.004603709949409781
+      },
+      {
+        "Percentile": 90,
+        "Value": 0.004909780775716695
+      },
+      {
+        "Percentile": 99,
+        "Value": 0.005875889328063241
+      },
+      {
+        "Percentile": 99.9,
+        "Value": 0.0066536364800000155
+      }
+    ]
+  },
+  "ErrorsDurationHistogram": {
+    "Count": 0,
+    "Min": 0,
+    "Max": 0,
+    "Sum": 0,
+    "Avg": 0,
+    "StdDev": 0,
+    "Data": null
+  },
+  "Exactly": 0,
+  "Jitter": false,
+  "Uniform": false,
+  "NoCatchUp": false,
+  "RunID": 0,
+  "AccessLoggerInfo": "",
+  "ID": "2026-11-17-115059_echo_server_8080_echo_fortio_client_667b7cbff5_jf76n",
+  "RetCodes": {
+    "200": 4840
+  },
+  "IPCountMap": {
+    "10.96.57.102:8080": 1
+  },
+  "Insecure": false,
+  "MTLS": false,
+  "CACert": "",
+  "Cert": "",
+  "Key": "",
+  "UnixDomainSocket": "",
+  "URL": "http://echo-server:8080/echo",
+  "NumConnections": 1,
+  "Compression": false,
+  "DisableFastClient": true,
+  "HTTP10": false,
+  "H2": false,
+  "DisableKeepAlive": false,
+  "AllowHalfClose": false,
+  "FollowRedirects": false,
+  "Resolve": "",
+  "HTTPReqTimeOut": 5000000000,
+  "UserCredentials": "",
+  "ContentType": "",
+  "MethodOverride": "",
+  "LogErrors": true,
+  "SequentialWarmup": false,
+  "ConnReuseRange": [
+    0,
+    0
+  ],
+  "NoResolveEachConn": false,
+  "Offset": 0,
+  "Resolution": 0.001,
+  "Sizes": {
+    "Count": 4840,
+    "Min": 1048576,
+    "Max": 1048576,
+    "Sum": 5075107840,
+    "Avg": 1048576,
+    "StdDev": 0,
+    "Data": [
+      {
+        "Start": 1048576,
+        "End": 1048576,
+        "Percent": 100,
+        "Count": 4840
+      }
+    ]
+  },
+  "HeaderSizes": {
+    "Count": 4840,
+    "Min": 0,
+    "Max": 0,
+    "Sum": 0,
+    "Avg": 0,
+    "StdDev": 0,
+    "Data": [
+      {
+        "Start": 0,
+        "End": 0,
+        "Percent": 100,
+        "Count": 4840
+      }
+    ]
+  },
+  "Sockets": [
+    1
+  ],
+  "SocketCount": 1,
+  "ConnectionStats": {
+    "Count": 1,
+    "Min": 0.000476747,
+    "Max": 0.000476747,
+    "Sum": 0.000476747,
+    "Avg": 0.000476747,
+    "StdDev": 0,
+    "Data": [
+      {
+        "Start": 0.000476747,
+        "End": 0.000476747,
+        "Percent": 100,
+        "Count": 1
+      }
+    ],
+    "Percentiles": [
+      {
+        "Percentile": 50,
+        "Value": 0.000476747
+      },
+      {
+        "Percentile": 75,
+        "Value": 0.000476747
+      },
+      {
+        "Percentile": 90,
+        "Value": 0.000476747
+      },
+      {
+        "Percentile": 99,
+        "Value": 0.000476747
+      },
+      {
+        "Percentile": 99.9,
+        "Value": 0.000476747
+      }
+    ]
+  },
+  "AbortOn": 0,
+  "PayloadBytes": 1048576,
+  "PayloadSHA256": "c33ce12e69aa7482df6fc8703573f409c5f9f917daa3af97eadf325fe6f2064e",
+  "WarmupRetCodes": {
+    "200": 2382
+  }
+}

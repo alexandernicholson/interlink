@@ -1,0 +1,207 @@
+{
+  "RunType": "HTTP",
+  "Labels": "127.0.0.1:4140/echo , fortio-client-5d6b5b6649-fk587",
+  "StartTime": "2026-11-17T11:38:37.733224281Z",
+  "RequestedQPS": "max",
+  "RequestedDuration": "20s",
+  "ActualQPS": 13828.756452667956,
+  "ActualDuration": 20000207607,
+  "NumThreads": 4,
+  "Version": "1.66.0",
+  "DurationHistogram": {
+    "Count": 276578,
+    "Min": 8.4868e-05,
+    "Max": 0.004240153,
+    "Sum": 79.89614667600024,
+    "Avg": 0.00028887383188829277,
+    "StdDev": 8.230958445076341e-05,
+    "Data": [
+      {
+        "Start": 8.4868e-05,
+        "End": 0.001,
+        "Percent": 99.87164561172617,
+        "Count": 276223
+      },
+      {
+        "Start": 0.001,
+        "End": 0.002,
+        "Percent": 99.98553753371563,
+        "Count": 315
+      },
+      {
+        "Start": 0.002,
+        "End": 0.003,
+        "Percent": 99.99349189017204,
+        "Count": 22
+      },
+      {
+        "Start": 0.003,
+        "End": 0.004,
+        "Percent": 99.99891531502867,
+        "Count": 15
+      },
+      {
+        "Start": 0.004,
+        "End": 0.004240153,
+        "Percent": 100,
+        "Count": 3
+      }
+    ],
+    "Percentiles": [
+      {
+        "Percentile": 50,
+        "Value": 0.000543020406455677
+      },
+      {
+        "Percentile": 75,
+        "Value": 0.000772098266198927
+      },
+      {
+        "Percentile": 90,
+        "Value": 0.000909544982044877
+      },
+      {
+        "Percentile": 99,
+        "Value": 0.000992013011552447
+      },
+      {
+        "Percentile": 99.9,
+        "Value": 0.0012489587301587834
+      }
+    ]
+  },
+  "ErrorsDurationHistogram": {
+    "Count": 0,
+    "Min": 0,
+    "Max": 0,
+    "Sum": 0,
+    "Avg": 0,
+    "StdDev": 0,
+    "Data": null
+  },
+  "Exactly": 0,
+  "Jitter": false,
+  "Uniform": false,
+  "NoCatchUp": false,
+  "RunID": 0,
+  "AccessLoggerInfo": "",
+  "ID": "2026-11-17-113837_127_0_0_1_4140_echo_fortio_client_5d6b5b6649_fk587",
+  "RetCodes": {
+    "200": 276578
+  },
+  "IPCountMap": {
+    "127.0.0.1:4140": 4
+  },
+  "Insecure": false,
+  "MTLS": false,
+  "CACert": "",
+  "Cert": "",
+  "Key": "",
+  "UnixDomainSocket": "",
+  "URL": "http://127.0.0.1:4140/echo",
+  "NumConnections": 1,
+  "Compression": false,
+  "DisableFastClient": false,
+  "HTTP10": false,
+  "H2": false,
+  "DisableKeepAlive": false,
+  "AllowHalfClose": false,
+  "FollowRedirects": false,
+  "Resolve": "",
+  "HTTPReqTimeOut": 5000000000,
+  "UserCredentials": "",
+  "ContentType": "",
+  "MethodOverride": "",
+  "LogErrors": true,
+  "SequentialWarmup": false,
+  "ConnReuseRange": [
+    0,
+    0
+  ],
+  "NoResolveEachConn": false,
+  "Offset": 0,
+  "Resolution": 0.001,
+  "Sizes": {
+    "Count": 276578,
+    "Min": 1142,
+    "Max": 1142,
+    "Sum": 315852076,
+    "Avg": 1142,
+    "StdDev": 0,
+    "Data": [
+      {
+        "Start": 1142,
+        "End": 1142,
+        "Percent": 100,
+        "Count": 276578
+      }
+    ]
+  },
+  "HeaderSizes": {
+    "Count": 276578,
+    "Min": 118,
+    "Max": 118,
+    "Sum": 32636204,
+    "Avg": 118,
+    "StdDev": 0,
+    "Data": [
+      {
+        "Start": 118,
+        "End": 118,
+        "Percent": 100,
+        "Count": 276578
+      }
+    ]
+  },
+  "Sockets": [
+    1,
+    1,
+    1,
+    1
+  ],
+  "SocketCount": 4,
+  "ConnectionStats": {
+    "Count": 4,
+    "Min": 0.000586424,
+    "Max": 0.000628693,
+    "Sum": 0.002437614,
+    "Avg": 0.0006094035,
+    "StdDev": 1.635995431687153e-05,
+    "Data": [
+      {
+        "Start": 0.000586424,
+        "End": 0.000628693,
+        "Percent": 100,
+        "Count": 4
+      }
+    ],
+    "Percentiles": [
+      {
+        "Percentile": 50,
+        "Value": 0.0006005136666666666
+      },
+      {
+        "Percentile": 75,
+        "Value": 0.0006146033333333334
+      },
+      {
+        "Percentile": 90,
+        "Value": 0.0006230571333333334
+      },
+      {
+        "Percentile": 99,
+        "Value": 0.0006281294133333333
+      },
+      {
+        "Percentile": 99.9,
+        "Value": 0.0006286366413333334
+      }
+    ]
+  },
+  "AbortOn": 0,
+  "PayloadBytes": 1024,
+  "PayloadSHA256": "1721d142eb1f4fc2b9a9d330082c86ea9c8444fc7b39e66177d8467528cbf407",
+  "WarmupRetCodes": {
+    "200": 140945
+  }
+}

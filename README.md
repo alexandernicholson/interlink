@@ -197,7 +197,7 @@ interlink/
 │   ├── rfcs/               # RFC summaries and compliance
 │   └── examples/           # Example walkthroughs
 ├── bench/                  # Service-mesh comparison harness
-│   └── results/comparison.md # Sole published performance comparison
+│   └── results/comparison.md # Canonical report; README headline uses the same capture
 ├── src/
 │   ├── lib.rs              # Module root
 │   ├── common/             # Identity types, errors, constants
@@ -262,10 +262,23 @@ bash scripts/demo.sh          # End-to-end mTLS demo
 
 ## Benchmarks
 
-The [service-mesh comparison](bench/results/comparison.md) is the only published
-performance report. It compares interlink, Linkerd, and Istio ambient using matched
-HTTP load profiles. Read its capture date, source revision, and workload limits
-before applying the results to your deployment.
+The [service-mesh comparison](bench/results/comparison.md) compares interlink,
+Linkerd, and Istio ambient using matched echo workloads. The generated headline
+is a view of that same capture; read its workload conditions and limits.
+
+<!-- BEGIN GENERATED MESH HEADLINE -->
+Captured 2026-11-17T12:02:38Z; runtime source [`205d05b2851b`](https://github.com/alexandernicholson/interlink/commit/205d05b2851b4422b39a0e116d75dff6c91ba649). Actual harness, workload, manifest and build-input SHA256 hashes are recorded separately in the capture metadata.
+
+Zero-delay HTTP echo, unlimited offered load; 20 s measured after 10 s warm-up per point. 5 s request timeout on every mesh. 1 KiB request/response with Fortio's fast client for RPS, 1 MiB request/response with its full-duplex standard client for payload throughput. Payload MiB/s is each direction, not doubled wire throughput.
+
+| Mesh | Peak measured RPS (1 KiB) | Peak payload MiB/s each way (1 MiB) | p99 at RPS peak (ms) |
+| --- | ---: | ---: | ---: |
+| interlink | 69856.4 | 2272.86 | 68.95 |
+| linkerd | 19000.9 | 426.81 | 6.34 |
+| istio-ambient | 60045.6 | 1025.53 | 65.02 |
+
+Concurrency sweeps — rps: 1, 4, 16, 64, 256, 1024, 4096; bulk: 1, 4, 16, 64, 256, 1024. Peak measured within this Linux machine's tested range, not an absolute capacity guarantee. Shared-host three-node kind; Interlink/Linkerd sidecars, Istio ambient L4 ztunnel. [Machine, winning concurrency, errors and limits](bench/results/comparison.md).
+<!-- END GENERATED MESH HEADLINE -->
 
 To collect a complete dataset, follow the [benchmark guide](bench/README.md).
 Internal semantic-path checks remain correctness gates, not additional published

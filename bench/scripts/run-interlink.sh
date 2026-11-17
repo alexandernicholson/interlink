@@ -42,4 +42,4 @@ apply_workload "${BENCH_DIR}/manifests/interlink/echo-with-sidecar.yaml"
 apply_workload "${BENCH_DIR}/manifests/interlink/fortio-client.yaml"
 wait_for_pod bench echo-server
 wait_for_pod bench fortio-client
-run_profiles interlink bench interlinkd "http://127.0.0.1:4140/echo"
+run_workloads interlink bench interlinkd "http://127.0.0.1:4140/echo"

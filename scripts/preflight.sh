@@ -10,9 +10,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "==> service-mesh report validation"
+echo "==> service-mesh report and README headline validation"
 python3 -B -m unittest discover -s bench/tests -p 'test_*.py'
-python3 -B bench/scripts/aggregate.py --check
+python3 -B bench/scripts/aggregate.py --readme README.md --check
 
 echo "==> clippy (all targets, warnings are errors)"
 cargo clippy --all-targets -- -D warnings

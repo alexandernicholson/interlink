@@ -19,7 +19,7 @@ spec:
         - name: echo-server
           image: interlink-bench/echo-server:${BENCH_IMAGE_TAG}
           imagePullPolicy: Never
-          args: ["-addr", ":8080", "-delay", "200ms"]
+          args: ["-addr", ":8080", "-delay", "0ms"]
           ports:
             - containerPort: 8080
               name: http

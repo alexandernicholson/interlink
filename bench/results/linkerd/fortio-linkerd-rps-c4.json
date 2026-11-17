@@ -1,0 +1,195 @@
+{
+  "RunType": "HTTP",
+  "Labels": "echo-server:8080/echo , fortio-client-667b7cbff5-jf76n",
+  "StartTime": "2026-11-17T11:47:46.532415756Z",
+  "RequestedQPS": "max",
+  "RequestedDuration": "20s",
+  "ActualQPS": 7361.305157855519,
+  "ActualDuration": 20000393523,
+  "NumThreads": 4,
+  "Version": "1.66.0",
+  "DurationHistogram": {
+    "Count": 147229,
+    "Min": 0.000245773,
+    "Max": 0.002185909,
+    "Sum": 79.95007581599988,
+    "Avg": 0.0005430321187809458,
+    "StdDev": 0.00010436113267023604,
+    "Data": [
+      {
+        "Start": 0.000245773,
+        "End": 0.001,
+        "Percent": 99.61013115622602,
+        "Count": 146655
+      },
+      {
+        "Start": 0.001,
+        "End": 0.002,
+        "Percent": 99.99660392993228,
+        "Count": 569
+      },
+      {
+        "Start": 0.002,
+        "End": 0.002185909,
+        "Percent": 100,
+        "Count": 5
+      }
+    ],
+    "Percentiles": [
+      {
+        "Percentile": 50,
+        "Value": 0.000624359941130143
+      },
+      {
+        "Percentile": 75,
+        "Value": 0.0008136559831457036
+      },
+      {
+        "Percentile": 90,
+        "Value": 0.0009272336083550398
+      },
+      {
+        "Percentile": 99,
+        "Value": 0.0009953801834806414
+      },
+      {
+        "Percentile": 99.9,
+        "Value": 0.001750036906854153
+      }
+    ]
+  },
+  "ErrorsDurationHistogram": {
+    "Count": 0,
+    "Min": 0,
+    "Max": 0,
+    "Sum": 0,
+    "Avg": 0,
+    "StdDev": 0,
+    "Data": null
+  },
+  "Exactly": 0,
+  "Jitter": false,
+  "Uniform": false,
+  "NoCatchUp": false,
+  "RunID": 0,
+  "AccessLoggerInfo": "",
+  "ID": "2026-11-17-114746_echo_server_8080_echo_fortio_client_667b7cbff5_jf76n",
+  "RetCodes": {
+    "200": 147229
+  },
+  "IPCountMap": {
+    "10.96.57.102:8080": 4
+  },
+  "Insecure": false,
+  "MTLS": false,
+  "CACert": "",
+  "Cert": "",
+  "Key": "",
+  "UnixDomainSocket": "",
+  "URL": "http://echo-server:8080/echo",
+  "NumConnections": 1,
+  "Compression": false,
+  "DisableFastClient": false,
+  "HTTP10": false,
+  "H2": false,
+  "DisableKeepAlive": false,
+  "AllowHalfClose": false,
+  "FollowRedirects": false,
+  "Resolve": "",
+  "HTTPReqTimeOut": 5000000000,
+  "UserCredentials": "",
+  "ContentType": "",
+  "MethodOverride": "",
+  "LogErrors": true,
+  "SequentialWarmup": false,
+  "ConnReuseRange": [
+    0,
+    0
+  ],
+  "NoResolveEachConn": false,
+  "Offset": 0,
+  "Resolution": 0.001,
+  "Sizes": {
+    "Count": 147229,
+    "Min": 1142,
+    "Max": 1142,
+    "Sum": 168135518,
+    "Avg": 1142,
+    "StdDev": 0,
+    "Data": [
+      {
+        "Start": 1142,
+        "End": 1142,
+        "Percent": 100,
+        "Count": 147229
+      }
+    ]
+  },
+  "HeaderSizes": {
+    "Count": 147229,
+    "Min": 118,
+    "Max": 118,
+    "Sum": 17373022,
+    "Avg": 118,
+    "StdDev": 0,
+    "Data": [
+      {
+        "Start": 118,
+        "End": 118,
+        "Percent": 100,
+        "Count": 147229
+      }
+    ]
+  },
+  "Sockets": [
+    1,
+    1,
+    1,
+    1
+  ],
+  "SocketCount": 4,
+  "ConnectionStats": {
+    "Count": 4,
+    "Min": 0.000166865,
+    "Max": 0.000544525,
+    "Sum": 0.001128768,
+    "Avg": 0.000282192,
+    "StdDev": 0.0001535014974422074,
+    "Data": [
+      {
+        "Start": 0.000166865,
+        "End": 0.000544525,
+        "Percent": 100,
+        "Count": 4
+      }
+    ],
+    "Percentiles": [
+      {
+        "Percentile": 50,
+        "Value": 0.0002927516666666667
+      },
+      {
+        "Percentile": 75,
+        "Value": 0.0004186383333333333
+      },
+      {
+        "Percentile": 90,
+        "Value": 0.0004941703333333334
+      },
+      {
+        "Percentile": 99,
+        "Value": 0.0005394895333333334
+      },
+      {
+        "Percentile": 99.9,
+        "Value": 0.0005440214533333334
+      }
+    ]
+  },
+  "AbortOn": 0,
+  "PayloadBytes": 1024,
+  "PayloadSHA256": "739cb2015fcb7164cbb41e3b21efe35a6c3280f5f7d85e6da1a5c52f521aff4a",
+  "WarmupRetCodes": {
+    "200": 75172
+  }
+}
