@@ -139,14 +139,17 @@ Exactly one ordered, standalone marker pair is required:
 Absent, duplicate, reversed or malformed markers reject both views. Content outside
 the generated region is preserved.
 
-## Automatic refresh
+## Manual refresh
 
-The [owned workflow](../.github/workflows/benchmarks.yml) runs on relevant `main`
-source/harness changes, weekly, and by manual dispatch. Preflight verifies both views
-against the same capture. The workflow commits the dataset, canonical report and
-README together and refuses stale-source publication. Pushes are normal fast-forward
-pushes, never force pushes or rebases of stale evidence. No third-party Actions run.
-A failed refresh retains the previous dataset, headline and original timestamps.
+The [owned workflow](../.github/workflows/benchmarks.yml) runs only by manual
+dispatch in GitHub Actions—never on pushes or a schedule. Run it deliberately for
+releases or performance changes. Normal CI validates the recorded dataset and both
+generated views without starting a capacity sweep.
+
+A manual run commits the dataset, canonical report and README together, refusing
+stale-source publication. Pushes are ordinary fast-forwards, never force pushes or
+rebases of stale evidence. No third-party Actions run. Failure retains the previous
+dataset, headline and original timestamps.
 
 ## Limits
 

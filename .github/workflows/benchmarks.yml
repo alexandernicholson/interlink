@@ -1,19 +1,6 @@
 name: mesh benchmarks
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'Dockerfile'
-      - 'test-support/**'
-      - 'bench/**'
-      - '!bench/results/**'
-      - '.github/workflows/benchmarks.yml'
   workflow_dispatch:
-  schedule:
-    - cron: '17 4 * * 1'
 permissions:
   contents: write
 concurrency:

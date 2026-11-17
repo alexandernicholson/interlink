@@ -7,6 +7,8 @@ The [benchmark guide](../bench/README.md) declares the experiment and publicatio
 
 ## Current scope
 
+- Full captures are manual-only, for releases or performance work. Push CI validates
+  the stored capture, canonical report and README headline without starting a sweep.
 - Fresh Linux echo capacity testing with zero application delay and unlimited
   Fortio offered load, not the old fixed-RPS/200 ms workload.
 - Predeclared concurrency sweeps: 1 KiB request/response at 1, 4, 16, 64, 256, 1024,
