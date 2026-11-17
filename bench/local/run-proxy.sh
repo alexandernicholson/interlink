@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# interlink proxy benchmark — measures the full proxy path:
-#   Fortio → HTTPS/mTLS → interlinkd → HTTP → echo-server (PROFILE_DELAY delay)
-# All three components run natively on the host: the 2026-11-16 Docker
-# Desktop update broke VM→host reachability and made the host→VM loopback
-# tunnel cost ~3 ms per request (measured), so the July-era containerized
-# legs are unreproducible. Deltas vs July sections include this path change.
-# Set QUICK=1 for short profiles (60 s each, default 30 s).
+# Single inbound-proxy benchmark:
+#   Fortio → HTTPS/mTLS → inbound interlinkd → HTTP echo (PROFILE_DELAY delay).
+# No outbound proxy or proxy-to-proxy mux is involved.
+# Components run natively; July's containerized captures used a different topology.
+# QUICK=1 selects 60 measured seconds per profile; the default is 300 seconds.
 
 LOCAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${LOCAL_DIR}/../.." && pwd)"
@@ -20,10 +18,7 @@ DEMO_SRC="/tmp/interlink-demo"
 # — pin TMPDIR so that resolves to DEMO_SRC, and clear stale material
 # instead of pre-creating the dir the bootstrap must create itself.
 export TMPDIR="/tmp"
-# Docker Desktop's file sharing does not cover the RAM-backed /tmp —
-# bind mounts from there surface empty inside containers (broke the
-# fortio cert load on 2026-11-16). Stage the material into the repo's
-# build tree, which lives on a shared path.
+# Stage generated credentials in the repository's on-disk build tree.
 CERT_DIR="${REPO_ROOT}/target/bench/demo-certs"
 rm -rf -- "${DEMO_SRC}" "${CERT_DIR}"
 

@@ -1,13 +1,28 @@
 # Benchmark status & methodology notes
 
+## Latest result (2026-11-17)
+
+The current [native Veyrmux versus stock Yamux comparison](../docs/benchmarks/results.md#native-veyrmux-versus-stock-yamux-2026-11-17)
+measures serialized loopback connection lifecycles through two actual proxies.
+Mux latency fell 5.8% for 35 B and 11.1% for 16 KiB per direction; legacy controls
+changed +0.7% and +0.5%. See [numeric samples and provenance](../bench/results/veyrmux-integration/comparison.json)
+and [validation](../bench/results/veyrmux-integration/validation.json).
+These are not throughput, request-p99, CPU, cross-host, or current Linkerd/Istio results.
+
+The remaining sections preserve July 2026 research, including superseded attempts
+and the stock-Yamux concurrency investigation. They do not describe current runtime limits.
+
 ## Topology (apples-to-apples)
 
-All meshes run on the same 3-node kind topology (`bench/manifests/kind-3node.yaml`,
-one dedicated cluster per mesh): the Fortio load generator and the Go echo server are
+The July comparison used the same 3-node kind topology (`bench/manifests/kind-3node.yaml`,
+one dedicated cluster per mesh): the Fortio load generator and the Go echo server were
 pinned to separate worker nodes (`bench-role=client` / `bench-role=server`), so mesh
-traffic always crosses the node boundary. Identical workload (Go echo server, 200 ms
-fixed delay, 1 KB payload), and CPU/memory sampled the same way (`kubectl top pod
+traffic crossed the node boundary. The workload matched (Go echo server, 200 ms
+fixed delay, 1 KB payload), with CPU/memory sampled the same way (`kubectl top pod
 --containers`, summed across all proxy containers).
+
+interlink and Linkerd used per-pod sidecars; Istio ambient used node-level ztunnel.
+The cluster topology and workload matched, but the deployment architectures differed.
 
 interlink runs as a **per-pod sidecar** (`bench/manifests/interlink/
 echo-with-sidecar.yaml`, `fortio-client.yaml`) — no iptables, no NET_ADMIN, no
@@ -31,9 +46,9 @@ python3 scripts/aggregate.py           # regenerates results/comparison.md, gate
 
 ## The validity gate (why numbers can now be trusted)
 
-`aggregate.py` marks each profile **valid** only if: achieved RPS was within 3 % of
-target, there were zero connection errors, and peak host CPU (sampled from `/proc/stat`,
-not per-node `kubectl top` — kind runs every node on one host) stayed below 85 %.
+`aggregate.py` marks each profile **valid** only if achieved RPS reaches at least
+97% of target, there are zero reported errors, and peak host CPU (sampled from
+`/proc/stat`, not per-node `kubectl top`) stays below 85%.
 Invalid profiles are host-bound or error-bound and are excluded from the comparison and
 overhead tables. This is the fix that makes the benchmark honest: it can no longer
 silently publish contention-dominated or error-ridden numbers.
@@ -44,7 +59,7 @@ silently publish contention-dominated or error-ridden numbers.
 p50 2.8 ms, p99 13.5 ms (+13.5 ms over the 200 ms base), **0 errors**, ~99 m proxy CPU,
 host 43 %. ✅ valid.
 
-**Mux concurrency ceiling — found and fixed.** The earlier run showed interlink
+**Historical stock-Yamux concurrency ceiling — found and fixed.** The earlier run showed interlink
 dropping connections at moderate concurrency (74 errors @ 800 rps/200 conns, 105 @
 1600/400) with the host only 29–52 % utilized. Root cause, reproduced locally: a single
 yamux session per peer caps at `max_num_streams = 512`, so all connections between a
@@ -57,9 +72,10 @@ test_mux_beyond_single_session_cap`, 700 concurrent held streams) now passes wit
 failures, as do the 300-concurrent and handshake-avoidance tests. See
 `docs/performance-plan.md` for the round writeup.
 
-**Linkerd/Istio numbers not yet captured on the new topology:** the Linkerd run in this
+**Preliminary July attempt — Linkerd/Istio not yet captured:** the Linkerd run in this
 session produced empty Fortio output because of the meshed-load-generator bug above (now
-fixed); Istio ambient was not completed. Rerun with the fixed harness for the comparison.
+fixed); Istio ambient was not completed. The later July comparison is recorded in
+the [RESOLVED section](#resolved-2026-07-08-sidecar-model-published-numbers).
 The earlier single-node figures were removed rather than mixed with the new topology.
 
 

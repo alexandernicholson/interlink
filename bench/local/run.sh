@@ -7,15 +7,13 @@ RESULTS="${LOCAL_DIR}/results"
 mkdir -p "${RESULTS}"
 
 DEMO_SRC="/tmp/interlink-demo"
-# ca_bootstrap requires a fresh dir and writes to
-# std::env::temp_dir()/interlink-demo — pin TMPDIR and clear stale
-# material (see run-proxy.sh for the full rationale, incl. the
-# Docker-Desktop-shared staging dir).
+# ca_bootstrap requires a fresh std::env::temp_dir()/interlink-demo directory.
+# Pin TMPDIR and clear stale credentials before staging the generated files.
 export TMPDIR="/tmp"
 CERT_DIR="${REPO_ROOT}/target/bench/demo-certs"
 rm -rf -- "${DEMO_SRC}" "${CERT_DIR}"
 
-# Port must match a SAN in the test certificates (localhost).
+# Dial localhost to match the certificate's DNS SAN; this selects its listener port.
 SERVER_PORT=18443
 
 log() {

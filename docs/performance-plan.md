@@ -114,6 +114,13 @@ Source/binary hashes, controls, samples and methodology:
 `bench/results/veyrmux-integration/comparison.json`. Build and behavioral checks:
 `bench/results/veyrmux-integration/validation.json`.
 
+Public entry points now surface this measured scope:
+[README benchmarks](../README.md#benchmarks),
+[benchmark results](benchmarks/results.md) and the
+[workload guide](../bench/README.md). Historical captures retain their dates and
+workload boundaries; refreshing these pages does not recapture primitive,
+Linkerd or Istio measurements.
+
 ## Microbenchmark path harness and hot-path pass (2026-07-22)
 
 `benches/path_inventory.json` is the source of truth for four production-aligned

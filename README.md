@@ -1,6 +1,6 @@
 # interlink
 
-**A lightweight, RFC-first service mesh proxy written in Rust.** Zero-config mTLS, automatic protocol detection, policy-based authorization, and ALPN-negotiated multiplexed tunnels that amortize the TLS handshake across all connections to a peer (−63 % proxy CPU under connection churn). Designed for 1M devices — from cloud servers to smartphones.
+**A lightweight service mesh proxy written in Rust.** SPIFFE mTLS, default-deny authorization, protocol detection, and native Tokio multiplexing with [Veyrmux](https://github.com/alexandernicholson/veyrmux). Many application connections share an authenticated proxy-to-proxy tunnel.
 
 ```mermaid
 graph LR
@@ -10,14 +10,14 @@ graph LR
     subgraph Edge
         B[Service B<br/>Python/Java] --- P2[interlink proxy]
     end
-    P1 -- mTLS encrypted --- P2
-    style P1 fill:#4a9eff,stroke:#2a6fcc
-    style P2 fill:#4a9eff,stroke:#2a6fcc
+    P1 -- mTLS + Veyrmux streams --- P2
 ```
 
 <hr />
 
 ## Quick Start
+
+Requires Rust 1.89 or later.
 
 ### Example programs
 
@@ -96,7 +96,7 @@ Environment variable equivalents:
 | `INTERLINK_CERT_PATH` / `INTERLINK_KEY_PATH` | Leaf cert (DER or PEM) / key (PKCS#8 DER or PEM) | — |
 | `INTERLINK_DEFAULT_UPSTREAM` | Fallback upstream when `SO_ORIGINAL_DST` is unavailable | — |
 | `INTERLINK_MUX` | Offer multiplexed tunnels (ALPN `il/mux/1`) to peers | `true` |
-| `INTERLINK_ACCEPTORS` | SO_REUSEPORT acceptor tasks per listener (1–16) | `min(cores,4)` |
+| `INTERLINK_ACCEPTORS` | SO_REUSEPORT acceptor tasks per listener (1–16) | `max(2, min(available CPUs, 4))` |
 | `INTERLINK_COPY_BUF_SIZE` | Relay copy buffer size in bytes (4 KiB–1 MiB) | `65536` |
 | `INTERLINK_MAX_CONNECTIONS` | Per-proxy connection limit | 1024 |
 | `INTERLINK_CONFIG_FILE` | Path to JSON config file | `/etc/interlink/config.json` |
@@ -122,22 +122,25 @@ flowchart TB
     subgraph Proxy["interlink Proxy (per-pod sidecar)"]
         direction TB
         subgraph Inbound["Inbound (port 4143)"]
-            L[TCP Listener] --> H[TLS 1.3 Handshake<br/>RFC 8446]
+            L[TCP Listener] --> H[TLS 1.3 + SPIFFE authentication]
             H --> M{ALPN<br/>il/mux/1?}
-            M -- yes --> Y[Serve yamux streams<br/>one tunnel, many conns]
-            M -- no --> I
-            Y --> I[Identity Extraction<br/>RFC 5280 SAN]
-            I --> P[Policy Engine<br/>default-deny]
-            P --> D[Protocol Detection<br/>HTTP/1.1 / HTTP/2 / TCP]
-            D --> F[Forward to Upstream]
+            M -- yes --> Y[Veyrmux logical streams]
+            M -- no --> I[Legacy TCP connection]
+            Y --> P[Authorize each stream<br/>default-deny]
+            I --> P
+            P --> F[Forward to upstream]
         end
         subgraph Outbound["Outbound (port 4140)"]
-            O[TCP Listener] --> OM[Orig. Dst Lookup]
-            OM --> OT{Mux tunnel<br/>to peer?}
-            OT -- yes --> OS[Open stream<br/>no handshake]
-            OT -- no --> OH[TLS 1.3 Handshake<br/>ALPN il/mux/1 + client cert]
-            OH --> OF[Tunnel or 1:1 relay]
-            OS --> OF
+            O[TCP Listener] --> OM[Upstream destination]
+            OM --> OT{Reusable tunnel<br/>under admission limits?}
+            OT -- yes --> OS[Open Veyrmux stream]
+            OT -- no --> OH[TLS 1.3 + SPIFFE authentication]
+            OH --> NEG{ALPN<br/>il/mux/1?}
+            NEG -- yes --> POOL[Register Veyrmux tunnel]
+            POOL --> OS
+            NEG -- no --> LEG[Legacy 1:1 relay]
+            OS --> OF[Authorized application relay]
+            LEG --> OF
         end
         subgraph Admin["Admin (port 4192)"]
             AD[HTTP Server] --> AH["/healthz /readyz /reload"]
@@ -147,41 +150,18 @@ flowchart TB
     Client[Application<br/>Container] -- plaintext --> O
     F --> App[Local App<br/>Container]
     OF -- mTLS --> RemotePeer[Peer interlink<br/>proxy]
-    style Proxy fill:#1a1a2e,stroke:#4a9eff
 ```
+
+Veyrmux uses Tokio I/O directly and remains wire-compatible with Yamux v0 under
+the unchanged `il/mux/1` ALPN. Rolling-version tests cover stock Yamux peers in
+both directions. Stock Yamux and the Tokio/Futures compatibility adapter are
+test-only dependencies.
+
+`INTERLINK_MUX=false` disables the multiplexing offer; peers without mux use
+one-to-one relays. A negotiated protocol is always honored.
 
 <hr />
 
-```mermaid
-sequenceDiagram
-    participant C as Client App
-    participant P as interlink Proxy
-    participant U as Upstream Service
-
-    Note over C,P: TCP connection (app → sidecar port)
-    C->>+P: TCP SYN
-    P-->>-C: SYN-ACK
-
-    Note over C,P: mTLS Handshake (RFC 8446 §2)
-    C->>P: ClientHello + key_share
-    P->>C: ServerHello + key_share + CertificateRequest
-    P->>C: Certificate (spiffe://trust/ns/default/sa/proxy)
-    P->>C: CertificateVerify + Finished
-    C->>P: Certificate (spiffe://trust/ns/default/sa/client)
-    C->>P: CertificateVerify + Finished
-
-    Note over C,P: Encrypted tunnel established
-    C->>P: GET /api HTTP/1.1 (encrypted)
-
-    Note over P,U: Forward to upstream
-    P->>U: GET /api HTTP/1.1
-    U->>P: HTTP 200 OK (response)
-    P->>C: HTTP 200 OK (encrypted)
-
-    Note over C,P: Policy: allow
-```
-
-<hr />
 
 ## RFC References
 
@@ -194,9 +174,9 @@ Detailed RFC compliance notes live in [`docs/rfcs/`](docs/rfcs/).
 | [RFC 9110](docs/rfcs/rfc-911x-http.md) | HTTP Semantics | Method tokens, status codes, header handling |
 | [RFC 9112](docs/rfcs/rfc-911x-http.md) | HTTP/1.1 | Request-line format, persistent connections |
 | [RFC 9113](docs/rfcs/rfc-911x-http.md) | HTTP/2 | Frame format, multiplexing, connection preface |
-| [RFC 1034](docs/rfcs/rfc-103x-dns.md) | DNS Concepts | Hierarchical namespace, resolution algorithm |
-| [RFC 1035](docs/rfcs/rfc-103x-dns.md) | DNS Implementation | Message format, resource records |
-| [RFC 9293](docs/rfcs/rfc-8446-tls1.3.md) | TCP | Connection management, congestion control |
+| [RFC 1034](lore/rfc-103x-dns.md) | DNS Concepts | Hierarchical namespace, resolution algorithm |
+| [RFC 1035](lore/rfc-103x-dns.md) | DNS Implementation | Message format, resource records |
+| [RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html) | TCP | Connection management, congestion control |
 
 <hr />
 
@@ -204,7 +184,7 @@ Detailed RFC compliance notes live in [`docs/rfcs/`](docs/rfcs/).
 
 ```
 interlink/
-├── Cargo.toml              # Dependencies (tokio, rustls, ring, rcgen, hickory-resolver, metrics, serde_json)
+├── Cargo.toml              # Dependencies (tokio, rustls, veyrmux, rcgen, hickory-resolver, metrics)
 ├── README.md               # This file
 ├── lore/                   # Architecture decisions & RFC plans
 │   ├── ideation.md         # Component breakdown, resource budget
@@ -232,7 +212,7 @@ interlink/
 │   │   ├── handshake.rs    # TlsHandshake trait, TlsClient, TlsServer
 │   │   ├── tcp.rs          # Inbound TcpProxy (accept, mTLS, forward, copy)
 │   │   ├── outbound.rs     # Outbound proxy: mux tunnel pool + 1:1 fallback
-│   │   ├── mux.rs          # Multiplexed mTLS tunnels (yamux over ALPN il/mux/1), per-peer tunnel pool
+│   │   ├── mux.rs          # Native Tokio Veyrmux tunnels, Yamux-v0 wire format, per-peer pool
 │   │   ├── verify.rs       # SpiffeServerVerifier: RFC 5280 chain + SPIFFE identity (no RFC 6125 name match)
 │   │   ├── original_dst.rs # SO_ORIGINAL_DST helper (optional transparent mode, self-connect guarded)
 │   │   └── config.rs       # ProxyConfig
@@ -254,9 +234,13 @@ interlink/
 │   ├── spiffe_verify.rs         # SPIFFE server verification: identity accept, untrusted-CA/wrong-domain reject
 │   ├── halfclose_propagation.rs # FIN/close_notify propagation through the relay
 │   └── proxy_shutdown.rs        # Accept-loop shutdown + bind-failure handling
+├── test-support/           # Shared mTLS integration-test fixtures
 └── benches/
-    ├── proxy.rs             # Protocol detection, SPIFFE parse benchmarks
-    └── crypto.rs            # Ed25519 sign/verify, X25519 keygen
+    ├── proxy.rs            # Protocol, identity, policy and relay decisions
+    ├── runtime.rs          # DNS, config, metrics and runtime services
+    ├── crypto.rs           # TLS/certificate and cryptographic operations
+    ├── data_plane.rs       # Real two-proxy mux/legacy connection lifecycles
+    └── path_inventory.json # Declared semantic cases and locked source-coverage limits
 ```
 
 <hr />
@@ -264,87 +248,70 @@ interlink/
 ## Test Suite
 
 ```bash
-./scripts/preflight.sh        # clippy -D warnings + full test suite (pre-commit gate)
-cargo test                    # 85 tests across unit + integration suites
-cargo bench                   # Micro-benchmarks
+./scripts/preflight.sh        # strict clippy, tests, 186 semantic benchmark paths + coverage gate
+cargo test                    # Unit and integration suites
+cargo bench                   # Criterion benchmarks
 bash scripts/demo.sh          # End-to-end mTLS demo
 ```
 
 | Suite | What it covers |
 |-------|----------------|
-| Unit (54) | SpiffeId, compiled policy patterns, CA, DNS single-flight (gated-fake concurrency), metrics, config |
-| E2E (31) | mTLS handshake + echo through the proxy, TLS 1.3 resumption (`Full`→`Resumed`), mux tunnels (1 handshake for N connections, 700 concurrent streams across the tunnel pool, legacy-peer fallback), SPIFFE server verification (accepts peer dialed by non-SAN address; rejects untrusted CA and wrong trust domain), half-close propagation, shutdown + bind-failure handling |
+| Unit | Validated identity, compiled policy, CA, gated DNS single-flight, mux coordination, relay progress, metrics and config |
+| Integration | Real mTLS, resumption, concurrent mux streams, native/stock-Yamux rolling interoperability, exact bytes and EOF, rejection/reset isolation, half-close, credential reload and shutdown |
 
 <hr />
 
 ## Benchmarks
 
-### Micro-benchmarks (Linux x86_64, 16 cores)
+### Native Veyrmux integration — 2026-11-17
 
-See [`docs/benchmarks/results.md`](docs/benchmarks/results.md) for methodology.
+Matched Linux measurements compare the previous stock-Yamux runtime with native
+Veyrmux. Lower lifecycle latency is better.
 
-```
-policy_engine/evaluate       time:   [40.6 ns]   (compiled patterns; was 8.2 µs string-matched)
-pattern_match/compiled       time:   [25.4 ns]
-protocol_detection/http1.1   time:   [0.84 ns]
-spiffe_id/parse              time:   [174 ns]    (validated try_new — the only constructor)
-```
+| Path / payload each way | Stock Yamux, µs | Native Veyrmux, µs | Change |
+| --- | ---: | ---: | ---: |
+| Mux / 35 B | 253.7 | 239.0 | −5.8% |
+| Mux / 16 KiB | 268.7 | 239.0 | −11.1% |
+| Legacy control / 35 B | 487.6 | 490.8 | +0.7% |
+| Legacy control / 16 KiB | 506.6 | 509.0 | +0.5% |
 
-Hot-path numbers that matter more than microbenches: TLS 1.3 session resumption is
-verified end-to-end (`Full` → `Resumed`), and multiplexed tunnels carry ~19,000
-connections over a single TLS handshake (measured: −63 % combined proxy CPU and −46 %
-p50 latency at 500 conns/s churn versus per-connection handshakes — see
-`docs/performance-plan.md`).
+Eight fixed ABBAABBA blocks, four block medians per arm, on Linux/x86-64 with
+eight vCPUs, Rust 1.100, full LTO, one codegen unit and mimalloc. Both runtimes
+use the same harness; each block runs in a fresh loopback-only network namespace.
+The benchmark process contains two actual proxies and a TCP echo service.
 
-### Service mesh comparison
+Every timed request includes application TCP connect, payload write, half-close,
+exact echo and peer EOF. Fixtures are untimed. These are sequential completed-
+connection latencies—not maximum throughput, request p99, cross-host latency or
+production NAT overhead.
 
-A reproducible benchmark harness lives in [`bench/`](bench/). All three meshes are
-deployed the same way — **as per-pod sidecars** (interlink and Linkerd sidecars; Istio
-ambient's per-node ztunnel) — on one **3-node kind cluster**
-(`bench/manifests/kind-3node.yaml`) with the load generator and echo server pinned to
-separate worker nodes so mesh traffic always crosses the node boundary. Identical
-workload (Go echo server, 200 ms fixed delay, 1 KB payload, Fortio), identical load, and
-CPU/memory sampled per proxy container via `kubectl top`. Every profile below passed the
-validity gate (achieved RPS within 3 % of target, **zero errors**, host CPU < 85 %).
+[Methodology and historical results](docs/benchmarks/results.md) ·
+[Raw samples, per-block intervals and source/binary hashes](bench/results/veyrmux-integration/comparison.json)
 
-Measured 2026-07-08 (60 s/profile, 3-node kind on a 16-core host):
-
-| Mesh | 320 rps | 800 rps | 1600 rps |
-|------|---------|---------|----------|
-| **p99 latency overhead** (above the 200 ms base) | | | |
-| interlink | **+4.0 ms** | **+7.3 ms** | **+9.9 ms** |
-| Linkerd | +8.6 ms | +18.1 ms | +25.8 ms |
-| Istio ambient | +14.0 ms | +9.1 ms | +13.9 ms |
-| **proxy CPU** (avg millicores) | | | |
-| interlink | **15.4** | **31.8** | **47.7** |
-| Linkerd | 25.3 | 67.7 | 121.8 |
-| Istio ambient | 28.1 | 56.4 | 92.4 |
-| **proxy memory** (avg MB) | | | |
-| interlink | 21.3 | 43.7 | 94.1 |
-| Linkerd | 13.9 | 26.3 | 42.0 |
-| Istio ambient | **8.3** | **11.8** | **18.7** |
-
-**Takeaways.** interlink adds the least latency overhead and uses the least CPU
-(~2.5× less than Linkerd, ~2× less than Istio ambient at 1600 rps) — the multiplexed
-mTLS tunnels amortize the handshake. The trade-off is memory (94 MB vs Istio's 19 MB at
-1600 rps): a verified allocator high-water effect of the 64 KiB relay buffers under
-connection churn, not live state — root cause, reproduction, and options in
-[`lore/benchmark-status.md`](lore/benchmark-status.md). Full table and methodology:
-[`bench/results/comparison.md`](bench/results/comparison.md).
-
-Reproduce:
+### Run benchmarks
 
 ```bash
-cd bench && ./setup.sh                       # pinned kind/kubectl/linkerd/istioctl
-BENCH_PROFILES="320:80,800:200,1600:400" ./scripts/run-interlink.sh
-BENCH_PROFILES="320:80,800:200,1600:400" ./scripts/run-linkerd.sh
-BENCH_PROFILES="320:80,800:200,1600:400" ./scripts/run-istio.sh
-python3 scripts/aggregate.py                 # -> bench/results/comparison.md (gated)
+cargo bench --bench data_plane -- 'proxy_relay/(mux|legacy)_(small|16kb)$'
+cargo bench --bench proxy
+cargo bench --bench runtime
+cargo bench --bench crypto
 ```
 
-Also measured on the single-proxy microbenchmark harness: compiled policy evaluation at
-**40.5 ns**, verified TLS 1.3 resumption, and multiplexed tunnels carrying **~19,000
-connections over a single handshake** (−63 % proxy CPU) under connection churn.
+These commands measure the current checkout; they do not reconstruct the matched
+historical A/B automatically. See the [benchmark guide](bench/README.md) for
+workload selection and reproduction requirements.
+
+### Other workloads and historical captures
+
+| Results | Captured | Scope |
+| --- | --- | --- |
+| [Single inbound-proxy Fortio profiles](bench/local/results/proxy-summary.md) | 2026-11-16 | Pre-cutover HTTP/churn/bulk profiles; not a native-mux A/B |
+| [Service-mesh comparison](bench/results/comparison.md) | 2026-07-08 | HTTP workload across kind workers; interlink/Linkerd sidecars versus Istio ambient |
+| [Primitive microbenchmarks](docs/benchmarks/results.md) | 2026-07-08 | Individual operations, not service latency or capacity |
+
+The earlier −63% proxy-CPU churn result compares multiplexing with per-connection
+handshakes, not Veyrmux with Yamux; see the [performance roadmap](docs/performance-plan.md).
+Do not combine that CPU result with the lifecycle-latency reductions above.
 
 <hr />
 

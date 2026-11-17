@@ -20,9 +20,8 @@ log() {
     echo "[$(date -Iseconds)] $*" >&2
 }
 
-# Hard cap on per-profile duration (seconds). Benchmarks are short by design:
-# metrics-server scrapes ~every 15s, so 60s gives enough CPU/mem samples while
-# keeping a full 3-mesh x 3-profile comparison to a few minutes.
+# Cap measured time at 60 seconds per profile; metrics-server scrapes about every
+# 15 seconds. Cluster setup and discarded warm-up time are additional.
 BENCH_MAX_DURATION=60
 if [[ "${BENCH_DURATION:-60}" -gt "${BENCH_MAX_DURATION}" ]]; then
     echo "[bench] clamping BENCH_DURATION ${BENCH_DURATION} -> ${BENCH_MAX_DURATION}s" >&2
