@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1000" height="990" viewBox="0 0 1000 990" role="img" aria-labelledby="plot-title plot-desc">
 <title id="plot-title">Measured service mesh echo performance</title>
-<desc id="plot-desc">Four panels show p99 latency, proxy RSS, proxy CPU, and bulk payload throughput. Small markers are eligible capacity measurements in declared concurrency order. Large ringed markers are separate measured shared-load controls at their actual achieved request rates.</desc>
+<desc id="plot-desc">Four panels show p99 latency, proxy anonymous RSS, proxy CPU, and bulk payload throughput. Small markers are eligible capacity measurements in declared concurrency order. Large ringed markers are separate measured shared-load controls at their actual achieved request rates.</desc>
 <style>svg{color:var(--fg,CanvasText);color-scheme:light dark;font-family:system-ui,-apple-system,sans-serif;font-size:14px}text{fill:currentColor}.muted{fill:var(--muted,currentColor)}.axis{stroke:currentColor;stroke-width:1;fill:none}.grid{stroke:var(--border,currentColor);stroke-opacity:.18;stroke-width:1}.shade{fill:var(--accent,currentColor);fill-opacity:.08}.target{stroke:currentColor;stroke-opacity:.65;stroke-dasharray:2 5;stroke-width:1.5}.mesh0{stroke:var(--c1,LinkText)}.mesh1{stroke:var(--c2,ActiveText)}.mesh2{stroke:var(--c3,VisitedText)}.curve{fill:none;stroke-width:2;stroke-linejoin:round}.marker{fill:none;stroke-width:1.5}.control{stroke-width:2.5}</style>
 <text x="24.00" y="29.00" text-anchor="start" font-size="22">Service mesh · measured echo performance</text>
 <text x="24.00" y="53.00" text-anchor="start" class="muted">Same host · 8 logical CPUs · 3.32 GiB RAM</text>
@@ -170,9 +170,9 @@
 </g>
 <text x="100.00" y="520.00" text-anchor="start" font-size="13">istio-ambient · 9,998.43 RPS → 3.43 ms</text>
 </g>
-<g id="panel-rss_mib" class="panel" role="group" aria-label="1 KiB · proxy resident memory">
-<text x="516.00" y="171.00" text-anchor="start" font-size="17">1 KiB · proxy resident memory</text>
-<text x="573.00" y="189.00" text-anchor="start" class="muted" font-size="13">Proxy RSS (MiB)</text>
+<g id="panel-rss_mib" class="panel" role="group" aria-label="1 KiB · proxy anonymous memory">
+<text x="516.00" y="171.00" text-anchor="start" font-size="17">1 KiB · proxy anonymous memory</text>
+<text x="573.00" y="189.00" text-anchor="start" class="muted" font-size="13">Anonymous RSS (MiB)</text>
 <rect class="shade" x="596.34" y="202.00" width="68.34" height="190.00"/>
 <line x1="573.00" y1="392.00" x2="959.00" y2="392.00" class="grid"/>
 <text x="564.00" y="397.00" text-anchor="end" font-size="13">0</text>

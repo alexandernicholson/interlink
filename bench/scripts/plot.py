@@ -180,7 +180,7 @@ def render(capacity_points, shared_points, host, target_rps=10000) -> str:
         '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="990" '
         'viewBox="0 0 1000 990" role="img" aria-labelledby="plot-title plot-desc">',
         '<title id="plot-title">Measured service mesh echo performance</title>',
-        '<desc id="plot-desc">Four panels show p99 latency, proxy RSS, proxy CPU, '
+        '<desc id="plot-desc">Four panels show p99 latency, proxy anonymous RSS, proxy CPU, '
         'and bulk payload throughput. Small markers are eligible capacity measurements '
         'in declared concurrency order. Large ringed markers are separate measured '
         'shared-load controls at their actual achieved request rates.</desc>',
@@ -222,7 +222,7 @@ def render(capacity_points, shared_points, host, target_rps=10000) -> str:
 
     panels = (
         (24, 154, "1 KiB · p99 latency", "p99_ms", "ms"),
-        (516, 154, "1 KiB · proxy resident memory", "rss_mib", "MiB"),
+        (516, 154, "1 KiB · proxy anonymous memory", "rss_mib", "MiB"),
         (24, 548, "1 KiB · proxy CPU", "cpu_millicores", "cores"),
         (516, 548, "1 MiB · bulk payload throughput", "payload_mib_s", "MiB/s"),
     )
@@ -241,7 +241,7 @@ def render(capacity_points, shared_points, host, target_rps=10000) -> str:
             y_axis, y_ticks, y_label = _latency(values)
         else:
             y_axis, y_ticks = _linear(values)
-            y_label = {"rss_mib": "Proxy RSS (MiB)",
+            y_label = {"rss_mib": "Anonymous RSS (MiB)",
                        "cpu_millicores": "Proxy CPU (cores)",
                        "payload_mib_s": "Payload (MiB/s per direction)"}[metric]
         x_axis, x_ticks = (x_bulk, bulk_ticks) if bulk else (x_rate, rate_ticks)

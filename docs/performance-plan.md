@@ -10,7 +10,7 @@ Follow the [benchmark guide](../bench/README.md) to collect or regenerate result
   using zero application delay, 1 KiB RPS and 1 MiB bulk workloads.
 - Measured comparison: capacity curves plus a separate, error-free
   10,000 requests/s control at 64 connections for every mesh.
-  Compare latency and resources at this shared load, not each mesh's peak.
+  Compare latency, CPU and anonymous RSS at this shared load, not each mesh's peak.
 - Reuse the existing capacity sweeps when adding controls on the same host and runtime.
   Do not interpolate measurements or relabel older delayed workloads.
 - Run captures on the Linux benchmark host, never in CI. CI validates stored results.
