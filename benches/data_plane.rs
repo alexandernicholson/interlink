@@ -1,6 +1,7 @@
 mod support;
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,13 +9,13 @@ use async_trait::async_trait;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use interlink::common::error::InterlinkError;
 use interlink::common::identity::{IdentityProvider, SpiffeId, TrustDomain};
-use interlink_test_support::CertificateAuthority;
 use interlink::policy::{patterns, PolicyEngine};
 use interlink::proxy::config::ProxyConfig;
 use interlink::proxy::handshake::{
     legacy_alpn_protocols, TlsClient, TlsHandshake, TlsServer, TlsStream,
 };
 use interlink::proxy::{OutboundProxy, TcpProxy};
+use interlink_test_support::CertificateAuthority;
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -50,6 +51,23 @@ impl TlsHandshake for FailingHandshake {
         Err(InterlinkError::Tls(rustls::Error::General(
             "injected handshake failure".into(),
         )))
+    }
+}
+
+struct CountingHandshake {
+    inner: Arc<dyn TlsHandshake>,
+    connects: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl TlsHandshake for CountingHandshake {
+    async fn connect(&self, addr: SocketAddr) -> Result<TlsStream, InterlinkError> {
+        self.connects.fetch_add(1, Ordering::Relaxed);
+        self.inner.connect(addr).await
+    }
+
+    async fn accept(&self, stream: TcpStream) -> Result<TlsStream, InterlinkError> {
+        self.inner.accept(stream).await
     }
 }
 
@@ -128,6 +146,20 @@ impl ProxyHarness {
         backend_mode: BackendMode,
         inbound_egress: Vec<String>,
     ) -> Self {
+        let (harness, probe) =
+            Self::start_configured(mux, allow, backend_mode, inbound_egress, 64, None).await;
+        drop(probe);
+        harness
+    }
+
+    async fn start_configured(
+        mux: bool,
+        allow: bool,
+        backend_mode: BackendMode,
+        inbound_egress: Vec<String>,
+        stream_cap: usize,
+        connects: Option<Arc<AtomicUsize>>,
+    ) -> (Self, TcpStream) {
         let echo_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let echo_addr = echo_listener.local_addr().unwrap();
         let echo_task = tokio::spawn(async move {
@@ -194,7 +226,7 @@ impl ProxyHarness {
             identity: client_identity.clone(),
             trust_domain: trust_domain.clone(),
         });
-        let client = Arc::new(if mux {
+        let client: Arc<dyn TlsHandshake> = Arc::new(if mux {
             TlsClient::with_client_auth(
                 client_provider,
                 client_cert,
@@ -210,6 +242,13 @@ impl ProxyHarness {
             )
             .unwrap()
         });
+        let client: Arc<dyn TlsHandshake> = match connects {
+            Some(connects) => Arc::new(CountingHandshake {
+                inner: client,
+                connects,
+            }),
+            None => client,
+        };
 
         let policy = Arc::new(PolicyEngine::new());
         if allow {
@@ -228,6 +267,7 @@ impl ProxyHarness {
                     default_upstream: Some(echo_addr.to_string()),
                     max_connections: Some(1024),
                     mux,
+                    mux_max_streams_per_tunnel: stream_cap,
                     egress_subnets: inbound_egress,
                     ..Default::default()
                 },
@@ -250,6 +290,7 @@ impl ProxyHarness {
                     ),
                     max_connections: Some(1024),
                     mux,
+                    mux_max_streams_per_tunnel: stream_cap,
                     ..Default::default()
                 },
                 outbound_port,
@@ -263,10 +304,10 @@ impl ProxyHarness {
         let inbound_task = inbound.spawn();
         let outbound_task = outbound.spawn();
         let outbound_addr = SocketAddr::from(([127, 0, 0, 1], outbound_port));
-        tokio::time::timeout(Duration::from_secs(1), async {
+        let probe = tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if TcpStream::connect(outbound_addr).await.is_ok() {
-                    return;
+                if let Ok(stream) = TcpStream::connect(outbound_addr).await {
+                    return stream;
                 }
                 tokio::task::yield_now().await;
             }
@@ -274,11 +315,14 @@ impl ProxyHarness {
         .await
         .unwrap();
 
-        Self {
-            outbound_addr,
-            shutdown: vec![inbound_shutdown_tx, outbound_shutdown_tx],
-            tasks: vec![echo_task, inbound_task, outbound_task],
-        }
+        (
+            Self {
+                outbound_addr,
+                shutdown: vec![inbound_shutdown_tx, outbound_shutdown_tx],
+                tasks: vec![echo_task, inbound_task, outbound_task],
+            },
+            probe,
+        )
     }
 
     async fn request(&self, payload: &'static [u8]) -> std::io::Result<Vec<u8>> {
@@ -316,13 +360,22 @@ impl ProxyHarness {
         Ok(response)
     }
 
-    fn stop(&self) {
+    async fn stop(mut self) {
         for shutdown in &self.shutdown {
             let _ = shutdown.send(true);
+        }
+        // Await the outbound shutdown path instead of racing it with abort().
+        let mut outbound = self.tasks.pop().unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), &mut outbound).await;
+        if result.is_err() {
+            outbound.abort();
         }
         for task in &self.tasks {
             task.abort();
         }
+        result
+            .expect("outbound fixture must finish graceful shutdown")
+            .expect("outbound fixture must not panic");
     }
 }
 
@@ -416,10 +469,27 @@ impl OutboundHarness {
         result.map(|_| response.len())
     }
 
-    fn stop(&self) {
+    async fn stop(mut self) {
         let _ = self.shutdown.send(true);
-        self.task.abort();
+        let result = tokio::time::timeout(Duration::from_secs(1), &mut self.task).await;
+        if result.is_err() {
+            self.task.abort();
+        }
+        result
+            .expect("outbound fixture must finish graceful shutdown")
+            .expect("outbound fixture must not panic");
     }
+}
+
+async fn echo_existing(stream: &mut TcpStream, payload: &[u8; 64]) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        stream.write_all(payload).await.unwrap();
+        let mut response = [0; 64];
+        stream.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, payload);
+    })
+    .await
+    .expect("existing mux stream must make progress");
 }
 
 fn assert_closed(result: &std::io::Result<usize>, path: &str) {
@@ -442,6 +512,29 @@ fn bench_proxy_paths(c: &mut Criterion) {
     static BULK: [u8; 16 * 1024] = [0x5a; 16 * 1024];
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
+    // Cap one application stream per tunnel. The retained readiness connection
+    // is the first real stream, so no throwaway probe can create a spare tunnel.
+    let connects = Arc::new(AtomicUsize::new(0));
+    let (two_tunnel, streams) = runtime.block_on(async {
+        let (harness, mut first) = ProxyHarness::start_configured(
+            true,
+            true,
+            BackendMode::Echo,
+            Vec::new(),
+            1,
+            Some(connects.clone()),
+        )
+        .await;
+        echo_existing(&mut first, &[17; 64]).await;
+        let mut second = TcpStream::connect(harness.outbound_addr).await.unwrap();
+        echo_existing(&mut second, &[193; 64]).await;
+        assert_eq!(
+            connects.load(Ordering::Relaxed),
+            2,
+            "two live streams with cap one must grow to two tunnels"
+        );
+        (harness, tokio::sync::Mutex::new((first, second)))
+    });
     let mux = runtime.block_on(ProxyHarness::start(true, true));
     let legacy = runtime.block_on(ProxyHarness::start(false, true));
     let denied = runtime.block_on(ProxyHarness::start(true, false));
@@ -513,6 +606,16 @@ fn bench_proxy_paths(c: &mut Criterion) {
     assert_eq!(warm, SMALL, "mux benchmark fixture must relay bytes");
 
     let mut group = c.benchmark_group("proxy_relay");
+    group.bench_function("mux_two_tunnel_concurrent_streams", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let mut streams = streams.lock().await;
+            let (first, second) = &mut *streams;
+            tokio::join!(
+                echo_existing(first, &[17; 64]),
+                echo_existing(second, &[193; 64])
+            );
+        })
+    });
     group.bench_function("mux_small", |b| {
         b.to_async(&runtime).iter(|| async {
             let response = mux.request(black_box(SMALL)).await.unwrap();
@@ -645,17 +748,21 @@ fn bench_proxy_paths(c: &mut Criterion) {
     });
     group.finish();
 
-    mux.stop();
-    halfclose_mux.stop();
-    halfclose_legacy.stop();
-    reset_mux.stop();
-    reset_legacy.stop();
-    legacy.stop();
-    denied.stop();
-    handshake_failure.stop();
-    no_upstream.stop();
-    saturation.stop();
-    egress_denied.stop();
+    drop(streams);
+    runtime.block_on(async {
+        two_tunnel.stop().await;
+        mux.stop().await;
+        halfclose_mux.stop().await;
+        halfclose_legacy.stop().await;
+        reset_mux.stop().await;
+        reset_legacy.stop().await;
+        legacy.stop().await;
+        denied.stop().await;
+        handshake_failure.stop().await;
+        no_upstream.stop().await;
+        saturation.stop().await;
+        egress_denied.stop().await;
+    });
 }
 
 criterion_group!(
