@@ -183,6 +183,23 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    /// mimalloc's `no_thp` build never advises transparent huge pages
+    /// (`MADV_HUGEPAGE`, the `hg` VmFlag). On madvise-mode hosts that advice
+    /// multiplied the mesh benchmark's retained anonymous RSS.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn allocator_never_advises_transparent_huge_pages() {
+        let heap = std::hint::black_box(vec![1u8; 8 << 20]);
+        let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
+        drop(heap);
+        let advised: Vec<_> = smaps
+            .lines()
+            .filter(|line| line.starts_with("VmFlags:"))
+            .filter(|line| line.split_whitespace().any(|flag| flag == "hg"))
+            .collect();
+        assert!(advised.is_empty(), "huge-page advice: {advised:?}");
+    }
+
     #[test]
     fn startup_allow_all_requires_explicit_enable() {
         let identity =

@@ -73,7 +73,8 @@ that the relevant subsystem limits your workload.
 ### Does the release build need extra optimization scripts?
 
 Use the standard release build. `Cargo.toml` enables optimization level 3, LTO,
-one codegen unit, stripping, and abort-on-panic. The daemon uses mimalloc.
+one codegen unit, stripping, and abort-on-panic. The daemon uses mimalloc without
+transparent-huge-page advice; a host that enables THP for all memory still applies it.
 No additional build-training or binary-rewriting workflow is required.
 
 ### Which SVID signature family should I use?

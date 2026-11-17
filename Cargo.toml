@@ -47,7 +47,9 @@ futures-util = "0.3"
 tower = { version = "0.5", features = ["util"] }
 async-trait = "0.1"
 moka = { version = "0.12", features = ["sync"] }
-mimalloc = { version = "0.1", default-features = false }
+# no_thp: never advise huge pages; on madvise-mode hosts that advice multiplied
+# retained anonymous RSS (main.rs test).
+mimalloc = { version = "0.1", default-features = false, features = ["no_thp"] }
 veyrmux = { git = "https://github.com/alexandernicholson/veyrmux", rev = "6a3e9f66fb896cc56dc60696d14f774657f1cd04" }
 bytes = "1"
 
