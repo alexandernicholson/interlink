@@ -89,7 +89,7 @@ touches as performance- and security-sensitive.
 - Service-mesh benchmark: `./bench/run.sh`; the sole published table is
   `bench/results/comparison.md`, generated from a complete matched capture.
 - Runtime tuning knobs: `INTERLINK_ACCEPTORS` (1..=16), `INTERLINK_COPY_BUF_SIZE`
-  (4 KiB..=1 MiB, default 64 KiB)
+  (4 KiB..=1 MiB, default 64 KiB), `INTERLINK_WORKER_THREADS` (1..=64, default 2)
 - Profiling: `cargo build --profile profiling` (symbols kept), then
   `perf record --call-graph dwarf -p $(pgrep -x interlinkd)`; note `pgrep -f` can
   match the wrapper shell — use `-x`

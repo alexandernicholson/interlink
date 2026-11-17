@@ -1,72 +1,78 @@
 {
   "RunType": "HTTP",
-  "Labels": "127.0.0.1:4140/echo , fortio-client-5d6b5b6649-fk587",
-  "StartTime": "2026-11-17T11:38:37.733224281Z",
+  "Labels": "127.0.0.1:4140/echo , fortio-client-68dd7cd8d7-g7tsn",
+  "StartTime": "2026-11-17T16:10:43.385144049Z",
   "RequestedQPS": "max",
   "RequestedDuration": "20s",
-  "ActualQPS": 13828.756452667956,
-  "ActualDuration": 20000207607,
+  "ActualQPS": 15335.21034363303,
+  "ActualDuration": 20000312557,
   "NumThreads": 4,
   "Version": "1.66.0",
   "DurationHistogram": {
-    "Count": 276578,
-    "Min": 8.4868e-05,
-    "Max": 0.004240153,
-    "Sum": 79.89614667600024,
-    "Avg": 0.00028887383188829277,
-    "StdDev": 8.230958445076341e-05,
+    "Count": 306709,
+    "Min": 7.2548e-05,
+    "Max": 0.006011876,
+    "Sum": 79.8912088250002,
+    "Avg": 0.0002604788539788536,
+    "StdDev": 8.160915621631835e-05,
     "Data": [
       {
-        "Start": 8.4868e-05,
+        "Start": 7.2548e-05,
         "End": 0.001,
-        "Percent": 99.87164561172617,
-        "Count": 276223
+        "Percent": 99.90283949932999,
+        "Count": 306411
       },
       {
         "Start": 0.001,
         "End": 0.002,
-        "Percent": 99.98553753371563,
-        "Count": 315
+        "Percent": 99.98206769282936,
+        "Count": 243
       },
       {
         "Start": 0.002,
         "End": 0.003,
-        "Percent": 99.99349189017204,
-        "Count": 22
+        "Percent": 99.9885885318005,
+        "Count": 20
       },
       {
         "Start": 0.003,
         "End": 0.004,
-        "Percent": 99.99891531502867,
-        "Count": 15
+        "Percent": 99.99934791610289,
+        "Count": 33
       },
       {
         "Start": 0.004,
-        "End": 0.004240153,
+        "End": 0.005,
+        "Percent": 99.99967395805145,
+        "Count": 1
+      },
+      {
+        "Start": 0.006,
+        "End": 0.006011876,
         "Percent": 100,
-        "Count": 3
+        "Count": 1
       }
     ],
     "Percentiles": [
       {
         "Percentile": 50,
-        "Value": 0.000543020406455677
+        "Value": 0.0005367234847491923
       },
       {
         "Percentile": 75,
-        "Value": 0.000772098266198927
+        "Value": 0.0007688127405404523
       },
       {
         "Percentile": 90,
-        "Value": 0.000909544982044877
+        "Value": 0.0009080662940152084
       },
       {
         "Percentile": 99,
-        "Value": 0.000992013011552447
+        "Value": 0.000991618426100062
       },
       {
         "Percentile": 99.9,
-        "Value": 0.0012489587301587834
+        "Value": 0.0009999736393085474
       }
     ]
   },
@@ -85,9 +91,9 @@
   "NoCatchUp": false,
   "RunID": 0,
   "AccessLoggerInfo": "",
-  "ID": "2026-11-17-113837_127_0_0_1_4140_echo_fortio_client_5d6b5b6649_fk587",
+  "ID": "2026-11-17-161043_127_0_0_1_4140_echo_fortio_client_68dd7cd8d7_g7tsn",
   "RetCodes": {
-    "200": 276578
+    "200": 306709
   },
   "IPCountMap": {
     "127.0.0.1:4140": 4
@@ -122,10 +128,10 @@
   "Offset": 0,
   "Resolution": 0.001,
   "Sizes": {
-    "Count": 276578,
+    "Count": 306709,
     "Min": 1142,
     "Max": 1142,
-    "Sum": 315852076,
+    "Sum": 350261678,
     "Avg": 1142,
     "StdDev": 0,
     "Data": [
@@ -133,15 +139,15 @@
         "Start": 1142,
         "End": 1142,
         "Percent": 100,
-        "Count": 276578
+        "Count": 306709
       }
     ]
   },
   "HeaderSizes": {
-    "Count": 276578,
+    "Count": 306709,
     "Min": 118,
     "Max": 118,
-    "Sum": 32636204,
+    "Sum": 36191662,
     "Avg": 118,
     "StdDev": 0,
     "Data": [
@@ -149,7 +155,7 @@
         "Start": 118,
         "End": 118,
         "Percent": 100,
-        "Count": 276578
+        "Count": 306709
       }
     ]
   },
@@ -162,15 +168,15 @@
   "SocketCount": 4,
   "ConnectionStats": {
     "Count": 4,
-    "Min": 0.000586424,
-    "Max": 0.000628693,
-    "Sum": 0.002437614,
-    "Avg": 0.0006094035,
-    "StdDev": 1.635995431687153e-05,
+    "Min": 0.000120617,
+    "Max": 0.000894235,
+    "Sum": 0.0025921069999999997,
+    "Avg": 0.0006480267499999999,
+    "StdDev": 0.00030765842762093735,
     "Data": [
       {
-        "Start": 0.000586424,
-        "End": 0.000628693,
+        "Start": 0.000120617,
+        "End": 0.000894235,
         "Percent": 100,
         "Count": 4
       }
@@ -178,30 +184,30 @@
     "Percentiles": [
       {
         "Percentile": 50,
-        "Value": 0.0006005136666666666
+        "Value": 0.00037848966666666667
       },
       {
         "Percentile": 75,
-        "Value": 0.0006146033333333334
+        "Value": 0.0006363623333333333
       },
       {
         "Percentile": 90,
-        "Value": 0.0006230571333333334
+        "Value": 0.0007910859333333333
       },
       {
         "Percentile": 99,
-        "Value": 0.0006281294133333333
+        "Value": 0.0008839200933333333
       },
       {
         "Percentile": 99.9,
-        "Value": 0.0006286366413333334
+        "Value": 0.0008932035093333333
       }
     ]
   },
   "AbortOn": 0,
   "PayloadBytes": 1024,
-  "PayloadSHA256": "1721d142eb1f4fc2b9a9d330082c86ea9c8444fc7b39e66177d8467528cbf407",
+  "PayloadSHA256": "28f905cba58bcbd95ff1a1af955c735a727dd832760fcfb9aab8560c887ca641",
   "WarmupRetCodes": {
-    "200": 140945
+    "200": 150405
   }
 }
