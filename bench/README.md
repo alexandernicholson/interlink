@@ -3,6 +3,14 @@
 Compare interlink, Linkerd, and Istio ambient using zero-delay HTTP echo.
 View the [results](results/comparison.md) for latency, proxy resources, and throughput.
 
+```mermaid
+flowchart LR
+    Run[Run all three meshes] --> Capture[Stage controls and concurrency sweeps]
+    Capture --> Validate{Complete valid evidence?}
+    Validate -- yes --> Publish[Replace dataset, report, graph and README headline]
+    Validate -- no --> Keep[Keep the published dataset; retain rejected data privately]
+```
+
 ## Requirements
 
 - A Linux host with Docker and room for a three-node kind cluster.

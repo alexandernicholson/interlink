@@ -4,10 +4,14 @@ A lightweight service mesh proxy written in Rust: SPIFFE mTLS, default-deny auth
 [Veyrmux](https://github.com/alexandernicholson/veyrmux) lets application connections share authenticated proxy-to-proxy tunnels.
 
 ```mermaid
-flowchart LR
-    A[Service A] -->|plaintext TCP| P1[interlink]
-    P1 -->|mTLS + multiplexed streams| P2[interlink]
-    P2 -->|plaintext TCP| B[Service B]
+graph LR
+    subgraph Cloud
+        A[Service A<br/>Go/Node/Rust] --- P1[interlink proxy]
+    end
+    subgraph Edge
+        B[Service B<br/>Python/Java] --- P2[interlink proxy]
+    end
+    P1 -- mTLS + Veyrmux streams --- P2
 ```
 
 ## Quick Start
@@ -78,6 +82,76 @@ Set `INTERLINK_CONFIG_FILE` to use another JSON file.
 Invalid credentials return `500`; active credentials and existing streams remain unchanged.
 See [key management](docs/architecture/key-management.md) and
 [production tuning](docs/production-tuning.md) for rotation and resource controls.
+
+## Architecture
+
+Each pod runs an interlink sidecar. See the [architecture overview](docs/architecture/overview.md)
+and [key management](docs/architecture/key-management.md) for topologies and connection lifecycles.
+
+```mermaid
+flowchart TB
+    subgraph Proxy["interlink Proxy (per-pod sidecar)"]
+        direction TB
+        subgraph Inbound["Inbound (port 4143)"]
+            L[TCP Listener] --> H[TLS 1.3 + SPIFFE authentication]
+            H --> M{ALPN<br/>il/mux/1?}
+            M -- yes --> Y[Veyrmux logical streams]
+            M -- no --> I[Legacy TCP connection]
+            Y --> P[Authorize each stream<br/>default-deny]
+            I --> P
+            P --> F[Forward to upstream]
+        end
+        subgraph Outbound["Outbound (port 4140)"]
+            O[TCP Listener] --> OM[Upstream destination]
+            OM --> OT{Reusable tunnel<br/>under admission limits?}
+            OT -- yes --> OS[Open Veyrmux stream]
+            OT -- no --> OH[TLS 1.3 + SPIFFE authentication]
+            OH --> NEG{ALPN<br/>il/mux/1?}
+            NEG -- yes --> POOL[Register Veyrmux tunnel]
+            POOL --> OS
+            NEG -- no --> LEG[Legacy 1:1 relay]
+            OS --> OF[Authorized application relay]
+            LEG --> OF
+        end
+        subgraph Admin["Admin (port 4192)"]
+            AD[HTTP Server] --> AH["/healthz /readyz /reload"]
+        end
+    end
+    Peer[Peer interlink<br/>proxy] -- mTLS --> L
+    Client[Application<br/>Container] -- plaintext --> O
+    F --> App[Local App<br/>Container]
+    OF -- mTLS --> RemotePeer[Peer interlink<br/>proxy]
+```
+
+The first connection to a peer pays one TLS handshake; later connections open streams on that tunnel:
+
+```mermaid
+sequenceDiagram
+    participant A as Service A
+    participant O as interlink (A's sidecar)
+    participant I as interlink (B's sidecar)
+    participant B as Service B
+
+    A->>O: TCP connect, plaintext (outbound :4140)
+    Note over O: Destination from SO_ORIGINAL_DST<br/>or configured upstream
+    alt No reusable tunnel to this peer
+        O->>I: TLS 1.3 ClientHello, ALPN il/mux/1 (inbound :4143)
+        I->>O: Certificate (spiffe://…/sa/b)
+        O->>I: Certificate (spiffe://…/sa/a)
+        Note over O,I: Each side authorizes the peer identity (default-deny)
+    end
+    O->>I: Open Veyrmux stream
+    Note over I: Authorize stream (default-deny)
+    I->>B: TCP connect, plaintext
+    A->>O: Request bytes
+    O->>I: Stream data (encrypted)
+    I->>B: Request bytes
+    B-->>A: Response relayed back the same way
+```
+
+Veyrmux is wire-compatible with Yamux v0 under the `il/mux/1` ALPN; rolling-version tests cover
+stock Yamux peers in both directions. `INTERLINK_MUX=false` removes the mux offer and peers fall back
+to one-to-one relays, but a negotiated protocol is always honored.
 
 ## Benchmarks
 
