@@ -1075,6 +1075,7 @@ dependencies = [
  "interlink",
  "rcgen",
  "ring",
+ "rustix",
  "rustls",
  "time",
  "x509-parser",

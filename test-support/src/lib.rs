@@ -1,7 +1,12 @@
-//! Certificate issuance for tests, benchmarks, and local bootstrap examples only.
-//! Never link this crate into the production proxy.
+//! Certificate issuance and descriptor exhaustion for tests, benchmarks, and
+//! local bootstrap examples only. Never link this crate into the production proxy.
 
 pub use rcgen;
+
+#[cfg(unix)]
+mod descriptors;
+#[cfg(unix)]
+pub use descriptors::DescriptorExhaustion;
 
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,

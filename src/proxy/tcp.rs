@@ -176,26 +176,12 @@ impl TcpProxy {
             .map(|(id, listener)| {
                 // Each acceptor selects on its own clone of the watch channel
                 // (R27): with_shutdown() must stop the accept loops.
-                let shutdown = self.shutdown.clone();
+                let mut acceptor =
+                    crate::proxy::Acceptor::new(listener, "acceptor", id, self.shutdown.clone());
                 let proxy = self.clone();
                 tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            accept_result = listener.accept() => {
-                                let (stream, peer_addr) = match accept_result {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        error!("acceptor {} accept error: {}", id, e);
-                                        continue;
-                                    }
-                                };
-                                proxy.handle_accept(stream, peer_addr).await;
-                            }
-                            _ = crate::proxy::wait_shutdown(shutdown.clone()) => {
-                                info!("acceptor {} received shutdown signal", id);
-                                break;
-                            }
-                        }
+                    while let Some((stream, peer_addr)) = acceptor.next().await {
+                        proxy.handle_accept(stream, peer_addr).await;
                     }
                 })
             })

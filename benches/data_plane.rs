@@ -567,6 +567,43 @@ fn bench_proxy_paths(c: &mut Criterion) {
     static BULK: [u8; 16 * 1024] = [0x5a; 16 * 1024];
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
+    // Run first, before other fixtures hold descriptors or tasks: one listener
+    // hits EMFILE with a connection queued, backs off, then accepts again.
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let refused_upstream = SocketAddr::from(([127, 0, 0, 1], reserve_port())).to_string();
+    let exhausted = runtime.block_on(async {
+        let harness = OutboundHarness::start(
+            Some(refused_upstream),
+            1024,
+            Arc::new(CountingHandshake {
+                inner: Arc::new(FailingHandshake),
+                connects: accepts.clone(),
+                fail_from: None,
+            }),
+        )
+        .await;
+        let accepted = |count| {
+            let accepts = accepts.clone();
+            async move {
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    while accepts.load(Ordering::Relaxed) < count {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                })
+                .await
+                .expect("acceptor must hand over connections")
+            }
+        };
+        accepted(1).await;
+        let exhaustion = interlink_test_support::DescriptorExhaustion::leave_one_free().unwrap();
+        let pending = std::net::TcpStream::connect(harness.addr).unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        drop(exhaustion);
+        let fresh = TcpStream::connect(harness.addr).await.unwrap();
+        accepted(2).await;
+        drop((pending, fresh));
+        harness
+    });
     // Cap one application stream per tunnel. The retained readiness connection
     // is the first real stream, so no throwaway probe can create a spare tunnel.
     let connects = Arc::new(AtomicUsize::new(0));
@@ -843,6 +880,7 @@ fn bench_proxy_paths(c: &mut Criterion) {
     drop(streams);
     drop(spread_held);
     runtime.block_on(async {
+        exhausted.stop("exhausted").await;
         two_tunnel.stop("two_tunnel").await;
         spread_fallback.stop("spread_fallback").await;
         mux.stop("mux").await;

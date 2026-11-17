@@ -491,6 +491,83 @@ pub(crate) async fn wait_shutdown(shutdown: Option<tokio::sync::watch::Receiver<
     }
 }
 
+/// Accept failures that concern one queued connection; the next may succeed.
+fn retry_accept_at_once(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+    )
+}
+
+/// 5 ms doubling to 1 s: Go net/http's accept-error policy.
+fn next_accept_delay(previous: Option<Duration>) -> Duration {
+    previous.map_or(Duration::from_millis(5), |delay| {
+        (delay * 2).min(Duration::from_secs(1))
+    })
+}
+
+/// One `SO_REUSEPORT` acceptor, shared by the inbound and outbound proxies (C3).
+///
+/// Resource errors (EMFILE, ENFILE, ENOBUFS) leave the listener readable, so an
+/// immediate retry spins: at descriptor exhaustion the previous loop burned
+/// 1.86 cores and logged 4.3M errors in 3.5 s. Those errors back off instead;
+/// an accepted connection resets the delay, and shutdown interrupts it.
+pub(crate) struct Acceptor {
+    listener: tokio::net::TcpListener,
+    name: &'static str,
+    id: usize,
+    shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+    delay: Option<Duration>,
+}
+
+impl Acceptor {
+    pub(crate) fn new(
+        listener: tokio::net::TcpListener,
+        name: &'static str,
+        id: usize,
+        shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+    ) -> Self {
+        Self {
+            listener,
+            name,
+            id,
+            shutdown,
+            delay: None,
+        }
+    }
+
+    /// The next accepted connection, or `None` once shutdown is signalled.
+    pub(crate) async fn next(&mut self) -> Option<(TcpStream, SocketAddr)> {
+        loop {
+            tokio::select! {
+                accepted = self.listener.accept() => match accepted {
+                    Ok(connection) => {
+                        self.delay = None;
+                        return Some(connection);
+                    }
+                    Err(error) => {
+                        tracing::error!("{} {} accept error: {}", self.name, self.id, error);
+                        if retry_accept_at_once(&error) {
+                            continue;
+                        }
+                        let delay = next_accept_delay(self.delay);
+                        self.delay = Some(delay);
+                        tokio::select! {
+                            () = tokio::time::sleep(delay) => {}
+                            () = wait_shutdown(self.shutdown.clone()) => break,
+                        }
+                    }
+                },
+                () = wait_shutdown(self.shutdown.clone()) => break,
+            }
+        }
+        tracing::info!("{} {} received shutdown signal", self.name, self.id);
+        None
+    }
+}
+
 /// Apply standard TCP tuning to a proxy socket.
 ///
 /// - `TCP_NODELAY` reduces latency for small TLS records.
@@ -703,6 +780,29 @@ mod tests {
                 "missing `{expected}` in:\n{rendered}"
             );
         }
+    }
+
+    #[test]
+    fn accept_errors_back_off_unless_they_concern_one_connection() {
+        for kind in [
+            io::ErrorKind::ConnectionRefused,
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::ConnectionReset,
+        ] {
+            assert!(retry_accept_at_once(&io::Error::from(kind)), "{kind:?}");
+        }
+        for code in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM] {
+            assert!(!retry_accept_at_once(&io::Error::from_raw_os_error(code)), "{code}");
+        }
+        let mut delay = None;
+        let schedule: Vec<_> = (0..10)
+            .map(|_| {
+                let next = next_accept_delay(delay);
+                delay = Some(next);
+                next.as_millis()
+            })
+            .collect();
+        assert_eq!(schedule, [5, 10, 20, 40, 80, 160, 320, 640, 1000, 1000]);
     }
 
     #[test]
