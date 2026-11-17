@@ -117,6 +117,11 @@ impl TlsHandshake for BlockingHandshake {
     }
 }
 
+/// Bounds how long a closing path may take before the sample fails. A hang
+/// still fails; 100 ms intermittently failed cold, coverage-instrumented runs
+/// whose window included a TLS handshake.
+const CLOSE_DEADLINE: Duration = Duration::from_secs(1);
+
 fn reserve_port() -> u16 {
     let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     listener.local_addr().unwrap().port()
@@ -395,12 +400,9 @@ impl ProxyHarness {
         let mut stream = TcpStream::connect(self.outbound_addr).await?;
         stream.write_all(b"denied").await?;
         let mut response = Vec::new();
-        tokio::time::timeout(
-            Duration::from_millis(100),
-            stream.read_to_end(&mut response),
-        )
-        .await
-        .map_err(std::io::Error::other)??;
+        tokio::time::timeout(CLOSE_DEADLINE, stream.read_to_end(&mut response))
+            .await
+            .map_err(std::io::Error::other)??;
         Ok(response.len())
     }
 
@@ -409,12 +411,9 @@ impl ProxyHarness {
         stream.write_all(b"request-until-eof").await?;
         stream.shutdown().await?;
         let mut response = Vec::new();
-        tokio::time::timeout(
-            Duration::from_millis(100),
-            stream.read_to_end(&mut response),
-        )
-        .await
-        .map_err(std::io::Error::other)??;
+        tokio::time::timeout(CLOSE_DEADLINE, stream.read_to_end(&mut response))
+            .await
+            .map_err(std::io::Error::other)??;
         Ok(response)
     }
 
@@ -483,12 +482,9 @@ impl OutboundHarness {
         let mut stream = TcpStream::connect(self.addr).await?;
         let _ = stream.write_all(b"closed").await;
         let mut response = Vec::new();
-        tokio::time::timeout(
-            Duration::from_millis(100),
-            stream.read_to_end(&mut response),
-        )
-        .await
-        .map_err(std::io::Error::other)??;
+        tokio::time::timeout(CLOSE_DEADLINE, stream.read_to_end(&mut response))
+            .await
+            .map_err(std::io::Error::other)??;
         Ok(response.len())
     }
 
