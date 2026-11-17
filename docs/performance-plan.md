@@ -11,6 +11,9 @@ Follow the [benchmark guide](../bench/README.md) to collect or regenerate result
 - Measured comparison: capacity curves plus a separate, error-free
   10,000 requests/s control at 64 connections for every mesh.
   Compare latency, CPU and anonymous RSS at this shared load, not each mesh's peak.
+- The fastest mesh's request-rate curve ends where four times the clients add under 5%
+  throughput: past that point the shared host, not the mesh, limits the measurement.
+  Slower meshes plateau below a rate the host sustained, so their curves stay complete.
 - Reuse the existing capacity sweeps when adding controls on the same host and runtime.
   Do not interpolate measurements or relabel older delayed workloads.
 - Run captures on the Linux benchmark host, never in CI. CI validates stored results.

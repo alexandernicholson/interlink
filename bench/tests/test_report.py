@@ -211,6 +211,36 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(after["linkerd"], before["linkerd"])
         self.assertEqual(after["istio-ambient"], before["istio-ambient"])
 
+    def test_fastest_mesh_rate_curve_stops_at_host_saturation_only(self):
+        from dataclasses import replace
+        capture, points = reporter.load_results(self.results)
+        controls = reporter.load_shared_points(self.results, capture)
+        base = {point.mesh: point for point in points
+                if point.workload == "rps" and point.concurrency == 4}
+
+        def capacity_markers(interlink_c64_rps):
+            extra = [
+                replace(base["interlink"], concurrency=16, rps=1000),
+                replace(base["interlink"], concurrency=64, rps=interlink_c64_rps),
+                # A slower mesh's overload reversal is its own limit and stays.
+                replace(base["linkerd"], concurrency=16, rps=105),
+                replace(base["istio-ambient"], concurrency=16, rps=330),
+            ]
+            text = reporter.render(points + extra, controls, capture["host"], target_rps=150)
+            panel = ET.fromstring(text).find(".//{*}g[@id='panel-p99_ms']")
+            counts = dict.fromkeys(MESHES, 0)
+            for node in panel.findall(".//{*}g"):
+                if "capacity-point" in node.attrib.get("class", "").split():
+                    counts[node.attrib["data-mesh"]] += 1
+            return counts
+
+        self.assertEqual(capacity_markers(1010),
+                         {"interlink": 3, "linkerd": 3, "istio-ambient": 3},
+                         "1% more RPS for more clients: the host, not interlink, is the limit")
+        self.assertEqual(capacity_markers(1200),
+                         {"interlink": 4, "linkerd": 3, "istio-ambient": 3},
+                         "a 20% gain is still the mesh's own capacity")
+
     def test_measured_and_warmup_error_boundaries_remain_raw_but_cannot_win(self):
         for mesh in MESHES:
             record = copy.deepcopy(self.records[mesh, "rps", 4])

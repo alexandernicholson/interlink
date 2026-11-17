@@ -9,6 +9,9 @@ __all__ = ["render"]
 _MESHES = ("interlink", "linkerd", "istio-ambient")
 _DASHES = ("", "8 5", "2 4")
 _METRICS = ("rps", "p99_ms", "payload_mib_s", "cpu_millicores", "rss_mib")
+# The next declared concurrency must add at least this much throughput before
+# the fastest mesh's request-rate curve continues (see _until_host_saturation).
+_SATURATION_GAIN = 1.05
 
 
 def _number(value, label, *, positive=False):
@@ -126,6 +129,14 @@ def _marker(parts, mesh_index, x, y, size, *, control=False, title=None,
     parts.append('</g>')
 
 
+def _until_host_saturation(points):
+    """Keep points up to the first one after which more clients add <5% RPS."""
+    for index in range(len(points) - 1):
+        if points[index + 1].rps < points[index].rps * _SATURATION_GAIN:
+            return points[: index + 1]
+    return points
+
+
 def render(capacity_points, shared_points, host, target_rps=10000) -> str:
     """Return a deterministic 1000 × 990 SVG, preserving supplied capacity order.
 
@@ -134,6 +145,10 @@ def render(capacity_points, shared_points, host, target_rps=10000) -> str:
     Statistical/cohort validation belongs to the caller. Numeric values must be
     finite, nonnegative and at most 1e15; rates and concurrency must be positive.
     Only host CPU count and RAM size are displayed, not identifying host metadata.
+
+    The fastest mesh's request-rate curve stops where its throughput plateaus:
+    every other mesh plateaus below a rate this host sustained, so only the
+    fastest one's plateau is the shared host's limit rather than the mesh's.
     """
     target = _number(target_rps, "target_rps", positive=True)
     cpus = _number(host["logical_cpus"], "host logical_cpus", positive=True)
@@ -157,6 +172,8 @@ def render(capacity_points, shared_points, host, target_rps=10000) -> str:
               for mesh in _MESHES for workload in ("rps", "bulk")}
     if any(not points for points in groups.values()):
         raise ValueError("each mesh needs eligible RPS and bulk capacity measurements")
+    fastest = max(_MESHES, key=lambda mesh: max(point.rps for point in groups[mesh, "rps"]))
+    groups[fastest, "rps"] = _until_host_saturation(groups[fastest, "rps"])
     common_low = max(min(point.rps for point in groups[mesh, "rps"]) for mesh in _MESHES)
     common_high = min(max(point.rps for point in groups[mesh, "rps"]) for mesh in _MESHES)
     rates = [point.rps for mesh in _MESHES for point in groups[mesh, "rps"]]

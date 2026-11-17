@@ -55,7 +55,7 @@
 <line x1="119.60" y1="202.00" x2="119.60" y2="392.00" class="target"/>
 <text x="467.00" y="189.00" text-anchor="end" font-size="12">Dotted: 10k offered</text>
 <text x="274.00" y="436.00" text-anchor="middle">Achieved request rate (RPS)</text>
-<polyline class="mesh0 curve" data-mesh="interlink" points="98.39,344.70 140.19,344.67 206.59,331.62 233.07,308.89 310.48,285.26 372.60,258.31 371.80,229.03"/>
+<polyline class="mesh0 curve" data-mesh="interlink" points="98.39,344.70 140.19,344.67 206.59,331.62 233.07,308.89 310.48,285.26 372.60,258.31"/>
 <g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="98.39" data-y="344.70">
 <title>interlink capacity · c1 · 4,504.97 RPS · 0.99 ms</title>
 <circle cx="98.39" cy="344.70" r="3.50"/>
@@ -79,10 +79,6 @@
 <g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="372.60" data-y="258.31">
 <title>interlink capacity · c1024 · 75,542.86 RPS · 65.23 ms</title>
 <circle cx="372.60" cy="258.31" r="3.50"/>
-</g>
-<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="371.80" data-y="229.03">
-<title>interlink capacity · c4096 · 75,336.28 RPS · 269.75 ms</title>
-<circle cx="371.80" cy="229.03" r="3.50"/>
 </g>
 <polyline class="mesh1 curve" data-mesh="linkerd" points="90.70,344.66 109.39,344.60 137.62,330.29 153.80,306.30 154.66,279.24 147.42,249.52 145.75,209.71" stroke-dasharray="8 5"/>
 <g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="90.70" data-y="344.66">
@@ -201,7 +197,7 @@
 <line x1="611.60" y1="202.00" x2="611.60" y2="392.00" class="target"/>
 <text x="959.00" y="189.00" text-anchor="end" font-size="12">Dotted: 10k offered</text>
 <text x="766.00" y="436.00" text-anchor="middle">Achieved request rate (RPS)</text>
-<polyline class="mesh0 curve" data-mesh="interlink" points="590.39,388.60 632.19,388.63 698.59,388.48 725.07,387.98 802.48,383.34 864.60,370.64 863.80,323.73"/>
+<polyline class="mesh0 curve" data-mesh="interlink" points="590.39,388.60 632.19,388.63 698.59,388.48 725.07,387.98 802.48,383.34 864.60,370.64"/>
 <g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="590.39" data-y="388.60">
 <title>interlink capacity · c1 · 4,504.97 RPS · 5.37 MiB</title>
 <circle cx="590.39" cy="388.60" r="3.50"/>
@@ -225,10 +221,6 @@
 <g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="864.60" data-y="370.64">
 <title>interlink capacity · c1024 · 75,542.86 RPS · 33.72 MiB</title>
 <circle cx="864.60" cy="370.64" r="3.50"/>
-</g>
-<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="863.80" data-y="323.73">
-<title>interlink capacity · c4096 · 75,336.28 RPS · 107.79 MiB</title>
-<circle cx="863.80" cy="323.73" r="3.50"/>
 </g>
 <polyline class="mesh1 curve" data-mesh="linkerd" points="582.70,386.86 601.39,387.44 629.62,386.91 645.80,384.30 646.66,373.55 639.42,336.80 637.75,250.15" stroke-dasharray="8 5"/>
 <g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="582.70" data-y="386.86">
@@ -347,7 +339,7 @@
 <line x1="119.60" y1="596.00" x2="119.60" y2="786.00" class="target"/>
 <text x="467.00" y="583.00" text-anchor="end" font-size="12">Dotted: 10k offered</text>
 <text x="274.00" y="830.00" text-anchor="middle">Achieved request rate (RPS)</text>
-<polyline class="mesh0 curve" data-mesh="interlink" points="98.39,742.83 140.19,683.54 206.59,666.03 233.07,667.37 310.48,665.83 372.60,643.01 371.80,632.86"/>
+<polyline class="mesh0 curve" data-mesh="interlink" points="98.39,742.83 140.19,683.54 206.59,666.03 233.07,667.37 310.48,665.83 372.60,643.01"/>
 <g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="98.39" data-y="742.83">
 <title>interlink capacity · c1 · 4,504.97 RPS · 0.68 cores</title>
 <circle cx="98.39" cy="742.83" r="3.50"/>
@@ -371,10 +363,6 @@
 <g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="372.60" data-y="643.01">
 <title>interlink capacity · c1024 · 75,542.86 RPS · 2.26 cores</title>
 <circle cx="372.60" cy="643.01" r="3.50"/>
-</g>
-<g class="mesh0 marker capacity-point" data-mesh="interlink" data-x="371.80" data-y="632.86">
-<title>interlink capacity · c4096 · 75,336.28 RPS · 2.42 cores</title>
-<circle cx="371.80" cy="632.86" r="3.50"/>
 </g>
 <polyline class="mesh1 curve" data-mesh="linkerd" points="90.70,721.59 109.39,693.95 137.62,676.07 153.80,667.26 154.66,667.99 147.42,677.25 145.75,692.37" stroke-dasharray="8 5"/>
 <g class="mesh1 marker capacity-point" data-mesh="linkerd" data-x="90.70" data-y="721.59">
