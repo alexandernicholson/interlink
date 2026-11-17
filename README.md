@@ -267,15 +267,15 @@ Linkerd, and Istio ambient using matched echo workloads. The generated headline
 is a view of that same capture; read its workload conditions and limits.
 
 <!-- BEGIN GENERATED MESH HEADLINE -->
-Captured 2026-11-17T12:02:38Z; runtime source [`205d05b2851b`](https://github.com/alexandernicholson/interlink/commit/205d05b2851b4422b39a0e116d75dff6c91ba649). Actual harness, workload, manifest and build-input SHA256 hashes are recorded separately in the capture metadata.
+Captured 2026-11-17T12:35:04Z; runtime source [`fb609291398e`](https://github.com/alexandernicholson/interlink/commit/fb609291398e4e41e7f3779ae231261e0dfc05ba). Actual harness, workload, manifest and build-input SHA256 hashes are recorded separately in the capture metadata.
 
 Zero-delay HTTP echo, unlimited offered load; 20 s measured after 10 s warm-up per point. 5 s request timeout on every mesh. 1 KiB request/response with Fortio's fast client for RPS, 1 MiB request/response with its full-duplex standard client for payload throughput. Payload MiB/s is each direction, not doubled wire throughput.
 
 | Mesh | Peak measured RPS (1 KiB) | Peak payload MiB/s each way (1 MiB) | p99 at RPS peak (ms) |
 | --- | ---: | ---: | ---: |
-| interlink | 69856.4 | 2272.86 | 68.95 |
-| linkerd | 19000.9 | 426.81 | 6.34 |
-| istio-ambient | 60045.6 | 1025.53 | 65.02 |
+| interlink | 37890.4 | 813.34 | 107.78 |
+| linkerd | 13624.4 | 281.66 | 34.96 |
+| istio-ambient | 25970.4 | 480.58 | 30.74 |
 
 Concurrency sweeps — rps: 1, 4, 16, 64, 256, 1024, 4096; bulk: 1, 4, 16, 64, 256, 1024. Peak measured within this Linux machine's tested range, not an absolute capacity guarantee. Shared-host three-node kind; Interlink/Linkerd sidecars, Istio ambient L4 ztunnel. [Machine, winning concurrency, errors and limits](bench/results/comparison.md).
 <!-- END GENERATED MESH HEADLINE -->

@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
   "benchmark": "echo-capacity",
-  "revision": "205d05b2851b4422b39a0e116d75dff6c91ba649",
-  "run_id": "6d44b23cf9df4539a1ee092f5dffa9c6",
+  "revision": "fb609291398e4e41e7f3779ae231261e0dfc05ba",
+  "run_id": "ba0f184eeb0844c9b6a334129ada2a86",
   "harness_sha256": {
     "Cargo.lock": "4758c030cd95f1b9be30618178a119f75f65e0a1fa7c4874a5ef3fd8c906b3ac",
     "Cargo.toml": "c241098f19cbf62549f27745cbb97325bbff7a4b110acdc1aff66316cf61f2c4",
@@ -31,8 +31,8 @@
     "bench/workloads/fortio-client-plain.yaml": "8a9fcf007763eecb0c548ca2b0c9e558e69bd807d1d90d5cc0905fe897adf2ef",
     "bench/workloads/go.mod": "4df3759b52ccd90ece8f38ba9eed4948c157e5d646714480f12e4c84fbd19de1"
   },
-  "started_at": "2026-11-17T11:37:17Z",
-  "completed_at": "2026-11-17T12:02:38Z",
+  "started_at": "2026-11-17T12:10:23Z",
+  "completed_at": "2026-11-17T12:35:04Z",
   "duration_seconds": 20,
   "warmup_seconds": 10,
   "request_timeout_seconds": 5,
@@ -79,22 +79,22 @@
   "host": {
     "system": "Linux",
     "architecture": "x86_64",
-    "kernel": "7.0.0-29-generic",
-    "logical_cpus": 8,
-    "memory_bytes": 3561676800
+    "kernel": "7.0.0-1014-aws",
+    "logical_cpus": 4,
+    "memory_bytes": 16464302080
   },
   "peaks": {
     "interlink": {
       "rps_concurrency": 1024,
-      "bulk_concurrency": 64
+      "bulk_concurrency": 16
     },
     "linkerd": {
-      "rps_concurrency": 64,
+      "rps_concurrency": 256,
       "bulk_concurrency": 16
     },
     "istio-ambient": {
-      "rps_concurrency": 1024,
-      "bulk_concurrency": 256
+      "rps_concurrency": 256,
+      "bulk_concurrency": 4
     }
   }
 }
