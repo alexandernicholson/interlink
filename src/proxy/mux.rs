@@ -27,6 +27,7 @@
 //! |---|---|---|
 //! | no tunnel for addr | TLS connect; if ALPN=mux, register tunnel | tunnel live, or legacy fallback |
 //! | tunnel live | `open_stream()` — no handshake | stream relayed |
+//! | every tunnel busy, below one per worker | establish another tunnel | spread, or 30 s pause after failure |
 //! | tunnel dead (driver exited / open fails) | evict from pool, re-establish | fresh tunnel or legacy |
 //! | tunnel idle (no live streams, no opens for 60s) | driver exits and evicts peer entry | no tunnel |
 //! | creation in flight | callers share one mutex | final holder removes entry, even on cancellation |
@@ -104,20 +105,34 @@ impl tokio::io::AsyncWrite for MuxStream {
     }
 }
 
-/// Maximum tunnels per peer: 16 × the configured stream cap (1024 streams
-/// at the default 64), independent of outbound's dead-tunnel retry budget.
-/// Inbound relays across all peers still share the 4096 global-stream budget.
-const MAX_TUNNELS_PER_PEER: usize = 16;
+/// A peer's pool may grow until its tunnels can carry every connection the
+/// proxy admits: `ceil(max_connections / stream_cap)` tunnels. Growth happens
+/// only when every existing tunnel is at its cap, so this never opens spare
+/// tunnels; it guarantees that pool exhaustion cannot reject a connection the
+/// admission semaphore accepted.
+fn max_tunnels_per_peer(stream_cap: usize, max_connections: usize) -> usize {
+    // Proxy constructors reject a zero cap; max(1) keeps this total anyway.
+    max_connections.div_ceil(stream_cap.max(1))
+}
 
 const TUNNEL_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const ADMISSION_GRACE: Duration = Duration::from_millis(250);
 const MAX_PENDING_ADMISSIONS: usize = 64;
 
+/// After a spread tunnel fails to establish, streams share existing tunnels
+/// for this long instead of re-attempting establishment for every stream.
+const SPREAD_RETRY_AFTER: Duration = Duration::from_secs(30);
+
+/// Spread only once every tunnel carries at least this many live streams. A
+/// sequential connection whose predecessor is still closing (load 1) shares
+/// the tunnel instead of paying for another handshake.
+const SPREAD_MIN_LOAD: usize = 2;
+
 /// Reserve fixed 256 KiB receive credit for each protocol stream slot.
 /// One extra slot permits accepting and resetting an over-cap stream instead
 /// of triggering the connection-fatal hard stream limit.
 fn mux_config() -> MuxConfig {
-    let hard_cap = mux::TOTAL_STREAMS + 1;
+    let hard_cap = mux::MAX_STREAMS_PER_CONNECTION + 1;
     let mut config = MuxConfig::default();
     config
         .set_max_num_streams(hard_cap)
@@ -221,6 +236,16 @@ pub(crate) struct MuxPool {
     /// Per-address creation locks (single-flight tunnel establishment).
     creating: DashMap<SocketAddr, Arc<tokio::sync::Mutex<()>>>,
     stream_cap: usize,
+    max_tunnels: usize,
+    /// Busy peers (every tunnel carrying `SPREAD_MIN_LOAD` streams) grow to
+    /// this many tunnels. Each tunnel's TLS records and frames are processed
+    /// by one task, so one tunnel per runtime worker lets streams encrypt in
+    /// parallel.
+    spread: usize,
+    /// Spreading lifecycle (B10): active → paused by a failed establishment →
+    /// active again once this deadline (milliseconds since `created`) passes.
+    spread_paused_until_ms: AtomicU64,
+    created: std::time::Instant,
 }
 
 /// Last holder removes the election entry, including on cancellation/failure.
@@ -249,12 +274,45 @@ impl Drop for CreationLock {
 }
 
 impl MuxPool {
-    pub(crate) fn new(max_streams_per_tunnel: usize) -> Arc<Self> {
+    pub(crate) fn new(
+        max_streams_per_tunnel: usize,
+        max_connections: usize,
+        spread: usize,
+    ) -> Arc<Self> {
+        let max_tunnels = max_tunnels_per_peer(max_streams_per_tunnel, max_connections);
         Arc::new(Self {
             peers: DashMap::new(),
             creating: DashMap::new(),
             stream_cap: max_streams_per_tunnel,
+            max_tunnels,
+            spread: spread.min(max_tunnels),
+            spread_paused_until_ms: AtomicU64::new(0),
+            created: std::time::Instant::now(),
         })
+    }
+
+    /// Should the next stream open another tunnel instead of sharing one?
+    /// Only while every tunnel to the peer is busy and the pool is below its
+    /// spread target: idle and sequential use keeps a single tunnel (and a
+    /// single handshake).
+    pub(crate) fn wants_spread(&self, addr: &SocketAddr) -> bool {
+        self.peers.get(addr).is_some_and(|tunnels| {
+            tunnels.len() < self.spread && tunnels.iter().all(|t| t.load() >= SPREAD_MIN_LOAD)
+        }) && self.since_created_ms() >= self.spread_paused_until_ms.load(Ordering::Acquire)
+    }
+
+    /// A spread tunnel failed to establish: share existing tunnels for
+    /// `SPREAD_RETRY_AFTER` so a struggling peer costs one attempt, not one
+    /// per stream.
+    pub(crate) fn pause_spread(&self) {
+        let until = self.since_created_ms().saturating_add(
+            u64::try_from(SPREAD_RETRY_AFTER.as_millis()).unwrap_or(u64::MAX),
+        );
+        self.spread_paused_until_ms.store(until, Ordering::Release);
+    }
+
+    fn since_created_ms(&self) -> u64 {
+        u64::try_from(self.created.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
     /// Reserve a slot on the least-loaded tunnel. Contending pickers that
@@ -280,7 +338,7 @@ impl MuxPool {
 
     /// May the pool open another tunnel to this peer?
     pub(crate) fn can_grow(&self, addr: &SocketAddr) -> bool {
-        self.peers.get(addr).map(|t| t.len()).unwrap_or(0) < MAX_TUNNELS_PER_PEER
+        self.peers.get(addr).map(|t| t.len()).unwrap_or(0) < self.max_tunnels
     }
 
     /// Remove a specific tunnel (by id) from the peer's pool.
@@ -330,7 +388,7 @@ impl MuxPool {
         self.register_connection(addr, tls, peer_identity)
     }
 
-    fn register_connection<T>(
+    pub(super) fn register_connection<T>(
         self: &Arc<Self>,
         addr: SocketAddr,
         io: T,
@@ -718,7 +776,7 @@ mod tests {
                 total_streams: global,
             },
         ));
-        let pool = MuxPool::new(per_tunnel);
+        let pool = MuxPool::new(per_tunnel, per_tunnel * 16, 1);
         let first = pool
             .register_connection(upstream, client, Arc::new(local))
             .unwrap();
@@ -936,7 +994,7 @@ mod tests {
     #[tokio::test]
     async fn pool_churn_evicts_failed_tunnels_and_creation_locks() {
         timeout(TEST_TIMEOUT, async {
-            let pool = MuxPool::new(64);
+            let pool = MuxPool::new(64, 1024, 1);
             for port in 1..=100 {
                 let addr = SocketAddr::from(([127, 0, 0, 1], port));
                 let lock = pool.creation_lock(addr);
@@ -965,7 +1023,7 @@ mod tests {
     #[tokio::test]
     async fn creation_lock_remains_single_flight_with_waiters() {
         timeout(TEST_TIMEOUT, async {
-            let pool = MuxPool::new(64);
+            let pool = MuxPool::new(64, 1024, 1);
             let addr = SocketAddr::from(([127, 0, 0, 1], 1));
             let first = pool.creation_lock(addr);
             let first_guard = first.lock().await;
@@ -1022,7 +1080,7 @@ mod tests {
                 accepted_tx.send(stream).unwrap();
                 let _next = futures_util::future::poll_fn(|cx| conn.poll_next_inbound(cx)).await;
             });
-            let pool = MuxPool::new(64);
+            let pool = MuxPool::new(64, 1024, 1);
             let tunnel = pool
                 .register_connection(
                     SocketAddr::from(([127, 0, 0, 1], 1)),
@@ -1117,7 +1175,7 @@ mod tests {
     async fn client_reservations_are_atomic_before_open_and_released_on_drop() {
         timeout(TEST_TIMEOUT, async {
             for cap in [1, 8] {
-                let pool = MuxPool::new(cap);
+                let pool = MuxPool::new(cap, cap * 16, 1);
                 let addr = SocketAddr::from(([127, 0, 0, 1], 1));
                 let (io, _peer) = tokio::io::duplex(1024);
                 let first = pool
@@ -1321,7 +1379,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn pool_growth_serves_300_concurrent_reservations_across_five_tunnels() {
         timeout(TEST_TIMEOUT, async {
-            let pool = MuxPool::new(64);
+            let pool = MuxPool::new(64, 1024, 1);
             let addr = SocketAddr::from(([127, 0, 0, 1], 1));
             let peers = Arc::new(parking_lot::Mutex::new(Vec::new()));
             let barrier = Arc::new(tokio::sync::Barrier::new(300));
@@ -1367,6 +1425,91 @@ mod tests {
             assert_eq!(tunnels.iter().map(Tunnel::load).sum::<usize>(), 300);
             assert!(tunnels.iter().all(|tunnel| tunnel.load() <= 64));
             assert!(pool.can_grow(&addr));
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pool_capacity_spans_the_admission_limit() {
+        timeout(TEST_TIMEOUT, async {
+            // Twenty admitted connections at one stream per tunnel need twenty
+            // tunnels; a fixed per-peer tunnel limit would refuse the 17th.
+            let pool = MuxPool::new(1, 20, 1);
+            let addr = SocketAddr::from(([127, 0, 0, 1], 1));
+            let mut peers = Vec::new();
+            let mut leases = Vec::new();
+            while pool.can_grow(&addr) {
+                assert!(
+                    pool.pick_under_cap(&addr).is_none(),
+                    "the pool grows only when every tunnel is saturated"
+                );
+                let (io, peer) = tokio::io::duplex(1024);
+                peers.push(peer);
+                leases.push(
+                    pool.register_connection(addr, io, Arc::new(identity("server")))
+                        .unwrap(),
+                );
+            }
+            assert_eq!(leases.len(), 20, "every admitted connection gets a stream slot");
+            assert!(pool.pick_any(&addr).is_none());
+            drop(leases.pop());
+            assert!(
+                pool.pick_under_cap(&addr).is_some(),
+                "a released slot is reusable at the limit"
+            );
+            // A partial final tunnel carries the remainder.
+            assert_eq!(max_tunnels_per_peer(64, 4096), 64);
+            assert_eq!(max_tunnels_per_peer(64, 1025), 17);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn spread_opens_one_busy_tunnel_per_worker_then_shares() {
+        timeout(TEST_TIMEOUT, async {
+            let addr = SocketAddr::from(([127, 0, 0, 1], 1));
+            let register = |pool: &Arc<MuxPool>| {
+                let (io, peer) = tokio::io::duplex(1024);
+                let lease = pool
+                    .register_connection(addr, io, Arc::new(identity("server")))
+                    .unwrap();
+                (lease, peer)
+            };
+            let pool = MuxPool::new(64, 1024, 2);
+            assert!(!pool.wants_spread(&addr), "no tunnel: ordinary establishment");
+            let (first, _first_peer) = register(&pool);
+            assert!(
+                !pool.wants_spread(&addr),
+                "a closing predecessor alone does not cost another handshake"
+            );
+            let second = pool.pick_under_cap(&addr).unwrap();
+            assert!(pool.wants_spread(&addr), "a busy tunnel below the target grows");
+            drop(first);
+            assert!(!pool.wants_spread(&addr));
+            let _third = pool.pick_under_cap(&addr).unwrap();
+            let (_grown, _grown_peer) = register(&pool);
+            let _fourth = pool.pick_under_cap(&addr).unwrap();
+            assert_eq!(second.load(), 2, "least-loaded picking fills the new tunnel");
+            assert!(!pool.wants_spread(&addr), "the target bounds growth");
+
+            // Failure pause lifecycle: active -> paused -> active at deadline.
+            let paused = MuxPool::new(64, 1024, 2);
+            let (_lease, _peer) = register(&paused);
+            let _busy = paused.pick_under_cap(&addr).unwrap();
+            paused.pause_spread();
+            assert!(!paused.wants_spread(&addr), "a failed spread shares tunnels");
+            paused
+                .spread_paused_until_ms
+                .store(paused.since_created_ms(), Ordering::Release);
+            assert!(paused.wants_spread(&addr), "spreading resumes after the pause");
+
+            // The admission limit caps the target: one tunnel can carry it all.
+            let bounded = MuxPool::new(64, 64, 8);
+            let (_lease, _peer) = register(&bounded);
+            let _busy = bounded.pick_under_cap(&addr).unwrap();
+            assert!(!bounded.wants_spread(&addr));
         })
         .await
         .unwrap();

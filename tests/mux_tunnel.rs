@@ -314,6 +314,31 @@ async fn test_mux_concurrent_streams() {
     );
 }
 
+/// Concurrent streams open one tunnel per runtime worker, so their TLS and
+/// framing work can run in parallel; the target bounds further handshakes.
+/// The held echo keeps every stream live while the others open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_mux_spreads_concurrent_streams_across_workers() {
+    let mesh = start_mesh_cfg("mux-spread.local", true, true, Duration::from_millis(300)).await;
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let port = mesh.outbound_port;
+        handles.push(tokio::spawn(async move {
+            let payload = format!("spread-{i}");
+            let resp = roundtrip(port, payload.as_bytes()).await;
+            assert_eq!(resp, format!("echo:{payload}").as_bytes());
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+    assert_eq!(
+        mesh.handshakes.load(Ordering::SeqCst),
+        2,
+        "8 concurrent streams on a 2-worker runtime use exactly 2 tunnels"
+    );
+}
+
 /// A peer that doesn't offer the mux ALPN falls back to 1:1 relays —
 /// N connections, N handshakes, everything still works.
 #[tokio::test]

@@ -93,7 +93,7 @@
       {
         "group": "proxy_relay",
         "covers": ["src/proxy/mod.rs", "src/proxy/mux.rs", "src/proxy/original_dst.rs", "src/proxy/outbound.rs", "src/proxy/tcp.rs", "src/proxy/handshake.rs", "src/policy/mod.rs", "src/metrics/mod.rs"],
-        "cases": ["mux_small", "legacy_small", "mux_16kb", "legacy_16kb", "mux_two_tunnel_concurrent_streams", "policy_denied", "egress_denied", "mux_half_close", "legacy_half_close", "mux_copy_error", "legacy_copy_error", "handshake_failure", "no_upstream", "saturation_rejection", "constructor_rejects_invalid_config"]
+        "cases": ["mux_small", "legacy_small", "mux_16kb", "legacy_16kb", "mux_two_tunnel_concurrent_streams", "mux_spread_fallback", "policy_denied", "egress_denied", "mux_half_close", "legacy_half_close", "mux_copy_error", "legacy_copy_error", "handshake_failure", "no_upstream", "saturation_rejection", "constructor_rejects_invalid_config"]
       }
     ]
   },

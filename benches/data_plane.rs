@@ -57,12 +57,18 @@ impl TlsHandshake for FailingHandshake {
 struct CountingHandshake {
     inner: Arc<dyn TlsHandshake>,
     connects: Arc<AtomicUsize>,
+    /// Connects at or beyond this count fail, modelling a peer that stops
+    /// accepting new tunnels while existing ones keep working.
+    fail_from: Option<usize>,
 }
 
 #[async_trait]
 impl TlsHandshake for CountingHandshake {
     async fn connect(&self, addr: SocketAddr) -> Result<TlsStream, InterlinkError> {
-        self.connects.fetch_add(1, Ordering::Relaxed);
+        let attempt = self.connects.fetch_add(1, Ordering::Relaxed);
+        if self.fail_from.is_some_and(|limit| attempt >= limit) {
+            return FailingHandshake.connect(addr).await;
+        }
         self.inner.connect(addr).await
     }
 
@@ -173,7 +179,8 @@ impl ProxyHarness {
                         .contains(&std::net::IpAddr::V4(Ipv4Addr::LOCALHOST))
                 }));
         let (harness, mut probe) =
-            Self::start_configured(mux, allow, backend_mode, inbound_egress, 64, None).await;
+            Self::start_configured(mux, allow, backend_mode, inbound_egress, 64, None, None)
+                .await;
         // A bare TCP readiness probe can close before a lazy mux stream sends
         // SYN. Complete real application I/O and EOF before discarding it.
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -214,6 +221,7 @@ impl ProxyHarness {
         inbound_egress: Vec<String>,
         stream_cap: usize,
         connects: Option<Arc<AtomicUsize>>,
+        fail_from: Option<usize>,
     ) -> (Self, TcpStream) {
         let echo_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let echo_addr = echo_listener.local_addr().unwrap();
@@ -301,6 +309,7 @@ impl ProxyHarness {
             Some(connects) => Arc::new(CountingHandshake {
                 inner: client,
                 connects,
+                fail_from,
             }),
             None => client,
         };
@@ -569,6 +578,7 @@ fn bench_proxy_paths(c: &mut Criterion) {
             Vec::new(),
             1,
             Some(connects.clone()),
+            None,
         )
         .await;
         echo_existing(&mut first, &[17; 64]).await;
@@ -580,6 +590,35 @@ fn bench_proxy_paths(c: &mut Criterion) {
             "two live streams with cap one must grow to two tunnels"
         );
         (harness, tokio::sync::Mutex::new((first, second)))
+    });
+    // Two retained streams keep the only tunnel busy, so the next stream tries
+    // one spread tunnel; the peer refuses it and the stream shares the first.
+    let spread_connects = Arc::new(AtomicUsize::new(0));
+    let (spread_fallback, spread_held) = runtime.block_on(async {
+        assert!(
+            tokio::runtime::Handle::current().metrics().num_workers() >= 2,
+            "spreading needs a multi-worker runtime"
+        );
+        let (harness, mut held) = ProxyHarness::start_configured(
+            true,
+            true,
+            BackendMode::Echo,
+            Vec::new(),
+            64,
+            Some(spread_connects.clone()),
+            Some(1),
+        )
+        .await;
+        echo_existing(&mut held, &[29; 64]).await;
+        let mut also_held = TcpStream::connect(harness.outbound_addr).await.unwrap();
+        echo_existing(&mut also_held, &[31; 64]).await;
+        assert_eq!(harness.request(SMALL).await.unwrap(), SMALL);
+        assert_eq!(
+            spread_connects.load(Ordering::Relaxed),
+            2,
+            "a busy tunnel below the worker target attempts exactly one spread tunnel"
+        );
+        (harness, (held, also_held))
     });
     let mux = runtime.block_on(ProxyHarness::start(true, true));
     let legacy = runtime.block_on(ProxyHarness::start(false, true));
@@ -660,6 +699,13 @@ fn bench_proxy_paths(c: &mut Criterion) {
                 echo_existing(first, &[17; 64]),
                 echo_existing(second, &[193; 64])
             );
+        })
+    });
+    group.bench_function("mux_spread_fallback", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let response = spread_fallback.request(black_box(SMALL)).await.unwrap();
+            assert_eq!(response, SMALL);
+            black_box(response)
         })
     });
     group.bench_function("mux_small", |b| {
@@ -795,8 +841,10 @@ fn bench_proxy_paths(c: &mut Criterion) {
     group.finish();
 
     drop(streams);
+    drop(spread_held);
     runtime.block_on(async {
         two_tunnel.stop("two_tunnel").await;
+        spread_fallback.stop("spread_fallback").await;
         mux.stop("mux").await;
         halfclose_mux.stop("halfclose_mux").await;
         halfclose_legacy.stop("halfclose_legacy").await;

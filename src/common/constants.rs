@@ -41,8 +41,11 @@ pub mod admin {
     pub const READ_TIMEOUT: Duration = Duration::from_secs(5);
 }
 
-/// Aggregate multiplexing limits and per-stream receive window.
+/// Per-connection multiplexing ceiling and per-stream receive window.
 pub mod mux {
-    pub const TOTAL_STREAMS: usize = 4096;
+    /// Protocol-level bound on streams one mux connection may hold open.
+    /// Admission is narrower: per-tunnel caps and `max_connections` reserve
+    /// streams before any relay starts.
+    pub const MAX_STREAMS_PER_CONNECTION: usize = 4096;
     pub const STREAM_WINDOW: u32 = 256 * 1024;
 }

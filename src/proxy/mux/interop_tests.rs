@@ -193,7 +193,7 @@ async fn interop_native_pool_to_stock_server_large_half_close_reset_and_reuse() 
         let (reset_seen, mut resets) = mpsc::channel(1);
         let mut tasks = JoinSet::new();
         tasks.spawn(stock_server(stock, reset_seen));
-        let pool = MuxPool::new(8);
+        let pool = MuxPool::new(8, 128, 1);
         let addr = SocketAddr::from(([127, 0, 0, 1], 32101));
         let reserved = pool
             .register_connection(addr, native, Arc::new(identity("stock")))

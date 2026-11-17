@@ -86,7 +86,13 @@ impl OutboundProxy {
             connection_semaphore: Arc::new(Semaphore::new(max_conn)),
             default_upstream,
             mux_enabled,
-            mux_pool: crate::proxy::mux::MuxPool::new(config.mux_max_streams_per_tunnel),
+            mux_pool: crate::proxy::mux::MuxPool::new(
+                config.mux_max_streams_per_tunnel,
+                max_conn,
+                // One busy tunnel per runtime worker (see MuxPool::spread).
+                tokio::runtime::Handle::try_current()
+                    .map_or(1, |runtime| runtime.metrics().num_workers()),
+            ),
             listen_port: port,
             tls_client,
             policy,
@@ -362,39 +368,59 @@ impl OutboundProxy {
         let mut attempts_used = 0;
         for attempt in 0..4 {
             attempts_used = attempt + 1;
-            // Fast path: an existing tunnel with spare capacity, no lock.
-            if let Some(tunnel) = self.mux_pool.pick_under_cap(&upstream) {
-                match self.try_tunnel_stream(tunnel, upstream).await {
-                    Some(route) => return route,
-                    None => continue, // dead → evicted; retry
+            // Fast path: an existing tunnel with spare capacity, no lock —
+            // unless a busy peer should first grow toward one tunnel per worker.
+            if !self.mux_pool.wants_spread(&upstream) {
+                if let Some(tunnel) = self.mux_pool.pick_under_cap(&upstream) {
+                    match self.try_tunnel_stream(tunnel, upstream).await {
+                        Some(route) => return route,
+                        None => continue, // dead → evicted; retry
+                    }
                 }
             }
 
-            // No tunnel has spare capacity. Grow the pool under the per-peer
-            // creation lock (single-flight — concurrent first connections to a
-            // new peer share one handshake instead of each opening a tunnel).
+            // Grow the pool under the per-peer creation lock (single-flight —
+            // concurrent first connections to a new peer share one handshake
+            // instead of each opening a tunnel).
             let lock = self.mux_pool.creation_lock(upstream);
             let guard = lock.lock().await;
 
             // A concurrent task may have grown it while we waited.
-            if let Some(tunnel) = self.mux_pool.pick_under_cap(&upstream) {
-                drop(guard);
-                match self.try_tunnel_stream(tunnel, upstream).await {
-                    Some(route) => return route,
-                    None => continue,
+            let spread = self.mux_pool.wants_spread(&upstream);
+            if !spread {
+                if let Some(tunnel) = self.mux_pool.pick_under_cap(&upstream) {
+                    drop(guard);
+                    match self.try_tunnel_stream(tunnel, upstream).await {
+                        Some(route) => return route,
+                        None => continue,
+                    }
                 }
             }
 
             if self.mux_pool.can_grow(&upstream) {
                 let route = self.establish(upstream).await;
+                // Spreading only adds parallelism: the busy tunnels still have
+                // capacity when the additional tunnel cannot be established.
+                // Pause before releasing the lock so queued openers share too.
+                let spread_failed = spread && matches!(route, Route::Failed);
+                if spread_failed {
+                    self.mux_pool.pause_spread();
+                }
                 drop(guard);
+                if spread_failed {
+                    if let Some(tunnel) = self.mux_pool.pick_under_cap(&upstream) {
+                        if let Some(route) = self.try_tunnel_stream(tunnel, upstream).await {
+                            return route;
+                        }
+                    }
+                }
                 return route;
             }
             drop(guard);
 
-            // Pool is at MAX_TUNNELS_PER_PEER and every tunnel is saturated:
-            // pick_any only succeeds if a slot freed up meanwhile; otherwise
-            // this attempt fails — bounded by design (H4).
+            // The pool already spans the admission limit and every tunnel is
+            // saturated: pick_any only succeeds if a slot freed up meanwhile;
+            // otherwise this attempt fails — bounded by design (H4).
             if let Some(tunnel) = self.mux_pool.pick_any(&upstream) {
                 match self.try_tunnel_stream(tunnel, upstream).await {
                     Some(route) => return route,
@@ -643,6 +669,49 @@ mod security_tests {
             assert!(error.contains(&format!("{cidr:?}")), "{error}");
         }
         assert!(OutboundProxy::new(config(), handshake, policy).is_ok());
+    }
+
+    #[tokio::test]
+    async fn failed_spread_falls_back_to_busy_tunnel_and_pauses_growth() {
+        tokio::time::timeout(WAIT, async {
+            let (handshake, _) = handshake(false);
+            // Exactly one establishment may run; it fails.
+            handshake.release.add_permits(1);
+            let mut policy = PolicyEngine::new();
+            policy.set_default_decision(Decision::Allow);
+            let mut proxy = OutboundProxy::new(config(), handshake.clone(), Arc::new(policy))
+                .unwrap();
+            // Two workers' worth of spread; four-stream tunnels.
+            proxy.mux_pool = crate::proxy::mux::MuxPool::new(4, 8, 2);
+            let upstream: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+            let (io, _peer) = tokio::io::duplex(64 * 1024);
+            let _busy = proxy
+                .mux_pool
+                .register_connection(
+                    upstream,
+                    io,
+                    Arc::new(SpiffeId::from_uri("spiffe://test.local/ns/default/sa/peer").unwrap()),
+                )
+                .unwrap();
+            let _busy_too = proxy.mux_pool.pick_under_cap(&upstream).unwrap();
+            assert!(proxy.mux_pool.wants_spread(&upstream));
+
+            let first = proxy.route(upstream).await;
+            assert!(
+                matches!(first, Route::MuxStream(_)),
+                "a failed spread must not fail a stream the busy tunnel can carry"
+            );
+            assert_eq!(handshake.calls.load(Ordering::SeqCst), 1);
+            let second = proxy.route(upstream).await;
+            assert!(matches!(second, Route::MuxStream(_)));
+            assert_eq!(
+                handshake.calls.load(Ordering::SeqCst),
+                1,
+                "a paused spread does not retry establishment per stream"
+            );
+        })
+        .await
+        .unwrap();
     }
 }
 

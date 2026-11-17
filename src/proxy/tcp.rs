@@ -93,9 +93,10 @@ impl TcpProxy {
             dialer: Arc::new(crate::proxy::TcpDialer),
             tunnel_max_age: std::time::Duration::from_secs(config.tunnel_max_age_secs),
             max_streams_per_tunnel: config.mux_max_streams_per_tunnel,
-            // Initial TOTAL_STREAMS permits; each mux relay holds one named
-            // guard and releases it on exit. Shared by every tunnel of this proxy.
-            total_streams: Arc::new(Semaphore::new(crate::common::constants::mux::TOTAL_STREAMS)),
+            // max_conn permits shared by every tunnel of this proxy: mux
+            // streams are admitted connections, like legacy relays. Each mux
+            // relay holds one named guard and releases it on exit.
+            total_streams: Arc::new(Semaphore::new(max_conn)),
             original_destination: Arc::new(crate::proxy::NetfilterDestination),
         })
     }
@@ -636,12 +637,14 @@ mod security_tests {
         let mut config = config();
         config.tunnel_max_age_secs = 17;
         config.mux_max_streams_per_tunnel = 3;
+        config.max_connections = Some(4321);
         let proxy = TcpProxy::new(config, handshake, policy).unwrap();
         assert_eq!(proxy.tunnel_max_age, std::time::Duration::from_secs(17));
         assert_eq!(proxy.max_streams_per_tunnel, 3);
         assert_eq!(
             proxy.total_streams.available_permits(),
-            crate::common::constants::mux::TOTAL_STREAMS
+            4321,
+            "mux streams share the configured admission limit"
         );
     }
 }
